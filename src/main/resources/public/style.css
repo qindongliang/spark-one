@@ -121,6 +121,42 @@ textarea {
   background: #fbfcfe;
 }
 
+.CodeMirror {
+  flex: 1;
+  height: auto;
+  width: 100%;
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--code);
+  background: #fbfcfe;
+}
+
+.CodeMirror-gutters {
+  border-right: 1px solid var(--line);
+  background: #f1f4f8;
+}
+
+.CodeMirror-linenumber {
+  color: #8a95a5;
+}
+
+.cm-s-idea span.cm-keyword {
+  color: #0b6f63;
+  font-weight: 650;
+}
+
+.cm-s-idea span.cm-string {
+  color: #8a4b08;
+}
+
+.cm-s-idea span.cm-number {
+  color: #315f9f;
+}
+
+.cm-s-idea span.cm-comment {
+  color: #7a8494;
+  font-style: italic;
+}
+
 .output {
   flex: 1;
   min-height: 0;

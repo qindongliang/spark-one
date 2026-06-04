@@ -5,6 +5,7 @@ const statusText = document.getElementById('status');
 const summary = document.getElementById('summary');
 const compileButton = document.getElementById('compile');
 const runButton = document.getElementById('run');
+const editor = createEditor(script);
 
 compileButton.addEventListener('click', () => submit('/api/compile'));
 runButton.addEventListener('click', () => submit('/api/run'));
@@ -15,7 +16,7 @@ async function submit(path) {
     const res = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ script: script.value, limit: Number(limit.value || 200) })
+      body: JSON.stringify({ script: getScript(), limit: Number(limit.value || 200) })
     });
     const data = await res.json();
     render(data, path);
@@ -24,6 +25,25 @@ async function submit(path) {
   } finally {
     setBusy(false);
   }
+}
+
+function createEditor(textarea) {
+  if (!window.CodeMirror) return null;
+
+  return window.CodeMirror.fromTextArea(textarea, {
+    mode: 'text/x-sql',
+    theme: 'idea',
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 2,
+    tabSize: 2,
+    smartIndent: true,
+    viewportMargin: Infinity
+  });
+}
+
+function getScript() {
+  return editor ? editor.getValue() : script.value;
 }
 
 function setBusy(busy) {

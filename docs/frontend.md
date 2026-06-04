@@ -16,6 +16,7 @@
 当前页面能力：
 
 - SQL 编辑框。
+- SQL 语法高亮和行号，基于 CodeMirror 5 WebJar。
 - `Compile` 调 `/api/compile`。
 - `Run` 调 `/api/run`。
 - 展示编译后的 SQL。
@@ -25,7 +26,7 @@
 
 - 当前交互很小，原生 JS 足够。
 - 静态资源结构更适合 IDEA 调试。
-- 后续引入 CodeMirror 或 React 都方便。
+- CodeMirror 已通过 Maven/WebJar 引入，不依赖外部 CDN。
 
 什么时候考虑 React：
 

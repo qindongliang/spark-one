@@ -6,6 +6,7 @@
 - Spark SQL: `3.5.7`
 - ANTLR: `4.9.3`
 - Javalin: `4.6.7`
+- CodeMirror WebJar: `5.65.19`
 - Jackson Scala module: `2.15.2`
 - JUnit: `4.13.2`
 

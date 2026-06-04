@@ -18,7 +18,7 @@ object SparkOneServer {
 
   def main(args: Array[String]): Unit = {
     sys.props.put("org.slf4j.simpleLogger.defaultLogLevel",
-      sys.props.getOrElse("sparkone.logLevel", "warn"))
+      sys.props.getOrElse("sparkone.logLevel", "info"))
 
     val host = sys.props.getOrElse("sparkone.host", "127.0.0.1")
     val port = sys.props.get("sparkone.port")
@@ -29,6 +29,7 @@ object SparkOneServer {
 
     val app = Javalin.create(new Consumer[JavalinConfig] {
       override def accept(config: JavalinConfig): Unit = {
+        config.enableWebjars()
         config.addStaticFiles("/public", Location.CLASSPATH)
         config.addSinglePageRoot("/", "/public/index.html", Location.CLASSPATH)
       }
