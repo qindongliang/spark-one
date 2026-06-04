@@ -1,0 +1,9 @@
+target/
+.idea/
+.vscode/
+.DS_Store
+*.class
+*.log
+
+# Local reference repositories. Keep them available on disk, but do not vendor them.
+references/

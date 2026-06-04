@@ -1,0 +1,6 @@
+# Enable auto-env through the sdkman_auto_env config
+# Add key=value pairs of SDKs to use below
+# sdk env 快速切换环境
+# sdk env clear 回到默认环境
+java=17.0.14-tem
+scala=2.13.8

@@ -1,0 +1,13 @@
+create or replace temporary view users as
+select * from values
+  ('beijing', 1),
+  ('shanghai', 2),
+  ('beijing', 3)
+as users(city, id);
+
+create or replace temporary view city_stats as
+select city, count(*) as cnt
+from users
+group by city;
+
+save overwrite city_stats as parquet.`/tmp/city_stats`;

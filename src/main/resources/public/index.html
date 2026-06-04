@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SparkOne SQL</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>SparkOne SQL</h1>
+    <div class="status" id="status">Ready</div>
+  </header>
+  <main>
+    <section class="pane">
+      <div class="toolbar">
+        <button id="compile">Compile</button>
+        <button class="primary" id="run">Run</button>
+        <label>Rows <input id="limit" type="number" min="1" max="1000" value="200"></label>
+      </div>
+      <textarea id="script" spellcheck="false">create or replace temporary view users as
+select * from values
+  ('beijing', 1),
+  ('shanghai', 2),
+  ('beijing', 3)
+as users(city, id);
+
+create or replace temporary view city_stats as
+select city, count(*) as cnt
+from users
+group by city;
+
+select * from city_stats order by city;</textarea>
+    </section>
+    <section class="pane">
+      <div class="toolbar">
+        <div class="status" id="summary">No result</div>
+      </div>
+      <div class="output" id="output"></div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
