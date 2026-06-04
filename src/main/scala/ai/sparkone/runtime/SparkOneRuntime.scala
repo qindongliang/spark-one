@@ -75,14 +75,31 @@ final class SparkOneRuntime(
 
 object SparkOneRuntime {
   def local(): SparkOneRuntime = {
-    val spark = SparkSession.builder()
+    val builder = SparkSession.builder()
       .appName("SparkOne SQL")
       .master(sys.props.getOrElse("sparkone.master", "local[*]"))
       .config("spark.ui.enabled", "false")
       .config("spark.driver.bindAddress", "127.0.0.1")
       .config("spark.sql.warehouse.dir", "target/spark-warehouse")
-      .getOrCreate()
+
+    configureOptional(builder, "sparkone.jars.packages", "SPARKONE_JARS_PACKAGES", "spark.jars.packages")
+    configureOptional(builder, "sparkone.jars", "SPARKONE_JARS", "spark.jars")
+    configureOptional(builder, "sparkone.jars.repositories", "SPARKONE_JARS_REPOSITORIES", "spark.jars.repositories")
+
+    val spark = builder.getOrCreate()
 
     new SparkOneRuntime(spark)
+  }
+
+  private def configureOptional(
+      builder: SparkSession.Builder,
+      propertyName: String,
+      envName: String,
+      sparkConfName: String): Unit = {
+    sys.props.get(propertyName)
+      .orElse(sys.env.get(envName))
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .foreach(value => builder.config(sparkConfName, value))
   }
 }

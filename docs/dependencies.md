@@ -31,3 +31,11 @@ Shade jar：
 - `maven-shade-plugin` 会生成包含 Spark local runtime 的 fat jar。
 - 已过滤 `META-INF/*.SF`、`*.DSA`、`*.RSA`，避免签名文件导致 `java -jar` 启动失败。
 - fat jar 当前会比较大，这是因为 MVP 内置 Spark local runtime。
+
+数据源依赖：
+
+- Spark core 内置的 `csv/json/parquet/orc/text/jdbc/libsvm` 等 provider 可直接走 Spark SQL。
+- `excel` 不是 Spark core 内置，不默认打进 SparkOne 主包。
+- provider 别名不要写死在前端或 runtime，统一放在 `DataSourceResolver`。
+- 外部 provider 通过 `spark.jars.packages`、`spark.jars` 或 Kyuubi engine classpath 管理。
+- shade 保留 `ServicesResourceTransformer`，仅用于未来确有必要随主包合并 service 文件的场景。

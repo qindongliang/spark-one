@@ -5,7 +5,9 @@ import org.antlr.v4.runtime.{BaseErrorListener, CharStreams, CommonTokenStream, 
 
 import scala.collection.JavaConverters._
 
-final class SparkOneCompiler(sqlValidator: SqlValidator = SqlValidator.Noop) {
+final class SparkOneCompiler(
+    sqlValidator: SqlValidator = SqlValidator.Noop,
+    dataSourceResolver: DataSourceResolver = new DataSourceResolver()) {
   def compile(script: String): Seq[CompiledStatement] = {
     val tree = parse(script)
     tree.statement().asScala.map { statement =>
@@ -39,9 +41,14 @@ final class SparkOneCompiler(sqlValidator: SqlValidator = SqlValidator.Noop) {
 
   private def compileLoad(load: SparkOneDslParser.LoadStatementContext): String = {
     val (format, path) = parseSource(load.source(), "LOAD")
-    val table = requireIdentifier(load.table.getText, "LOAD target table")
+    val table = SparkOneSqlRender.requireIdentifier(load.table.getText, "LOAD target table")
     val options = parseOptions(load.optionClause())
-    renderCreateTempView(table, format, ("path" -> path) +: options)
+    dataSourceResolver.resolveLoad(format, path, options) match {
+      case ProviderLoadSource(provider, providerOptions) =>
+        SparkOneSqlRender.renderCreateTempViewUsing(table, provider, providerOptions)
+      case CatalogTableSource(identifier) =>
+        SparkOneSqlRender.renderCreateTempViewAsSelect(table, identifier)
+    }
   }
 
   private def compileSave(save: SparkOneDslParser.SaveStatementContext): String = {
@@ -50,14 +57,17 @@ final class SparkOneCompiler(sqlValidator: SqlValidator = SqlValidator.Noop) {
       throw new CompileException(s"SAVE mode '$mode' is not supported by the MVP Spark SQL compiler yet")
     }
 
-    val table = requireIdentifier(save.table.getText, "SAVE source table")
+    val table = SparkOneSqlRender.requireIdentifier(save.table.getText, "SAVE source table")
     val (format, path) = parseSource(save.source(), "SAVE")
     val options = parseOptions(save.optionClause())
-    renderInsertOverwriteDirectory(path, format, options, table)
+    val provider = dataSourceResolver.resolveSave(format) match {
+      case ProviderSaveSource(value) => value
+    }
+    SparkOneSqlRender.renderInsertOverwriteDirectory(path, provider, options, table)
   }
 
   private def parseSource(source: SparkOneDslParser.SourceContext, statementType: String): (String, String) = {
-    val format = requireIdentifier(source.format.getText, s"$statementType format")
+    val format = SparkOneSqlRender.requireIdentifier(source.format.getText, s"$statementType format")
     val path = stripQuoted(source.path.getText)
     (format, path)
   }
@@ -65,30 +75,11 @@ final class SparkOneCompiler(sqlValidator: SqlValidator = SqlValidator.Noop) {
   private def parseOptions(optionClause: SparkOneDslParser.OptionClauseContext): Seq[(String, String)] = {
     Option(optionClause).toSeq.flatMap { clause =>
       clause.option().asScala.map { option =>
-        val key = requireIdentifier(option.key.getText, "option key")
+        val key = SparkOneSqlRender.requireIdentifier(option.key.getText, "option key")
         val value = stripQuoted(option.value.getText)
         key -> value
       }
     }
-  }
-
-  private def renderCreateTempView(
-      table: String,
-      format: String,
-      options: Seq[(String, String)]): String = {
-    val renderedOptions = options.map { case (key, value) => s"$key '${escapeSql(value)}'" }.mkString(", ")
-    s"CREATE OR REPLACE TEMPORARY VIEW $table USING $format OPTIONS ($renderedOptions)"
-  }
-
-  private def renderInsertOverwriteDirectory(
-      path: String,
-      format: String,
-      options: Seq[(String, String)],
-      table: String): String = {
-    val optionSql =
-      if (options.isEmpty) ""
-      else options.map { case (key, value) => s"$key '${escapeSql(value)}'" }.mkString(" OPTIONS (", ", ", ")")
-    s"INSERT OVERWRITE DIRECTORY '${escapeSql(path)}' USING $format$optionSql SELECT * FROM $table"
   }
 
   private def stripQuoted(value: String): String = {
@@ -103,7 +94,38 @@ final class SparkOneCompiler(sqlValidator: SqlValidator = SqlValidator.Noop) {
     }
   }
 
-  private def requireIdentifier(value: String, label: String): String = {
+  private def originalText(script: String, context: org.antlr.v4.runtime.ParserRuleContext): String = {
+    val start = context.getStart.getStartIndex
+    val stop = context.getStop.getStopIndex
+    if (start < 0 || stop < start) "" else script.substring(start, stop + 1)
+  }
+}
+
+private[sql] object SparkOneSqlRender {
+  def renderCreateTempViewUsing(
+      table: String,
+      provider: String,
+      options: Seq[(String, String)]): String = {
+    val renderedOptions = renderOptions(options)
+    s"CREATE OR REPLACE TEMPORARY VIEW $table USING $provider OPTIONS ($renderedOptions)"
+  }
+
+  def renderCreateTempViewAsSelect(table: String, sourceTable: String): String = {
+    s"CREATE OR REPLACE TEMPORARY VIEW $table AS SELECT * FROM $sourceTable"
+  }
+
+  def renderInsertOverwriteDirectory(
+      path: String,
+      provider: String,
+      options: Seq[(String, String)],
+      table: String): String = {
+    val optionSql =
+      if (options.isEmpty) ""
+      else s" OPTIONS (${renderOptions(options)})"
+    s"INSERT OVERWRITE DIRECTORY '${escapeSql(path)}' USING $provider$optionSql SELECT * FROM $table"
+  }
+
+  def requireIdentifier(value: String, label: String): String = {
     if (!value.matches("[A-Za-z_][A-Za-z0-9_]*")) {
       throw new CompileException(s"$label must be a simple identifier: $value")
     }
@@ -114,10 +136,8 @@ final class SparkOneCompiler(sqlValidator: SqlValidator = SqlValidator.Noop) {
     value.replace("'", "''")
   }
 
-  private def originalText(script: String, context: org.antlr.v4.runtime.ParserRuleContext): String = {
-    val start = context.getStart.getStartIndex
-    val stop = context.getStop.getStopIndex
-    if (start < 0 || stop < start) "" else script.substring(start, stop + 1)
+  private def renderOptions(options: Seq[(String, String)]): String = {
+    options.map { case (key, value) => s"$key '${escapeSql(value)}'" }.mkString(", ")
   }
 }
 

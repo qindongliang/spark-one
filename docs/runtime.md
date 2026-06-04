@@ -32,6 +32,20 @@ http://127.0.0.1:7070
 mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args=7071
 ```
 
+本地加载外部数据源 provider：
+
+```bash
+mvn exec:java \
+  -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
+  -Dsparkone.jars.packages=dev.mauch:spark-excel_2.12:3.5.6_0.31.2
+```
+
+可选配置：
+
+- `sparkone.jars.packages` / `SPARKONE_JARS_PACKAGES` -> `spark.jars.packages`
+- `sparkone.jars` / `SPARKONE_JARS` -> `spark.jars`
+- `sparkone.jars.repositories` / `SPARKONE_JARS_REPOSITORIES` -> `spark.jars.repositories`
+
 API：
 
 - `POST /api/compile`
@@ -57,3 +71,4 @@ API：
 - 不要改 compiler。
 - 新增 `KyuubiJdbcRuntime`，替换 `SparkOneRuntime` 的执行方式。
 - 编译出的 Spark SQL 顺序提交给 Kyuubi。
+- 外部 provider jar 放在 Kyuubi/Spark engine classpath，不放在 SparkOne 主包里。

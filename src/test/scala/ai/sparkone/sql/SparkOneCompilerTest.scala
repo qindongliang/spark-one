@@ -45,6 +45,51 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesHiveLoadAsCatalogTableSelect(): Unit = {
+    val sql = compiler.compile("load hive.`default.users` as users;").head.sql
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW users AS SELECT * FROM default.users",
+      sql)
+  }
+
+  @Test
+  def rejectsHiveLoadOptionsUntilCatalogOptionsHaveASparkSqlMapping(): Unit = {
+    try {
+      compiler.compile("load hive.`default.users` where storage='delta' as users;")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("hive"))
+    }
+  }
+
+  @Test
+  def compilesExcelLoadWithProviderAlias(): Unit = {
+    val sql = compiler.compile(
+      """load excel.`/tmp/users.xlsx`
+        |where header="true"
+        |and dataAddress="'Sheet1'!A1"
+        |as users;
+        |""".stripMargin).head.sql
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW users USING excel OPTIONS " +
+        "(path '/tmp/users.xlsx', header 'true', dataAddress '''Sheet1''!A1')",
+      sql)
+  }
+
+  @Test
+  def compilesExcelSaveWithProviderAlias(): Unit = {
+    val sql = compiler.compile("save overwrite users as excel.`/tmp/users.xlsx` where header=true;").head.sql
+
+    assertEquals(
+      "INSERT OVERWRITE DIRECTORY '/tmp/users.xlsx' USING excel OPTIONS " +
+        "(header 'true') SELECT * FROM users",
+      sql)
+  }
+
+  @Test
   def leavesNativeCreateViewSqlUntouched(): Unit = {
     val sql = compiler.compile(
       """create or replace temporary view result_table as
@@ -87,11 +132,13 @@ final class SparkOneCompilerTest {
     val validatingCompiler = new SparkOneCompiler(new SparkSqlValidator)
     val sql = validatingCompiler.compile(
       """load parquet.`/tmp/users` as users;
+        |load hive.`default.source_users` as source_users;
+        |load excel.`/tmp/users.xlsx` where header="true" as excel_users;
         |create or replace temporary view city_stats as select city, count(*) as cnt from users group by city;
         |save overwrite city_stats as parquet.`/tmp/city_stats`;
         |""".stripMargin).map(_.sql)
 
-    assertEquals(3, sql.size)
+    assertEquals(5, sql.size)
   }
 
   @Test
