@@ -43,12 +43,14 @@ select * from city_stats order by city;
 ## Run
 
 Use the SDKMAN environment first. Spark on Java 17 also needs the JVM module
-options in `.mvn/jvm.config`.
+options in `.mvn/jvm.config`. More startup methods are documented in
+[`docs/startup.md`](docs/startup.md).
 
 ```bash
 sdk env
 mvn test
 mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
+mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.toml"
 ```
 
 Open:
@@ -57,10 +59,13 @@ Open:
 http://127.0.0.1:7070
 ```
 
+SQL 编辑器测试方法见 [`docs/editor-testing.md`](docs/editor-testing.md)。
+
 Use another port:
 
 ```bash
 mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args=7071
+mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.toml --port 7071"
 ```
 
 Compile only:

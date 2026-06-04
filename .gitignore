@@ -4,6 +4,8 @@ target/
 .DS_Store
 *.class
 *.log
+conf/sparkone.toml
+conf/*.local.toml
 
 # Local reference repositories. Keep them available on disk, but do not vendor them.
 references/

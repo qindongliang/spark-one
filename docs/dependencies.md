@@ -3,11 +3,13 @@
 核心版本见 `pom.xml`：
 
 - Scala: `2.12.19`
-- Spark SQL: `3.5.7`
+- Spark SQL / Hive: `3.5.7`
 - ANTLR: `4.9.3`
 - Javalin: `4.6.7`
 - CodeMirror WebJar: `5.65.19`
 - Jackson Scala module: `2.15.2`
+- TOML parser: `toml-scala 0.3.0`
+- SLF4J API: `2.0.7`
 - JUnit: `4.13.2`
 
 环境：
@@ -39,3 +41,20 @@ Shade jar：
 - provider 别名不要写死在前端或 runtime，统一放在 `DataSourceResolver`。
 - 外部 provider 通过 `spark.jars.packages`、`spark.jars` 或 Kyuubi engine classpath 管理。
 - shade 保留 `ServicesResourceTransformer`，仅用于未来确有必要随主包合并 service 文件的场景。
+
+配置文件依赖：
+
+- 启动配置使用 TOML。
+- TOML 解析使用 `toml-scala`，它支持 Scala 2.12，基于 FastParse，避免引入新的 ANTLR runtime 与 Spark 固定的 ANTLR `4.9.3` 冲突。
+
+日志依赖：
+
+- 使用 Spark 3.5 自带的 Log4j2 体系。
+- 显式固定 `slf4j-api` 到 `2.0.7`，匹配 Spark 的 `log4j-slf4j2-impl`。
+- 不额外引入 Logback 或 `slf4j-simple`，避免日志后端冲突。
+- 默认配置在 `src/main/resources/log4j2.xml`，Console 输出到 `SYSTEM_OUT`，避免 IDEA 把普通 INFO 日志当作 stderr 渲染成红色。
+
+Hive 依赖：
+
+- 主包引入 `spark-hive_2.12`，仅用于 Spark 内置 Hive catalog / metastore client。
+- 不混入本地 `/Users/qindongliang/bigdata/spark-3.3.4-jdk17-scala-2.13/jars`，避免 Spark 3.5/3.3 与 Scala 2.12/2.13 冲突。

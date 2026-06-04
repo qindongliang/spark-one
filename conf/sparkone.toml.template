@@ -1,0 +1,27 @@
+# Copy this file to conf/sparkone.toml for local IDEA or CLI runs.
+
+[server]
+host = "127.0.0.1"
+port = 7070
+logLevel = "info"
+
+[spark]
+master = "local[*]"
+
+[hadoop]
+confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
+# confFiles = "/path/to/core-site.xml,/path/to/hdfs-site.xml"
+
+[hive]
+enabled = true
+confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
+# confDir = "/Users/qindongliang/bigdata/hive/conf"
+
+[kerberos]
+principal = "odep"
+keytab = "/Users/qindongliang/bigdata/odep.keytab"
+
+[jars]
+# packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
+# files = "/path/to/provider.jar"
+# repositories = "https://repo1.maven.org/maven2"
