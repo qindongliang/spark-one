@@ -58,3 +58,4 @@ Hive 依赖：
 
 - 主包引入 `spark-hive_2.12`，仅用于 Spark 内置 Hive catalog / metastore client。
 - 不混入本地 `/Users/qindongliang/bigdata/spark-3.3.4-jdk17-scala-2.13/jars`，避免 Spark 3.5/3.3 与 Scala 2.12/2.13 冲突。
+- 当前 Spark 3.5.7 默认传递 Hadoop client 3.3.4。若测试集群是 Hadoop 2.8.5，不建议在 Spark 3.5 上强行替换 Hadoop 依赖；更稳妥的长期路线是通过 Kyuubi/Spark engine 使用集群匹配的 Hadoop/Hive classpath。

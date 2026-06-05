@@ -11,7 +11,7 @@ SparkOne 对接 HDFS/Hive 的原则：
 
 ```bash
 export KRB5CCNAME=/tmp/krb5cc_$(id -u)
-kinit -kt /Users/qindongliang/bigdata/odep.keytab odep
+kinit -kt /Users/qindongliang/bigdata/odep.keytab odep@HADOOP.COM
 
 HADOOP_CONF_DIR=/Users/qindongliang/bigdata/hadoop/etc/hadoop \
 mvn exec:java \
@@ -28,8 +28,9 @@ mvn exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
   -Dsparkone.hive.enabled=true \
   -Dsparkone.hive.conf.file=/Users/qindongliang/bigdata/hive/conf/hive-site.xml \
-  -Dsparkone.kerberos.principal=odep \
-  -Dsparkone.kerberos.keytab=/Users/qindongliang/bigdata/odep.keytab
+  -Dspark.kerberos.principal=odep@HADOOP.COM \
+  -Dspark.kerberos.keytab=/Users/qindongliang/bigdata/odep.keytab \
+  -Djava.security.krb5.conf=/etc/krb5.conf
 ```
 
 或者使用类似 Spark 的程序参数：
@@ -40,8 +41,9 @@ mvn exec:java \
   -Dexec.args="--hive-enabled \
     --hadoop-conf-dir /Users/qindongliang/bigdata/hadoop/etc/hadoop \
     --hive-conf /Users/qindongliang/bigdata/hive/conf/hive-site.xml \
-    --principal odep \
-    --keytab /Users/qindongliang/bigdata/odep.keytab"
+    --principal odep@HADOOP.COM \
+    --keytab /Users/qindongliang/bigdata/odep.keytab \
+    --krb5-conf /etc/krb5.conf"
 ```
 
 推荐 IDEA 使用本地 TOML 配置：
@@ -50,7 +52,7 @@ mvn exec:java \
 cp conf/sparkone.toml.template conf/sparkone.toml
 ```
 
-IDEA 的 Program arguments 只需要：
+应用启动时会默认读取存在的 `conf/sparkone.toml`。IDEA 的 Program arguments 可以留空；如果要显式指定配置文件，可以填写：
 
 ```bash
 --conf conf/sparkone.toml
@@ -76,18 +78,39 @@ load hive.`default.some_table` as t;
 select * from t limit 10;
 ```
 
+常见认证错误：
+
+```text
+SIMPLE authentication is not enabled. Available: [TOKEN, KERBEROS]
+```
+
+这说明当前进程按 SIMPLE 身份访问了启用 Kerberos 的 HDFS/Hive。优先检查：
+
+- `conf/sparkone.toml` 是否存在，或启动参数是否显式包含 `--conf conf/sparkone.toml`。
+- IDEA 的 Working directory 是否是 `/Users/qindongliang/project/ai/spark-one`，否则默认配置文件路径会找不到。
+- `[hadoop] confDir` 是否能读到 `core-site.xml`，其中应包含 `hadoop.security.authentication=kerberos`。
+- `[hive] enabled=true` 且 `confFile` 指向正确的 `hive-site.xml`。
+- `[spark.kerberos] principal/keytab` 和 `[kerberos] krb5Conf` 是否正确，principal 建议使用 keytab 里的完整主体名，例如 `odep@HADOOP.COM`；或者启动前是否已经手动 `kinit`。
+- IDEA 控制台是否能看到 `Refreshed Hadoop UserGroupInformation from SparkContext HadoopConf`，且 `UGI security enabled after SparkContext start: true`。
+
 配置入口：
 
 - `sparkone.hadoop.conf.dir` / `HADOOP_CONF_DIR`
 - `sparkone.hadoop.conf.files` / `SPARKONE_HADOOP_CONF_FILES`
+- `sparkone.hadoop.group.static.mapping.overrides` / `SPARKONE_HADOOP_GROUP_STATIC_MAPPING_OVERRIDES`
 - `sparkone.hive.enabled` / `SPARKONE_HIVE_ENABLED`
 - `sparkone.hive.conf.file` / `SPARKONE_HIVE_CONF_FILE`
 - `sparkone.hive.conf.dir` / `HIVE_CONF_DIR`
-- `sparkone.kerberos.principal` / `SPARKONE_KERBEROS_PRINCIPAL`
-- `sparkone.kerberos.keytab` / `SPARKONE_KERBEROS_KEYTAB`
+- `spark.kerberos.principal`
+- `spark.kerberos.keytab`
+- `java.security.krb5.conf`
 
 注意：
 
 - macOS 上 `kinit` 默认可能写入 KCM ticket cache，Java/Hadoop 不一定能识别；推荐显式设置 `KRB5CCNAME=/tmp/krb5cc_$(id -u)`。
+- 本地 macOS 没有 Kerberos 用户对应的系统账号时，Hadoop 默认组解析会执行类似 `id odep` 并打印 WARN。`conf/sparkone.toml` 可配置 `groupStaticOverrides = "odep=odep"` 绕开本机 Unix 组查询；如果没有显式配置，SparkOne 会根据 Kerberos principal 自动补一条 short name 映射。
 - 如果 Hive metastore 版本或协议不兼容，优先调整 Spark 3.5 的 Hive metastore client 配置，不引入 Spark 3.3.4 的 jar。
 - 程序会把 XML 配置转换成 `spark.hadoop.*` 注入 Spark，并用加载到的 HadoopConf 初始化 `UserGroupInformation`。
+- 当前 Maven runtime 传递的 Hadoop client 是 `3.3.4`，测试集群 Hadoop 是 `2.8.5`。本地 MVP 不建议强行替换 Spark 3.5 的 Hadoop 依赖；如果确认是客户端/集群版本兼容问题，优先把执行面迁到集群匹配的 Kyuubi/Spark engine，SparkOne 只保留 SQL 编译与服务层。
+
+如果 `SparkContext.hadoopConfiguration` 里是 `kerberos`，但 `UserGroupInformation.isSecurityEnabled` 是 `false`，HDFS RPC 仍会按 SIMPLE 发起。SparkOne 会在 `SparkSession.getOrCreate()` 后用 SparkContext 的 HadoopConf 重新刷新 UGI 并重新 keytab 登录，避免 Spark/Hive 初始化过程把 UGI 全局配置重置回 SIMPLE。

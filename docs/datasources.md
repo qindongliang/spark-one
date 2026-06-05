@@ -23,7 +23,7 @@ libsvm
 外部 provider：
 
 - `excel` 编译成 `USING excel`，provider jar 需要通过运行环境提供。
-- 本地 MVP 可用 `-Dsparkone.jars.packages=dev.mauch:spark-excel_2.12:3.5.6_0.31.2`。
+- 本地 MVP 可用 `-Dspark.jars.packages=dev.mauch:spark-excel_2.12:3.5.6_0.31.2`。
 - 未来接 Kyuubi 时，在 Kyuubi/Spark engine 配置 `spark.jars.packages` 或 engine classpath。
 
 新增数据源时：

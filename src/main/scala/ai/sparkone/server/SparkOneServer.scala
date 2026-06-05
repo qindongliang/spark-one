@@ -130,6 +130,8 @@ final case class SqlRequest(script: String, limit: Int)
 private final case class ServerOptions(port: Option[Int], properties: Map[String, String])
 
 private object ServerOptions {
+  private val DefaultConfigFile = "conf/sparkone.toml"
+
   def parse(args: Array[String]): ServerOptions = {
     val arguments = args.toSeq
     val configProperties = configFiles(arguments).flatMap(ServerConfigFile.load).toMap
@@ -138,7 +140,7 @@ private object ServerOptions {
   }
 
   private def configFiles(args: Seq[String]): Seq[String] = {
-    val files = scala.collection.mutable.ArrayBuffer.empty[String]
+    val explicitFiles = scala.collection.mutable.ArrayBuffer.empty[String]
     var remaining = args
     while (remaining.nonEmpty) {
       val arg = remaining.head
@@ -147,13 +149,20 @@ private object ServerOptions {
         if (remaining.isEmpty || remaining.head.startsWith("--")) {
           throw new IllegalArgumentException("Missing value for server argument: --conf")
         }
-        files += remaining.head
+        explicitFiles += remaining.head
         remaining = remaining.tail
       } else if (arg.startsWith("--conf=")) {
-        files += arg.stripPrefix("--conf=")
+        explicitFiles += arg.stripPrefix("--conf=")
       }
     }
-    files.toSeq
+
+    if (explicitFiles.nonEmpty) {
+      explicitFiles.toSeq
+    } else if (Files.isRegularFile(Paths.get(DefaultConfigFile))) {
+      Seq(DefaultConfigFile)
+    } else {
+      Seq.empty
+    }
   }
 
   private def withoutConfigArgs(args: Seq[String]): Seq[String] = {
@@ -199,15 +208,20 @@ private object ServerOptions {
             properties += "sparkone.hadoop.conf.dir" -> requireValue(arg)
           case "--hadoop-conf-files" =>
             properties += "sparkone.hadoop.conf.files" -> requireValue(arg)
+          case "--hadoop-group-static-overrides" =>
+            properties += "sparkone.hadoop.group.static.mapping.overrides" -> requireValue(arg)
           case "--hive-conf" =>
             properties += "sparkone.hive.conf.file" -> requireValue(arg)
           case "--hive-conf-dir" =>
             properties += "sparkone.hive.conf.dir" -> requireValue(arg)
           case "--principal" =>
-            properties += "sparkone.kerberos.principal" -> requireValue(arg)
+            properties += "spark.kerberos.principal" -> requireValue(arg)
           case "--keytab" =>
-            properties += "sparkone.kerberos.keytab" -> requireValue(arg)
+            properties += "spark.kerberos.keytab" -> requireValue(arg)
+          case "--krb5-conf" =>
+            properties += "java.security.krb5.conf" -> requireValue(arg)
           case value if value.forall(_.isDigit) =>
+            properties += "sparkone.port" -> value
             port = Some(value.toInt)
           case value =>
             throw new IllegalArgumentException(s"Unknown server argument: $value")
@@ -224,10 +238,12 @@ private object ServerOptions {
         case "--log-level" => properties += "sparkone.logLevel" -> value
         case "--hadoop-conf-dir" => properties += "sparkone.hadoop.conf.dir" -> value
         case "--hadoop-conf-files" => properties += "sparkone.hadoop.conf.files" -> value
+        case "--hadoop-group-static-overrides" => properties += "sparkone.hadoop.group.static.mapping.overrides" -> value
         case "--hive-conf" => properties += "sparkone.hive.conf.file" -> value
         case "--hive-conf-dir" => properties += "sparkone.hive.conf.dir" -> value
-        case "--principal" => properties += "sparkone.kerberos.principal" -> value
-        case "--keytab" => properties += "sparkone.kerberos.keytab" -> value
+        case "--principal" => properties += "spark.kerberos.principal" -> value
+        case "--keytab" => properties += "spark.kerberos.keytab" -> value
+        case "--krb5-conf" => properties += "java.security.krb5.conf" -> value
         case other => throw new IllegalArgumentException(s"Unknown server argument: $other")
       }
     }
@@ -276,7 +292,10 @@ private object ServerConfigFile {
     }
 
     properties.stringPropertyNames().asScala
-      .filter(_.startsWith("sparkone."))
+      .filter(name =>
+        name.startsWith("sparkone.") ||
+          name.startsWith("spark.") ||
+          name == "java.security.krb5.conf")
       .map(name => name -> properties.getProperty(name).trim)
       .filter(_._2.nonEmpty)
       .toMap
@@ -314,19 +333,34 @@ private final case class ServerTomlSection(
   }
 }
 
-private final case class SparkTomlSection(master: Option[String] = None) {
+private final case class SparkTomlSection(
+    master: Option[String] = None,
+    kerberos: Option[SparkKerberosTomlSection] = None) {
   def toProperties: Map[String, String] = {
-    Seq(master.map("sparkone.master" -> _)).flatten.toMap
+    (master.map("spark.master" -> _).toSeq ++
+      kerberos.toSeq.flatMap(_.toProperties)).toMap
+  }
+}
+
+private final case class SparkKerberosTomlSection(
+    principal: Option[String] = None,
+    keytab: Option[String] = None) {
+  def toProperties: Map[String, String] = {
+    Seq(
+      principal.map("spark.kerberos.principal" -> _),
+      keytab.map("spark.kerberos.keytab" -> _)).flatten.toMap
   }
 }
 
 private final case class HadoopTomlSection(
     confDir: Option[String] = None,
-    confFiles: Option[String] = None) {
+    confFiles: Option[String] = None,
+    groupStaticOverrides: Option[String] = None) {
   def toProperties: Map[String, String] = {
     Seq(
       confDir.map("sparkone.hadoop.conf.dir" -> _),
-      confFiles.map("sparkone.hadoop.conf.files" -> _)).flatten.toMap
+      confFiles.map("sparkone.hadoop.conf.files" -> _),
+      groupStaticOverrides.map("sparkone.hadoop.group.static.mapping.overrides" -> _)).flatten.toMap
   }
 }
 
@@ -343,12 +377,9 @@ private final case class HiveTomlSection(
 }
 
 private final case class KerberosTomlSection(
-    principal: Option[String] = None,
-    keytab: Option[String] = None) {
+    krb5Conf: Option[String] = None) {
   def toProperties: Map[String, String] = {
-    Seq(
-      principal.map("sparkone.kerberos.principal" -> _),
-      keytab.map("sparkone.kerberos.keytab" -> _)).flatten.toMap
+    Seq(krb5Conf.map("java.security.krb5.conf" -> _)).flatten.toMap
   }
 }
 
@@ -358,8 +389,8 @@ private final case class JarsTomlSection(
     repositories: Option[String] = None) {
   def toProperties: Map[String, String] = {
     Seq(
-      packages.map("sparkone.jars.packages" -> _),
-      files.map("sparkone.jars" -> _),
-      repositories.map("sparkone.jars.repositories" -> _)).flatten.toMap
+      packages.map("spark.jars.packages" -> _),
+      files.map("spark.jars" -> _),
+      repositories.map("spark.jars.repositories" -> _)).flatten.toMap
   }
 }

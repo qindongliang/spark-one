@@ -8,8 +8,13 @@ logLevel = "info"
 [spark]
 master = "local[*]"
 
+[spark.kerberos]
+principal = "odep@HADOOP.COM"
+keytab = "/Users/qindongliang/bigdata/odep.keytab"
+
 [hadoop]
 confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
+groupStaticOverrides = "odep=odep"
 # confFiles = "/path/to/core-site.xml,/path/to/hdfs-site.xml"
 
 [hive]
@@ -18,8 +23,7 @@ confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
 # confDir = "/Users/qindongliang/bigdata/hive/conf"
 
 [kerberos]
-principal = "odep"
-keytab = "/Users/qindongliang/bigdata/odep.keytab"
+krb5Conf = "/etc/krb5.conf"
 
 [jars]
 # packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"

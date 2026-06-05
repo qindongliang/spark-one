@@ -43,21 +43,24 @@ mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--
 ```bash
 mvn exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
-  -Dsparkone.jars.packages=dev.mauch:spark-excel_2.12:3.5.6_0.31.2
+  -Dspark.jars.packages=dev.mauch:spark-excel_2.12:3.5.6_0.31.2
 ```
 
 可选配置：
 
-- `sparkone.jars.packages` / `SPARKONE_JARS_PACKAGES` -> `spark.jars.packages`
-- `sparkone.jars` / `SPARKONE_JARS` -> `spark.jars`
-- `sparkone.jars.repositories` / `SPARKONE_JARS_REPOSITORIES` -> `spark.jars.repositories`
+- `spark.master` -> Spark master，TOML 中对应 `[spark] master`
+- `spark.jars.packages` -> Maven 坐标形式的外部 provider 包
+- `spark.jars` -> 本地 jar 文件
+- `spark.jars.repositories` -> 额外 Maven 仓库
 - `sparkone.hadoop.conf.dir` / `HADOOP_CONF_DIR` -> 加载 `core-site.xml`、`hdfs-site.xml`、`yarn-site.xml`、`mapred-site.xml`
 - `sparkone.hadoop.conf.files` / `SPARKONE_HADOOP_CONF_FILES` -> 加载额外 Hadoop XML，支持逗号或系统 path separator 分隔
+- `sparkone.hadoop.group.static.mapping.overrides` / `SPARKONE_HADOOP_GROUP_STATIC_MAPPING_OVERRIDES` -> 本地调试时覆盖 Hadoop 用户组静态映射
 - `sparkone.hive.enabled` / `SPARKONE_HIVE_ENABLED` -> 启用 Spark Hive support
 - `sparkone.hive.conf.file` / `SPARKONE_HIVE_CONF_FILE` -> 加载指定 `hive-site.xml`
 - `sparkone.hive.conf.dir` / `HIVE_CONF_DIR` -> 从目录加载 `hive-site.xml`
-- `sparkone.kerberos.principal` / `SPARKONE_KERBEROS_PRINCIPAL` -> 可选 keytab 登录 principal
-- `sparkone.kerberos.keytab` / `SPARKONE_KERBEROS_KEYTAB` -> 可选 keytab 文件
+- `spark.kerberos.principal` -> Spark 原生 keytab 登录 principal，TOML 中对应 `[spark.kerberos] principal`
+- `spark.kerberos.keytab` -> Spark 原生 keytab 文件，TOML 中对应 `[spark.kerberos] keytab`
+- `java.security.krb5.conf` -> JVM Kerberos realm 配置文件，TOML 中对应 `[kerberos] krb5Conf`
 
 常用程序参数：
 
@@ -71,6 +74,8 @@ mvn exec:java \
 - `--hive-conf-dir`
 - `--principal`
 - `--keytab`
+- `--krb5-conf`
+- `--hadoop-group-static-overrides`
 - `--log-level`
 
 配置模板：

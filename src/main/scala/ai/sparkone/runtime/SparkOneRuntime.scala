@@ -5,6 +5,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.UserGroupInformation
 import org.apache.spark.sql.{Row, SparkSession}
+import org.slf4j.LoggerFactory
 
 import java.io.File
 
@@ -79,52 +80,75 @@ final class SparkOneRuntime(
 }
 
 object SparkOneRuntime {
+  private lazy val logger = LoggerFactory.getLogger(getClass)
+  private val HadoopStaticGroupOverrides = "hadoop.user.group.static.mapping.overrides"
+
   def local(): SparkOneRuntime = {
     val builder = SparkSession.builder()
       .appName("SparkOne SQL")
-      .master(sys.props.getOrElse("sparkone.master", "local[*]"))
+      .master(sys.props.getOrElse("spark.master", "local[*]"))
       .config("spark.ui.enabled", "false")
       .config("spark.driver.bindAddress", "127.0.0.1")
       .config("spark.sql.warehouse.dir", "target/spark-warehouse")
 
     configureHadoopAndHive(builder)
-    configureOptional(builder, "sparkone.jars.packages", "SPARKONE_JARS_PACKAGES", "spark.jars.packages")
-    configureOptional(builder, "sparkone.jars", "SPARKONE_JARS", "spark.jars")
-    configureOptional(builder, "sparkone.jars.repositories", "SPARKONE_JARS_REPOSITORIES", "spark.jars.repositories")
-    configureOptional(builder, "sparkone.kerberos.principal", "SPARKONE_KERBEROS_PRINCIPAL", "spark.kerberos.principal")
-    configureOptional(builder, "sparkone.kerberos.keytab", "SPARKONE_KERBEROS_KEYTAB", "spark.kerberos.keytab")
+    configureSparkProperty(builder, "spark.jars.packages")
+    configureSparkProperty(builder, "spark.jars")
+    configureSparkProperty(builder, "spark.jars.repositories")
+    configureSparkProperty(builder, "spark.kerberos.principal")
+    configureSparkProperty(builder, "spark.kerberos.keytab")
 
     if (enabled("sparkone.hive.enabled", "SPARKONE_HIVE_ENABLED")) {
       builder.enableHiveSupport()
     }
 
     val spark = builder.getOrCreate()
+    refreshUserGroupInformation(spark.sparkContext.hadoopConfiguration)
 
     new SparkOneRuntime(spark)
   }
 
-  private def configureOptional(
-      builder: SparkSession.Builder,
-      propertyName: String,
-      envName: String,
-      sparkConfName: String): Unit = {
+  private def configureSparkProperty(builder: SparkSession.Builder, propertyName: String): Unit = {
     sys.props.get(propertyName)
-      .orElse(sys.env.get(envName))
       .map(_.trim)
       .filter(_.nonEmpty)
-      .foreach(value => builder.config(sparkConfName, value))
+      .foreach(value => builder.config(propertyName, value))
   }
 
   private def configureHadoopAndHive(builder: SparkSession.Builder): Unit = {
+    configureKrb5Conf()
     val files = hadoopConfFiles() ++ hiveConfFiles()
     if (files.nonEmpty) {
       val conf = new Configuration(false)
       files.distinct.foreach(file => conf.addResource(new Path(file.toURI)))
+      configureStaticGroupMapping(conf)
       conf.iterator().forEachRemaining { entry =>
         builder.config(s"spark.hadoop.${entry.getKey}", entry.getValue)
       }
       UserGroupInformation.setConfiguration(conf)
       loginFromKeytabIfConfigured(conf)
+      logHadoopSecurity(conf, files.distinct)
+    }
+  }
+
+  private def refreshUserGroupInformation(conf: Configuration): Unit = {
+    configureStaticGroupMapping(conf)
+    UserGroupInformation.setConfiguration(conf)
+    loginFromKeytabIfConfigured(conf)
+    logger.info("Refreshed Hadoop UserGroupInformation from SparkContext HadoopConf")
+    logger.info(s"SparkContext Hadoop security authentication: ${Option(conf.get("hadoop.security.authentication")).getOrElse("<unset>")}")
+    logger.info(s"UGI security enabled after SparkContext start: ${UserGroupInformation.isSecurityEnabled}")
+    logger.info(s"UGI login user after SparkContext start: ${safeUser(UserGroupInformation.getLoginUser)}")
+    logger.info(s"UGI current user after SparkContext start: ${safeUser(UserGroupInformation.getCurrentUser)}")
+  }
+
+  private def configureStaticGroupMapping(conf: Configuration): Unit = {
+    optionalValue("sparkone.hadoop.group.static.mapping.overrides", "SPARKONE_HADOOP_GROUP_STATIC_MAPPING_OVERRIDES") match {
+      case Some(value) =>
+        conf.set(HadoopStaticGroupOverrides, value)
+      case None if Option(conf.getTrimmed(HadoopStaticGroupOverrides)).forall(_.isEmpty) =>
+        kerberosShortName().foreach(user => conf.set(HadoopStaticGroupOverrides, s"$user=$user"))
+      case None =>
     }
   }
 
@@ -159,13 +183,39 @@ object SparkOneRuntime {
   }
 
   private def loginFromKeytabIfConfigured(conf: Configuration): Unit = {
-    val principal = optionalValue("sparkone.kerberos.principal", "SPARKONE_KERBEROS_PRINCIPAL")
-    val keytab = optionalValue("sparkone.kerberos.keytab", "SPARKONE_KERBEROS_KEYTAB")
+    val principal = sparkProperty("spark.kerberos.principal")
+    val keytab = sparkProperty("spark.kerberos.keytab")
     (principal, keytab) match {
       case (Some(user), Some(file)) =>
-        UserGroupInformation.loginUserFromKeytab(user, requiredFile(file).getAbsolutePath)
+        val keytab = requiredFile(file).getAbsolutePath
+        UserGroupInformation.loginUserFromKeytab(user, keytab)
+        logger.info(s"Logged in Hadoop user from keytab, principal=$user, keytab=$keytab")
       case _ =>
     }
+  }
+
+  private def configureKrb5Conf(): Unit = {
+    sys.props.get("java.security.krb5.conf")
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .map(requiredFile)
+      .foreach { file =>
+        sys.props.put("java.security.krb5.conf", file.getAbsolutePath)
+        logger.info(s"Using Kerberos krb5.conf: ${file.getAbsolutePath}")
+      }
+  }
+
+  private def logHadoopSecurity(conf: Configuration, files: Seq[File]): Unit = {
+    logger.info(s"Loaded Hadoop/Hive config files: ${files.map(_.getAbsolutePath).mkString(", ")}")
+    logger.info(s"Hadoop security authentication: ${Option(conf.get("hadoop.security.authentication")).getOrElse("<unset>")}")
+    logger.info(s"Hadoop static group overrides: ${Option(conf.get(HadoopStaticGroupOverrides)).getOrElse("<unset>")}")
+    logger.info(s"UGI security enabled: ${UserGroupInformation.isSecurityEnabled}")
+    logger.info(s"UGI login user: ${safeUser(UserGroupInformation.getLoginUser)}")
+    logger.info(s"UGI current user: ${safeUser(UserGroupInformation.getCurrentUser)}")
+  }
+
+  private def safeUser(user: UserGroupInformation): String = {
+    Option(user).map(_.toString).getOrElse("<unset>")
   }
 
   private def enabled(propertyName: String, envName: String): Boolean = {
@@ -178,6 +228,16 @@ object SparkOneRuntime {
       .orElse(sys.env.get(envName))
       .map(_.trim)
       .filter(_.nonEmpty)
+  }
+
+  private def kerberosShortName(): Option[String] = {
+    sparkProperty("spark.kerberos.principal")
+      .map(_.takeWhile(_ != '@').takeWhile(_ != '/').trim)
+      .filter(_.nonEmpty)
+  }
+
+  private def sparkProperty(propertyName: String): Option[String] = {
+    sys.props.get(propertyName).map(_.trim).filter(_.nonEmpty)
   }
 
   private def splitPaths(value: String): Seq[String] = {

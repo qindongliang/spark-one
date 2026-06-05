@@ -37,7 +37,13 @@ mvn exec:java \
 cp conf/sparkone.toml.template conf/sparkone.toml
 ```
 
-启动：
+默认启动会自动读取 `conf/sparkone.toml`：
+
+```bash
+mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
+```
+
+也可以显式指定配置文件：
 
 ```bash
 mvn exec:java \
@@ -57,6 +63,7 @@ mvn exec:java \
 
 - `conf/sparkone.toml.template` 是可提交模板。
 - `conf/sparkone.toml` 是本地实际配置，已被 `.gitignore` 忽略。
+- 如果没有传 `--conf`，启动时会自动读取存在的 `conf/sparkone.toml`。
 - 命令行参数优先级高于 TOML。
 
 ## IDEA
@@ -66,7 +73,7 @@ mvn exec:java \
 - Main class: `ai.sparkone.server.SparkOneServer`
 - Working directory: `/Users/qindongliang/project/ai/spark-one`
 - Use classpath of module: `spark-one`
-- Program arguments: `--conf conf/sparkone.toml`
+- Program arguments: 可留空；如果要显式指定配置文件，可填 `--conf conf/sparkone.toml`
 
 运行前先复制模板：
 
@@ -75,6 +82,16 @@ cp conf/sparkone.toml.template conf/sparkone.toml
 ```
 
 Java 17 运行 Spark 需要 `.mvn/jvm.config` 中的 module open 参数。若 IDEA 没自动带上，把 `.mvn/jvm.config` 内容复制到 VM options。
+
+如果查询 Hive/HDFS 时报：
+
+```text
+SIMPLE authentication is not enabled. Available: [TOKEN, KERBEROS]
+```
+
+通常说明当前进程没有读到 Kerberos/Hadoop/Hive 配置，或 keytab 登录没有生效。先确认 IDEA 的 Working directory 是项目根目录，并且 `conf/sparkone.toml` 存在；或者在 Program arguments 显式填写 `--conf conf/sparkone.toml`。
+
+如果 Hive 查询时出现 `id: odep: no such user` 这类本机用户组 WARN，说明 Hadoop 在 macOS 上尝试解析 Kerberos 用户对应的本地 Unix 组。`conf/sparkone.toml` 里可用 `[hadoop] groupStaticOverrides = "odep=odep"` 处理；未显式配置时，SparkOne 会根据 Kerberos principal 自动补一条 short name 映射。
 
 日志配置：
 
@@ -122,16 +139,20 @@ port = 7070
 [spark]
 master = "local[*]"
 
+[spark.kerberos]
+principal = "odep@HADOOP.COM"
+keytab = "/Users/qindongliang/bigdata/odep.keytab"
+
 [hadoop]
 confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
+groupStaticOverrides = "odep=odep"
 
 [hive]
 enabled = true
 confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
 
 [kerberos]
-principal = "odep"
-keytab = "/Users/qindongliang/bigdata/odep.keytab"
+krb5Conf = "/etc/krb5.conf"
 ```
 
 也可以不使用 TOML，直接传程序参数：
@@ -142,15 +163,16 @@ mvn exec:java \
   -Dexec.args="--hive-enabled \
     --hadoop-conf-dir /Users/qindongliang/bigdata/hadoop/etc/hadoop \
     --hive-conf /Users/qindongliang/bigdata/hive/conf/hive-site.xml \
-    --principal odep \
-    --keytab /Users/qindongliang/bigdata/odep.keytab"
+    --principal odep@HADOOP.COM \
+    --keytab /Users/qindongliang/bigdata/odep.keytab \
+    --krb5-conf /etc/krb5.conf"
 ```
 
 如果不用 keytab 自动登录，也可以先手动拿票据：
 
 ```bash
 export KRB5CCNAME=/tmp/krb5cc_$(id -u)
-kinit -kt /Users/qindongliang/bigdata/odep.keytab odep
+kinit -kt /Users/qindongliang/bigdata/odep.keytab odep@HADOOP.COM
 ```
 
 更多 HDFS/Hive 说明见 [hadoop-hive.md](hadoop-hive.md)。
