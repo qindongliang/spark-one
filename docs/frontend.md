@@ -16,13 +16,14 @@
 当前页面能力：
 
 - SQL 编辑框。
+- 页面采用上方编辑器、下方结果区布局。
 - SQL 语法高亮和行号，基于 CodeMirror 5 WebJar。
 - 编辑器使用 `text/x-sparkone-sql`，基于 CodeMirror Spark SQL mode 追加 `view/load/save` 关键词。
 - `Compile` 调 `/api/compile`。
 - `Run` 调 `/api/run`。
 - 有选区时 `Compile` / `Run` 只提交选中的 SQL；没有选区时提交整篇脚本。
 - 展示编译后的 SQL。
-- 展示执行结果 schema 和 rows。
+- 展示执行结果 schema 和 rows，宽表在结果区横向滚动。
 
 为什么暂不上 React：
 

@@ -175,10 +175,92 @@ select * from users_parquet limit 20;
 
 JSON：
 
+页面内造 JSON 数据并生成 view：
+
+```sql
+view raw_events_json as
+select * from values
+  ('{"event_id":"e001","event_type":"click","city":"beijing","amount":12.50,"created_at":"2026-06-09 10:00:00"}'),
+  ('{"event_id":"e002","event_type":"view","city":"shanghai","amount":0.00,"created_at":"2026-06-09 10:05:00"}'),
+  ('{"event_id":"e003","event_type":"click","city":"beijing","amount":18.80,"created_at":"2026-06-09 10:08:00"}'),
+  ('{"event_id":"e004","event_type":"pay","city":"shenzhen","amount":99.90,"created_at":"2026-06-09 10:20:00"}')
+as raw_events_json(raw_json);
+
+view events_from_json as
+select
+  event.event_id,
+  event.event_type,
+  event.city,
+  event.amount,
+  event.created_at
+from (
+  select from_json(
+    raw_json,
+    'event_id STRING, event_type STRING, city STRING, amount DOUBLE, created_at TIMESTAMP'
+  ) as event
+  from raw_events_json
+) parsed;
+
+select city, event_type, count(*) as cnt, sum(amount) as total_amount
+from events_from_json
+group by city, event_type
+order by city, event_type;
+```
+
+这个例子不依赖外部文件，适合直接在页面里验证 `view` 语法糖、多语句上下文和 Spark 原生 `from_json` 函数。
+
+HDFS/defaultFS 上的 JSON Lines：
+
 ```sql
 load json.`/tmp/events.json` as events;
 
 select * from events limit 20;
+```
+
+本地 JSON Lines：
+
+```sql
+load json.`file:///Users/qindongliang/Downloads/events.json`
+as local_events;
+
+select * from local_events limit 20;
+```
+
+多行 JSON 文件：
+
+```sql
+load json.`/tmp/events_pretty.json`
+where multiLine="true"
+as pretty_events;
+
+select * from pretty_events limit 20;
+```
+
+显式推断 schema：
+
+```sql
+load json.`/tmp/events.json`
+where inferSchema="true"
+as inferred_events;
+
+select event_type, count(*) as cnt
+from inferred_events
+group by event_type
+order by cnt desc;
+```
+
+指定 schema 并过滤脏数据：
+
+```sql
+load json.`/tmp/events.json`
+where schema="event_id STRING, event_type STRING, amount DOUBLE, created_at TIMESTAMP"
+and mode="PERMISSIVE"
+and timestampFormat="yyyy-MM-dd HH:mm:ss"
+as typed_events;
+
+select event_type, sum(amount) as total_amount
+from typed_events
+group by event_type;
 ```
 
 Hive 表：
@@ -195,6 +277,42 @@ select * from some_table limit 20;
 CREATE OR REPLACE TEMPORARY VIEW some_table AS
 SELECT * FROM default.some_table;
 ```
+
+MySQL / JDBC：
+
+```sql
+load jdbc.`mysql_users`
+where url="jdbc:mysql://192.168.1.179:3306/Dworks"
+and dbtable="cloud_host_info"
+and user="root"
+and password="******"
+and driver="com.mysql.cj.jdbc.Driver"
+as users_mysql;
+
+select * from users_mysql limit 10;
+```
+
+它会编译成 Spark 原生 JDBC 临时视图：
+
+```sql
+CREATE OR REPLACE TEMPORARY VIEW users_mysql
+USING jdbc
+OPTIONS (
+  path 'mysql_users',
+  url 'jdbc:mysql://192.168.1.179:3306/Dworks',
+  dbtable 'cloud_host_info',
+  user 'root',
+  password '******',
+  driver 'com.mysql.cj.jdbc.Driver'
+);
+```
+
+说明：
+
+- `load jdbc` 走 Spark 内置 JDBC provider。
+- `dbtable` 可以是表名，也可以按 Spark JDBC 规则写成带别名的子查询，例如 `"(select * from cloud_host_info limit 10) t"`。
+- 运行时需要 MySQL JDBC driver 在 classpath 中；本地可通过 `[jars] jars = "/path/to/mysql-connector-j.jar"` 或 Maven package 提供。
+- `load` 只是注册临时视图，不负责限制结果行数；需要抽样查看时，在后续 `select * from users_mysql limit 10` 中限制。
 
 ## 使用 SparkOne Save DSL
 
