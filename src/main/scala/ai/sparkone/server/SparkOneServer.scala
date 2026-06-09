@@ -335,9 +335,13 @@ private final case class ServerTomlSection(
 
 private final case class SparkTomlSection(
     master: Option[String] = None,
+    driverHost: Option[String] = None,
+    driverBindAddress: Option[String] = None,
     kerberos: Option[SparkKerberosTomlSection] = None) {
   def toProperties: Map[String, String] = {
     (master.map("spark.master" -> _).toSeq ++
+      driverHost.map("spark.driver.host" -> _).toSeq ++
+      driverBindAddress.map("spark.driver.bindAddress" -> _).toSeq ++
       kerberos.toSeq.flatMap(_.toProperties)).toMap
   }
 }
@@ -385,12 +389,14 @@ private final case class KerberosTomlSection(
 
 private final case class JarsTomlSection(
     packages: Option[String] = None,
+    jars: Option[String] = None,
     files: Option[String] = None,
     repositories: Option[String] = None) {
   def toProperties: Map[String, String] = {
     Seq(
       packages.map("spark.jars.packages" -> _),
-      files.map("spark.jars" -> _),
+      jars.map("spark.jars" -> _),
+      files.map("spark.files" -> _),
       repositories.map("spark.jars.repositories" -> _)).flatten.toMap
   }
 }

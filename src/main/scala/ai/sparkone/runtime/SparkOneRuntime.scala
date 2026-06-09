@@ -8,6 +8,7 @@ import org.apache.spark.sql.{Row, SparkSession}
 import org.slf4j.LoggerFactory
 
 import java.io.File
+import java.net.URLClassLoader
 
 final class SparkOneRuntime(
     spark: SparkSession,
@@ -84,19 +85,23 @@ object SparkOneRuntime {
   private val HadoopStaticGroupOverrides = "hadoop.user.group.static.mapping.overrides"
 
   def local(): SparkOneRuntime = {
+    val master = sys.props.getOrElse("spark.master", "local[*]")
+
     val builder = SparkSession.builder()
       .appName("SparkOne SQL")
-      .master(sys.props.getOrElse("spark.master", "local[*]"))
+      .master(master)
       .config("spark.ui.enabled", "false")
-      .config("spark.driver.bindAddress", "127.0.0.1")
       .config("spark.sql.warehouse.dir", "target/spark-warehouse")
 
+    configureDriverNetwork(builder, master)
     configureHadoopAndHive(builder)
     configureSparkProperty(builder, "spark.jars.packages")
     configureSparkProperty(builder, "spark.jars")
+    configureSparkProperty(builder, "spark.files")
     configureSparkProperty(builder, "spark.jars.repositories")
     configureSparkProperty(builder, "spark.kerberos.principal")
     configureSparkProperty(builder, "spark.kerberos.keytab")
+    configureDriverClasspathFromSparkJars()
 
     if (enabled("sparkone.hive.enabled", "SPARKONE_HIVE_ENABLED")) {
       builder.enableHiveSupport()
@@ -113,6 +118,47 @@ object SparkOneRuntime {
       .map(_.trim)
       .filter(_.nonEmpty)
       .foreach(value => builder.config(propertyName, value))
+  }
+
+  private def configureDriverNetwork(builder: SparkSession.Builder, master: String): Unit = {
+    val driverBindAddress = sparkProperty("spark.driver.bindAddress")
+      .orElse(if (isLocalMaster(master)) Some("127.0.0.1") else None)
+    val driverHost = sparkProperty("spark.driver.host")
+      .orElse(if (isLocalMaster(master)) driverBindAddress else None)
+
+    driverBindAddress.foreach(builder.config("spark.driver.bindAddress", _))
+    driverHost.foreach(builder.config("spark.driver.host", _))
+  }
+
+  private def isLocalMaster(master: String): Boolean = {
+    master.toLowerCase.startsWith("local")
+  }
+
+  private def configureDriverClasspathFromSparkJars(): Unit = {
+    val jars = optionalValue("spark.jars", "SPARK_JARS")
+      .toSeq
+      .flatMap(splitCommaSeparated)
+      .flatMap(toLocalJar)
+
+    if (jars.nonEmpty) {
+      val parent = Thread.currentThread().getContextClassLoader
+      val urls = jars.map(_.toURI.toURL).toArray
+      Thread.currentThread().setContextClassLoader(new URLClassLoader(urls, parent))
+      logger.info(s"Added local Spark jars to driver classloader: ${jars.map(_.getAbsolutePath).mkString(", ")}")
+    }
+  }
+
+  private def toLocalJar(path: String): Option[File] = {
+    val file =
+      if (path.startsWith("file:")) new File(java.net.URI.create(path))
+      else new File(path)
+
+    if (file.isFile) {
+      Some(file)
+    } else {
+      logger.warn(s"Ignoring spark.jars entry because it is not a local file: $path")
+      None
+    }
   }
 
   private def configureHadoopAndHive(builder: SparkSession.Builder): Unit = {
@@ -242,6 +288,10 @@ object SparkOneRuntime {
 
   private def splitPaths(value: String): Seq[String] = {
     value.split(File.pathSeparator).toSeq.flatMap(_.split(",")).map(_.trim).filter(_.nonEmpty)
+  }
+
+  private def splitCommaSeparated(value: String): Seq[String] = {
+    value.split(",").toSeq.map(_.trim).filter(_.nonEmpty)
   }
 
   private def requiredDirectory(path: String): File = {

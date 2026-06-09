@@ -261,12 +261,18 @@ select * from t limit 20;
 ```toml
 [jars]
 packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
+# 或者直接指定本地 jar：
+# jars = "/Users/qindongliang/.m2/repository/dev/mauch/spark-excel_2.12/3.5.6_0.31.2/spark-excel_2.12-3.5.6_0.31.2.jar"
+# 如果只是分发普通配置文件，用 files，不要用来放 provider jar：
+# files = "/path/to/app.conf"
 ```
+
+`packages` 使用 Maven 坐标，由 Spark/Ivy 解析依赖；`jars` 对应 Spark 原生 `spark.jars`，可以直接写本地 jar 的绝对路径。`files` 对应 Spark 原生 `spark.files`，只分发普通文件，不会加入 classpath，不能用来加载 Excel provider。
 
 然后页面里可以写：
 
 ```sql
-load excel.`/tmp/users.xlsx`
+load excel.`file:///Users/qindongliang/Downloads/jupyter_tasks.xlsx`
 where header="true" and inferSchema="true"
 as users_excel;
 
@@ -274,6 +280,15 @@ select * from users_excel limit 20;
 ```
 
 如果 provider 没加载，`Compile` 可能成功，但 `Run` 会失败，因为真正解析 provider 的是 Spark runtime。
+
+如果启动 SparkContext 时出现 `Failed to connect to /192.168...` 且日志里有 `Added JAR ... at spark://.../jars/...`，通常是本地调试时 Spark driver 广播地址和实际绑定地址不一致。`conf/sparkone.toml` 的 `[spark]` 建议保留：
+
+```toml
+driverHost = "127.0.0.1"
+driverBindAddress = "127.0.0.1"
+```
+
+这个配置只适合本地 `local[*]` 调试；如果改成 `master = "yarn"`，不要把 `driverHost` 固定为 `127.0.0.1`，应使用 executor 能访问到的 driver 地址，或交给 Spark/YARN 环境决定。
 
 ## Compile 和 Run 的使用建议
 

@@ -138,6 +138,9 @@ port = 7070
 
 [spark]
 master = "local[*]"
+# local[*] 会默认使用 127.0.0.1；YARN/client 模式不要把 driverHost 固定为 127.0.0.1。
+# driverHost = "127.0.0.1"
+# driverBindAddress = "127.0.0.1"
 
 [spark.kerberos]
 principal = "odep@HADOOP.COM"

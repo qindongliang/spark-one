@@ -46,11 +46,31 @@ mvn exec:java \
   -Dspark.jars.packages=dev.mauch:spark-excel_2.12:3.5.6_0.31.2
 ```
 
+TOML 里对应 Spark submit 语义：
+
+```toml
+[jars]
+# 等价于 spark-submit --packages / spark.jars.packages
+packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
+
+# 等价于 spark-submit --jars / spark.jars，用于依赖 jar
+jars = "/path/to/provider.jar,/path/to/another-provider.jar"
+
+# 等价于 spark-submit --files / spark.files，用于普通文件分发，不进入 classpath
+files = "/path/to/app.conf,/path/to/dict.txt"
+
+# spark.jars.repositories
+repositories = "https://repo1.maven.org/maven2"
+```
+
 可选配置：
 
 - `spark.master` -> Spark master，TOML 中对应 `[spark] master`
+- `spark.driver.host` -> Spark driver 对 executor 广播的地址，TOML 中对应 `[spark] driverHost`
+- `spark.driver.bindAddress` -> Spark driver 实际绑定地址，TOML 中对应 `[spark] driverBindAddress`
 - `spark.jars.packages` -> Maven 坐标形式的外部 provider 包
-- `spark.jars` -> 本地 jar 文件
+- `spark.jars` -> 本地 jar 文件，TOML 中对应 `[jars] jars`
+- `spark.files` -> 普通文件分发，TOML 中对应 `[jars] files`
 - `spark.jars.repositories` -> 额外 Maven 仓库
 - `sparkone.hadoop.conf.dir` / `HADOOP_CONF_DIR` -> 加载 `core-site.xml`、`hdfs-site.xml`、`yarn-site.xml`、`mapred-site.xml`
 - `sparkone.hadoop.conf.files` / `SPARKONE_HADOOP_CONF_FILES` -> 加载额外 Hadoop XML，支持逗号或系统 path separator 分隔
@@ -58,6 +78,12 @@ mvn exec:java \
 - `sparkone.hive.enabled` / `SPARKONE_HIVE_ENABLED` -> 启用 Spark Hive support
 - `sparkone.hive.conf.file` / `SPARKONE_HIVE_CONF_FILE` -> 加载指定 `hive-site.xml`
 - `sparkone.hive.conf.dir` / `HIVE_CONF_DIR` -> 从目录加载 `hive-site.xml`
+
+注意：
+
+- `spark.files` / `--files` 只是把普通文件分发到 driver/executor 工作目录，不会自动加入 classpath，不能用于加载 Excel 这类 DataSource provider。
+- `spark.jars` / `[jars] jars` 才用于 jar 分发；SparkOne 在嵌入式本地启动时会额外把本地 jar 注入当前 driver classloader，保证 Spark SQL 能发现 provider 短名。
+- `local[*]` 下 SparkOne 会默认把 `spark.driver.host` 和 `spark.driver.bindAddress` 设为 `127.0.0.1`。非 local master 不会自动设置；YARN/client 模式如需显式配置，`driverHost` 必须是 executor 可访问的地址。
 - `spark.kerberos.principal` -> Spark 原生 keytab 登录 principal，TOML 中对应 `[spark.kerberos] principal`
 - `spark.kerberos.keytab` -> Spark 原生 keytab 文件，TOML 中对应 `[spark.kerberos] keytab`
 - `java.security.krb5.conf` -> JVM Kerberos realm 配置文件，TOML 中对应 `[kerberos] krb5Conf`

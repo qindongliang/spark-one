@@ -7,6 +7,10 @@ logLevel = "info"
 
 [spark]
 master = "local[*]"
+# Local mode defaults to 127.0.0.1 automatically.
+# If running on YARN/client mode, set driverHost to an address reachable by executors.
+# driverHost = "127.0.0.1"
+# driverBindAddress = "127.0.0.1"
 
 [spark.kerberos]
 principal = "odep@HADOOP.COM"
@@ -26,6 +30,11 @@ confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
 krb5Conf = "/etc/krb5.conf"
 
 [jars]
+# Equivalent to spark-submit --packages / spark.jars.packages.
 # packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
-# files = "/path/to/provider.jar"
+# Equivalent to spark-submit --jars / spark.jars. Use this for dependency jars.
+# jars = "/path/to/provider.jar,/path/to/another-provider.jar"
+# Equivalent to spark-submit --files / spark.files. Use this for ordinary files, not dependency jars.
+# files = "/path/to/app.conf,/path/to/dict.txt"
+# Extra Maven repositories for packages.
 # repositories = "https://repo1.maven.org/maven2"
