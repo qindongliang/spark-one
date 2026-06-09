@@ -34,6 +34,8 @@ final class SparkOneCompiler(
       compileLoad(statement.loadStatement())
     } else if (statement.saveStatement() != null) {
       compileSave(statement.saveStatement())
+    } else if (statement.viewStatement() != null) {
+      compileView(script, statement.viewStatement())
     } else {
       originalText(script, statement).trim
     }
@@ -64,6 +66,12 @@ final class SparkOneCompiler(
       case ProviderSaveSource(value) => value
     }
     SparkOneSqlRender.renderInsertOverwriteDirectory(path, provider, options, table)
+  }
+
+  private def compileView(script: String, view: SparkOneDslParser.ViewStatementContext): String = {
+    val table = SparkOneSqlRender.requireIdentifier(view.table.getText, "VIEW target table")
+    val query = originalText(script, view.sqlStatement()).trim
+    SparkOneSqlRender.renderCreateTempViewAsQuery(table, query)
   }
 
   private def parseSource(source: SparkOneDslParser.SourceContext, statementType: String): (String, String) = {
@@ -112,6 +120,10 @@ private[sql] object SparkOneSqlRender {
 
   def renderCreateTempViewAsSelect(table: String, sourceTable: String): String = {
     s"CREATE OR REPLACE TEMPORARY VIEW $table AS SELECT * FROM $sourceTable"
+  }
+
+  def renderCreateTempViewAsQuery(table: String, query: String): String = {
+    s"CREATE OR REPLACE TEMPORARY VIEW $table AS $query"
   }
 
   def renderInsertOverwriteDirectory(

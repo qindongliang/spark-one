@@ -13,6 +13,7 @@ http://127.0.0.1:7070
 - 左侧编辑器：输入一段 SQL 脚本，可以包含多条语句，用分号 `;` 分隔。
 - `Compile`：只编译，不执行。适合检查 `load/save` 这类 SparkOne DSL 被转成了什么 Spark SQL。
 - `Run`：编译后按顺序执行每条 SQL，后面的语句可以使用前面创建的临时视图。
+- 选中执行：如果编辑器里有选中的 SQL，`Compile` 和 `Run` 只处理选中部分；没有选区时处理整篇脚本。
 - `Rows`：控制每条查询最多展示多少行，服务端会限制在 `1` 到 `1000`。
 - 右侧结果区：展示每条语句的编译后 SQL、耗时、schema 和结果数据；失败语句会显示错误信息。
 
@@ -42,14 +43,14 @@ show tables in default;
 同一次 `Run` 内，多条 SQL 会在同一个 `SparkSession` 中顺序执行。因此可以先创建临时视图，再查询它：
 
 ```sql
-create or replace temporary view users as
+view users as
 select * from values
   ('beijing', 1),
   ('shanghai', 2),
   ('beijing', 3)
 as users(city, id);
 
-create or replace temporary view city_stats as
+view city_stats as
 select city, count(*) as cnt
 from users
 group by city;
@@ -85,11 +86,58 @@ select * from city_stats order by cnt desc;
 
 `WITH` 是查询内的临时 CTE，只在当前这一条 SQL 内有效；`CREATE OR REPLACE TEMPORARY VIEW` 会把结果注册到当前 Spark 会话，后续语句可以继续引用。
 
+## View As 语法糖
+
+SparkOne 支持 `view name as select ...` 语法糖，用于把查询结果注册成当前 Spark 会话里的临时视图，避免反复书写 `CREATE OR REPLACE TEMPORARY VIEW`：
+
+```sql
+view city_stats as
+select city, count(*) as cnt
+from users
+group by city;
+
+select * from city_stats order by cnt desc;
+```
+
+它等价于：
+
+```sql
+CREATE OR REPLACE TEMPORARY VIEW city_stats AS
+select city, count(*) as cnt
+from users
+group by city;
+```
+
+注意：
+
+- SparkOne 不再支持尾部 `select ... as table` 语法糖，避免跟 Spark 原生列别名、表别名产生歧义。
+- `view myview as select current_date() as dt, current_timestamp() as ts` 会注册成 `myview`，其中 `as dt`、`as ts` 都是字段别名。
+- `select * from users as u` 这种 Spark 原生表别名会保持原样；`u` 只是本条查询内的别名，不会注册成临时视图。
+- 生成的目标统一使用 `CREATE OR REPLACE TEMPORARY VIEW`，表示只在当前 Spark 会话内有效。
+
+原生别名和 `view` 语法糖可以混用：
+
+```sql
+view joined_orders as
+select u.id, o.order_id
+from users as u
+join orders as o on u.id = o.user_id;
+```
+
+这里 `as u`、`as o` 是 Spark SQL 的表别名，`joined_orders` 才是 SparkOne 临时视图名。
+
 ## 使用 SparkOne Load DSL
 
 `load` 是 SparkOne 提供的薄 DSL，目的是让加载数据更接近 MLSQL 写法。推荐先点 `Compile` 看转译结果。
 
-CSV：
+路径说明：
+
+- 类似 `load csv` 使用 `/tmp/users.csv` 这种没有 scheme 的绝对路径时，会交给 Spark/Hadoop 按 `fs.defaultFS` 解析。
+- 如果已经加载 Hadoop 配置，且 `fs.defaultFS=hdfs://nameservice1`，`/tmp/users.csv` 默认就是 HDFS 上的 `hdfs://nameservice1/tmp/users.csv`。
+- 只有显式写 `file:///tmp/users.csv`，才表示 Spark driver 所在机器的本地文件。
+- `hdfs:///tmp/users.csv` 是显式 HDFS 路径，适合在文档或脚本里避免歧义。
+
+CSV（默认按 `fs.defaultFS` 解析；在测试环境里通常是 HDFS）：
 
 ```sql
 load csv.`/tmp/users.csv`
@@ -105,6 +153,16 @@ select * from users limit 20;
 CREATE OR REPLACE TEMPORARY VIEW users
 USING csv
 OPTIONS (path '/tmp/users.csv', header 'true', inferSchema 'true');
+```
+
+本地文件：
+
+```sql
+load csv.`file:///tmp/users.csv`
+where header="true" and inferSchema="true"
+as local_users;
+
+select * from local_users limit 20;
 ```
 
 Parquet：
@@ -145,7 +203,7 @@ SELECT * FROM default.some_table;
 保存成 Parquet：
 
 ```sql
-create or replace temporary view city_stats as
+view city_stats as
 select city, count(*) as cnt
 from users
 group by city;
@@ -172,7 +230,7 @@ save errorifexists city_stats as parquet.`/tmp/city_stats_parquet`;
 
 ## HDFS 和 Hive 测试
 
-如果使用 `conf/sparkone.toml` 配置了 Hadoop/Hive/Kerberos，页面里可以直接写 HDFS 路径或 Hive 表。
+如果使用 `conf/sparkone.toml` 配置了 Hadoop/Hive/Kerberos，页面里可以直接写 HDFS 路径或 Hive 表。裸路径 `/tmp/...` 会按 Hadoop `fs.defaultFS` 解析；为了让脚本更明确，也可以写成 `hdfs:///tmp/...`。
 
 HDFS CSV：
 

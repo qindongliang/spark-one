@@ -11,7 +11,7 @@ final class SparkOneCompilerTest {
     val script =
       """load parquet.`/tmp/users` as users;
         |
-        |create or replace temporary view city_stats as
+        |view city_stats as
         |select city, count(*) as cnt
         |from users
         |group by city;
@@ -24,7 +24,7 @@ final class SparkOneCompilerTest {
     assertEquals(
       Seq(
         "CREATE OR REPLACE TEMPORARY VIEW users USING parquet OPTIONS (path '/tmp/users')",
-        "create or replace temporary view city_stats as\nselect city, count(*) as cnt\nfrom users\ngroup by city",
+        "CREATE OR REPLACE TEMPORARY VIEW city_stats AS select city, count(*) as cnt\nfrom users\ngroup by city",
         "INSERT OVERWRITE DIRECTORY '/tmp/city_stats' USING parquet SELECT * FROM city_stats"),
       sql)
   }
@@ -103,6 +103,108 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesViewAsSelectSugarToTemporaryView(): Unit = {
+    val sql = compiler.compile(
+      """view result_table as
+        |select id as user_id, city
+        |from users
+        |where id > 0
+        |""".stripMargin).head.sql
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW result_table AS select id as user_id, city\nfrom users\nwhere id > 0",
+      sql)
+  }
+
+  @Test
+  def compilesViewAsWithSelectSugarToTemporaryView(): Unit = {
+    val sql = compiler.compile(
+      """view result_table as
+        |with city_stats as (
+        |  select city, count(*) as cnt
+        |  from users
+        |  group by city
+        |)
+        |select * from city_stats
+        |where cnt > 0
+        |""".stripMargin).head.sql
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW result_table AS " +
+        "with city_stats as (\n  select city, count(*) as cnt\n  from users\n  group by city\n)\nselect * from city_stats\nwhere cnt > 0",
+      sql)
+  }
+
+  @Test
+  def compilesViewAsProjectionToTemporaryView(): Unit = {
+    val sql = compiler.compile("view result_table as select 1 as id;").head.sql
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW result_table AS select 1 as id",
+      sql)
+  }
+
+  @Test
+  def compilesViewAsMultipleColumnsToTemporaryView(): Unit = {
+    val sql = compiler.compile("view myview as select current_date() as dt, current_timestamp() as ts;").head.sql
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW myview AS select current_date() as dt, current_timestamp() as ts",
+      sql)
+  }
+
+  @Test
+  def leavesFormerTailAsTableSugarUntouched(): Unit = {
+    val sql = compiler.compile("select 1 as id as result_table;").head.sql
+    assertEquals("select 1 as id as result_table", sql)
+  }
+
+  @Test
+  def validatingCompilerRejectsFormerTailAsTableSugar(): Unit = {
+    val validatingCompiler = new SparkOneCompiler(new SparkSqlValidator)
+
+    try {
+      validatingCompiler.compile("select 1 as id as result_table;")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("Spark SQL parser rejected statement"))
+    }
+  }
+
+  @Test
+  def leavesNativeSelectColumnAliasUntouched(): Unit = {
+    val sql = compiler.compile("select 1 as id;").head.sql
+    assertEquals("select 1 as id", sql)
+  }
+
+  @Test
+  def leavesNativeSelectTableAliasUntouched(): Unit = {
+    val sql = compiler.compile("select * from users as u;").head.sql
+    assertEquals("select * from users as u", sql)
+  }
+
+  @Test
+  def compilesViewAsWithNativeJoinAliases(): Unit = {
+    val sql = compiler.compile(
+      """view joined_orders as
+        |select u.id, o.order_id
+        |from users as u
+        |join orders as o on u.id = o.user_id
+        |where o.amount > 0
+        |""".stripMargin).head.sql
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW joined_orders AS " +
+        "select u.id, o.order_id\nfrom users as u\njoin orders as o on u.id = o.user_id\nwhere o.amount > 0",
+      sql)
+  }
+
+  @Test
+  def prefersNativeSparkSqlWhenFinalAsIsATableAlias(): Unit = {
+    val sql = compiler.compile("select * from users as u;").head.sql
+    assertEquals("select * from users as u", sql)
+  }
+
+  @Test
   def leavesPlainSparkSqlUntouched(): Unit = {
     val sql = compiler.compile("create table t (id int) using parquet;").head.sql
     assertEquals("create table t (id int) using parquet", sql)
@@ -134,7 +236,7 @@ final class SparkOneCompilerTest {
       """load parquet.`/tmp/users` as users;
         |load hive.`default.source_users` as source_users;
         |load excel.`/tmp/users.xlsx` where header="true" as excel_users;
-        |create or replace temporary view city_stats as select city, count(*) as cnt from users group by city;
+        |view city_stats as select city, count(*) as cnt from users group by city;
         |save overwrite city_stats as parquet.`/tmp/city_stats`;
         |""".stripMargin).map(_.sql)
 

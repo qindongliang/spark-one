@@ -7,6 +7,7 @@ script
 statement
     : loadStatement
     | saveStatement
+    | viewStatement
     | sqlStatement
     ;
 
@@ -16,6 +17,10 @@ loadStatement
 
 saveStatement
     : SAVE saveMode? table=identifier AS source optionClause?
+    ;
+
+viewStatement
+    : VIEW table=identifier AS sqlStatement
     ;
 
 source
@@ -60,6 +65,7 @@ sqlStatement
 sqlToken
     : LOAD
     | SAVE
+    | VIEW
     | AS
     | WHERE
     | OPTIONS
@@ -84,6 +90,7 @@ terminator
 
 LOAD: L O A D;
 SAVE: S A V E;
+VIEW: V I E W;
 AS: A S;
 WHERE: W H E R E;
 OPTIONS: O P T I O N S;

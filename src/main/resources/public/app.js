@@ -11,17 +11,18 @@ compileButton.addEventListener('click', () => submit('/api/compile'));
 runButton.addEventListener('click', () => submit('/api/run'));
 
 async function submit(path) {
+  const scope = getScriptScope();
   setBusy(true);
   try {
     const res = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ script: getScript(), limit: Number(limit.value || 200) })
+      body: JSON.stringify({ script: scope.script, limit: Number(limit.value || 200) })
     });
     const data = await res.json();
-    render(data, path);
+    render(data, path, scope);
   } catch (err) {
-    render({ success: false, error: String(err) }, path);
+    render({ success: false, error: String(err) }, path, scope);
   } finally {
     setBusy(false);
   }
@@ -30,8 +31,10 @@ async function submit(path) {
 function createEditor(textarea) {
   if (!window.CodeMirror) return null;
 
+  registerSparkOneSqlMode();
+
   return window.CodeMirror.fromTextArea(textarea, {
-    mode: 'text/x-sql',
+    mode: 'text/x-sparkone-sql',
     theme: 'idea',
     lineNumbers: true,
     lineWrapping: true,
@@ -42,8 +45,34 @@ function createEditor(textarea) {
   });
 }
 
-function getScript() {
-  return editor ? editor.getValue() : script.value;
+function registerSparkOneSqlMode() {
+  const sparkSqlMode = window.CodeMirror.resolveMode('text/x-sparksql');
+  const keywords = Object.assign({}, sparkSqlMode.keywords || {}, keywordSet('view load save'));
+
+  window.CodeMirror.defineMIME('text/x-sparkone-sql', Object.assign({}, sparkSqlMode, {
+    keywords
+  }));
+}
+
+function keywordSet(words) {
+  return words.split(/\s+/).filter(Boolean).reduce((result, word) => {
+    result[word.toLowerCase()] = true;
+    return result;
+  }, {});
+}
+
+function getScriptScope() {
+  if (editor) {
+    const selection = editor.getSelection().trim();
+    if (selection) return { script: selection, label: 'Selection' };
+    return { script: editor.getValue(), label: 'Script' };
+  }
+
+  const start = script.selectionStart || 0;
+  const end = script.selectionEnd || 0;
+  const selection = script.value.substring(start, end).trim();
+  if (selection) return { script: selection, label: 'Selection' };
+  return { script: script.value, label: 'Script' };
 }
 
 function setBusy(busy) {
@@ -52,9 +81,10 @@ function setBusy(busy) {
   statusText.textContent = busy ? 'Working' : 'Ready';
 }
 
-function render(data, path) {
+function render(data, path, scope) {
   output.innerHTML = '';
-  summary.textContent = data.success ? 'Success' : 'Failed';
+  const scopeLabel = scope ? ` · ${scope.label}` : '';
+  summary.textContent = (data.success ? 'Success' : 'Failed') + scopeLabel;
 
   if (!data.success && data.error) {
     output.appendChild(errorBlock(data.error));
