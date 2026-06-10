@@ -7,7 +7,7 @@ SparkOne compiler 的原则是：只解析 SparkOne 自己的薄 DSL，不解析
 ```sql
 load parquet.`/tmp/users` as users;
 load hive.`default.users` as hive_users;
-load excel.`/tmp/users.xlsx` where header="true" as users_excel;
+load excel.`/tmp/users.xlsx` options header="true" as users_excel;
 view city_stats as select city, count(*) as cnt from users group by city;
 save overwrite users as parquet.`/tmp/users_out`;
 ```

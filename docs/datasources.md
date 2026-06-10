@@ -20,6 +20,14 @@ libsvm
 
 - `hive` 是 catalog 表语义：`load hive.\`db.table\` as t` 编译成 `CREATE OR REPLACE TEMPORARY VIEW t AS SELECT * FROM db.table`。
 
+文件类 save：
+
+- 当前 MVP 的 `save overwrite table as provider.\`path\`` 仍编译成 Spark SQL `INSERT OVERWRITE DIRECTORY`。
+- 覆盖写由 SparkOne runtime 做统一保护，默认需要语句显式写 `sparkoneOverwrite="allow"`。
+- `sparkoneOverwrite`、`sparkoneOverwriteBackup` 是 SparkOne 控制参数，会从 provider options 中剥离，不传给底层数据源。
+- 目标路径存在时默认采用 `rename` 备份到 `/tmp/sparkone_back`；失败时会尝试恢复备份。
+- 测试案例和全局开关说明见 [safe-save.md](safe-save.md)。
+
 外部 provider：
 
 - `excel` 编译成 `USING excel`，provider jar 需要通过运行环境提供。

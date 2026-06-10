@@ -15,6 +15,9 @@ final class SparkOneRuntime(
     compiler: SparkOneCompiler = new SparkOneCompiler(new SparkSqlValidator))
   extends AutoCloseable {
 
+  private val saveOverwriteGuard = new SaveOverwriteGuard(spark)
+  private val nativeInsertOverwriteGuard = new NativeInsertOverwriteGuard
+
   def compile(script: String): Seq[String] = {
     compiler.compile(script).map(_.sql)
   }
@@ -23,8 +26,12 @@ final class SparkOneRuntime(
     val compiled = compiler.compile(script)
     val results = compiled.zipWithIndex.map { case (statement, offset) =>
       val started = System.nanoTime()
+      var preparation: Option[SaveOverwriteGuard.OverwritePreparation] = None
       try {
+        nativeInsertOverwriteGuard.validate(statement)
+        preparation = saveOverwriteGuard.prepare(statement.save)
         val dataFrame = spark.sql(statement.sql)
+        preparation.foreach(_.commit())
         val schema = dataFrame.schema.fields.map { field =>
           FieldInfo(field.name, field.dataType.simpleString, field.nullable)
         }
@@ -43,6 +50,7 @@ final class SparkOneRuntime(
           error = None)
       } catch {
         case e: Exception =>
+          preparation.foreach(_.rollback())
           StatementResult(
             index = offset + 1,
             source = statement.source,
@@ -77,6 +85,120 @@ final class SparkOneRuntime(
 
   private def errorMessage(error: Throwable): String = {
     Option(error.getMessage).filter(_.nonEmpty).getOrElse(error.getClass.getName)
+  }
+}
+
+private final class NativeInsertOverwriteGuard {
+  import NativeInsertOverwriteGuard._
+
+  private val logger = LoggerFactory.getLogger(getClass)
+
+  def validate(statement: ai.sparkone.sql.CompiledStatement): Unit = {
+    if (statement.save.isEmpty && containsInsertOverwrite(statement.sql) && !isNativeInsertOverwriteEnabled) {
+      logger.warn(
+        s"Safe Save: native INSERT OVERWRITE blocked, " +
+          s"allowNativeInsertOverwrite=false, sql=${summarizeSql(statement.sql)}")
+      throw new CompileException(
+        "Native Spark SQL INSERT OVERWRITE is disabled by SparkOne Safe Save policy. " +
+          "Use SparkOne DSL `save overwrite ...` so overwrite protection can run, " +
+          "or set [save] allowNativeInsertOverwrite = true in TOML for compatibility.")
+    }
+  }
+
+  private def isNativeInsertOverwriteEnabled: Boolean = {
+    sys.props.get(AllowNativeInsertOverwriteKey)
+      .exists(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
+  }
+
+  private def summarizeSql(sql: String): String = {
+    val normalized = sql.replaceAll("\\s+", " ").trim
+    if (normalized.length <= 240) normalized else normalized.take(237) + "..."
+  }
+}
+
+private object NativeInsertOverwriteGuard {
+  private val AllowNativeInsertOverwriteKey = "sparkone.save.native.insertOverwrite.enabled"
+
+  private[runtime] def containsInsertOverwrite(sql: String): Boolean = {
+    val tokens = sqlKeywordTokens(sql).map(_.toLowerCase)
+    tokens.sliding(2).exists {
+      case Seq("insert", "overwrite") => true
+      case _ => false
+    }
+  }
+
+  private def sqlKeywordTokens(sql: String): Seq[String] = {
+    val tokens = scala.collection.mutable.ArrayBuffer.empty[String]
+    var index = 0
+
+    while (index < sql.length) {
+      val current = sql.charAt(index)
+      if (current == '-' && hasNext(sql, index, '-')) {
+        index = skipLineComment(sql, index + 2)
+      } else if (current == '/' && hasNext(sql, index, '*')) {
+        index = skipBlockComment(sql, index + 2)
+      } else if (current == '\'' || current == '"') {
+        index = skipQuotedString(sql, index, current)
+      } else if (current == '`') {
+        index = skipBackquotedIdentifier(sql, index)
+      } else if (current.isLetter || current == '_') {
+        val start = index
+        index += 1
+        while (index < sql.length && (sql.charAt(index).isLetterOrDigit || sql.charAt(index) == '_')) {
+          index += 1
+        }
+        tokens += sql.substring(start, index)
+      } else {
+        index += 1
+      }
+    }
+
+    tokens.toSeq
+  }
+
+  private def hasNext(sql: String, index: Int, expected: Char): Boolean = {
+    index + 1 < sql.length && sql.charAt(index + 1) == expected
+  }
+
+  private def skipLineComment(sql: String, index: Int): Int = {
+    val end = sql.indexWhere(ch => ch == '\n' || ch == '\r', index)
+    if (end < 0) sql.length else end + 1
+  }
+
+  private def skipBlockComment(sql: String, index: Int): Int = {
+    val end = sql.indexOf("*/", index)
+    if (end < 0) sql.length else end + 2
+  }
+
+  private def skipQuotedString(sql: String, index: Int, quote: Char): Int = {
+    var cursor = index + 1
+    while (cursor < sql.length) {
+      val current = sql.charAt(cursor)
+      if (current == '\\') {
+        cursor += 2
+      } else if (current == quote) {
+        return cursor + 1
+      } else {
+        cursor += 1
+      }
+    }
+    sql.length
+  }
+
+  private def skipBackquotedIdentifier(sql: String, index: Int): Int = {
+    var cursor = index + 1
+    while (cursor < sql.length) {
+      if (sql.charAt(cursor) == '`') {
+        if (hasNext(sql, cursor, '`')) {
+          cursor += 2
+        } else {
+          return cursor + 1
+        }
+      } else {
+        cursor += 1
+      }
+    }
+    sql.length
   }
 }
 

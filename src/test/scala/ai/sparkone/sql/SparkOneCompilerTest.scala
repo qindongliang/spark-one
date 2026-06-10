@@ -33,7 +33,7 @@ final class SparkOneCompilerTest {
   def supportsLoadOptionsWithAndAndSpacedEquals(): Unit = {
     val sql = compiler.compile(
       """load jdbc.`mysql1.user`
-        |where url = "jdbc:mysql://host/db"
+        |options url = "jdbc:mysql://host/db"
         |and dbtable='user'
         |as users;
         |""".stripMargin).head.sql
@@ -56,7 +56,7 @@ final class SparkOneCompilerTest {
   @Test
   def rejectsHiveLoadOptionsUntilCatalogOptionsHaveASparkSqlMapping(): Unit = {
     try {
-      compiler.compile("load hive.`default.users` where storage='delta' as users;")
+      compiler.compile("load hive.`default.users` options storage='delta' as users;")
       fail("Expected CompileException")
     } catch {
       case e: CompileException =>
@@ -65,10 +65,32 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def rejectsWhereAsDslOptionClause(): Unit = {
+    try {
+      compiler.compile("save overwrite users as parquet.`/tmp/users` where sparkoneOverwrite='allow';")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("OPTIONS"))
+    }
+  }
+
+  @Test
+  def rejectsWhereAsLoadOptionClause(): Unit = {
+    try {
+      compiler.compile("load csv.`/tmp/users.csv` where header='true' as users;")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("OPTIONS"))
+    }
+  }
+
+  @Test
   def compilesExcelLoadWithProviderAlias(): Unit = {
     val sql = compiler.compile(
       """load excel.`/tmp/users.xlsx`
-        |where header="true"
+        |options header="true"
         |and dataAddress="'Sheet1'!A1"
         |as users;
         |""".stripMargin).head.sql
@@ -81,7 +103,7 @@ final class SparkOneCompilerTest {
 
   @Test
   def compilesExcelSaveWithProviderAlias(): Unit = {
-    val sql = compiler.compile("save overwrite users as excel.`/tmp/users.xlsx` where header=true;").head.sql
+    val sql = compiler.compile("save overwrite users as excel.`/tmp/users.xlsx` options header=true;").head.sql
 
     assertEquals(
       "INSERT OVERWRITE DIRECTORY '/tmp/users.xlsx' USING excel OPTIONS " +
@@ -102,7 +124,7 @@ final class SparkOneCompilerTest {
   def compilesSaveOverwriteWithOptions(): Unit = {
     val sql = compiler.compile(
       """save overwrite users as csv.`/tmp/users_csv`
-        |where header="true"
+        |options header="true"
         |and delimiter=","
         |and compression="gzip";
         |""".stripMargin).head.sql
@@ -111,6 +133,25 @@ final class SparkOneCompilerTest {
       "INSERT OVERWRITE DIRECTORY '/tmp/users_csv' USING csv OPTIONS " +
         "(header 'true', delimiter ',', compression 'gzip') SELECT * FROM users",
       sql)
+  }
+
+  @Test
+  def stripsSparkOneSaveControlOptionsFromProviderOptions(): Unit = {
+    val statement = compiler.compile(
+      """save overwrite users as csv.`/tmp/users_csv`
+        |options header="true"
+        |and sparkoneoverwrite="allow"
+        |and sparkoneoverwritebackup="trash"
+        |and sparkoneoverwritebackuppath="/tmp/sparkone_back";
+        |""".stripMargin).head
+
+    assertEquals(
+      "INSERT OVERWRITE DIRECTORY '/tmp/users_csv' USING csv OPTIONS " +
+        "(header 'true') SELECT * FROM users",
+      statement.sql)
+    assertEquals(Some("allow"), statement.save.flatMap(_.options.get("sparkoneoverwrite")))
+    assertEquals(Some("trash"), statement.save.flatMap(_.options.get("sparkoneoverwritebackup")))
+    assertEquals(Some("/tmp/sparkone_back"), statement.save.flatMap(_.options.get("sparkoneoverwritebackuppath")))
   }
 
   @Test
@@ -297,7 +338,7 @@ final class SparkOneCompilerTest {
     val sql = validatingCompiler.compile(
       """load parquet.`/tmp/users` as users;
         |load hive.`default.source_users` as source_users;
-        |load excel.`/tmp/users.xlsx` where header="true" as excel_users;
+        |load excel.`/tmp/users.xlsx` options header="true" as excel_users;
         |view city_stats as select city, count(*) as cnt from users group by city;
         |save overwrite city_stats as parquet.`/tmp/city_stats`;
         |""".stripMargin).map(_.sql)

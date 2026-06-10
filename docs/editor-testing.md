@@ -142,7 +142,7 @@ CSV（默认按 `fs.defaultFS` 解析；在测试环境里通常是 HDFS）：
 
 ```sql
 load csv.`/tmp/users.csv`
-where header="true" and inferSchema="true"
+options header="true" and inferSchema="true"
 as users;
 
 select * from users limit 20;
@@ -160,7 +160,7 @@ OPTIONS (path '/tmp/users.csv', header 'true', inferSchema 'true');
 
 ```sql
 load csv.`file:///tmp/users.csv`
-where header="true" and inferSchema="true"
+options header="true" and inferSchema="true"
 as local_users;
 
 select * from local_users limit 20;
@@ -231,7 +231,7 @@ select * from local_events limit 20;
 
 ```sql
 load json.`/tmp/events_pretty.json`
-where multiLine="true"
+options multiLine="true"
 as pretty_events;
 
 select * from pretty_events limit 20;
@@ -241,7 +241,7 @@ select * from pretty_events limit 20;
 
 ```sql
 load json.`/tmp/events.json`
-where inferSchema="true"
+options inferSchema="true"
 as inferred_events;
 
 select event_type, count(*) as cnt
@@ -254,7 +254,7 @@ order by cnt desc;
 
 ```sql
 load json.`/tmp/events.json`
-where schema="event_id STRING, event_type STRING, amount DOUBLE, created_at TIMESTAMP"
+options schema="event_id STRING, event_type STRING, amount DOUBLE, created_at TIMESTAMP"
 and mode="PERMISSIVE"
 and timestampFormat="yyyy-MM-dd HH:mm:ss"
 as typed_events;
@@ -283,7 +283,7 @@ MySQL / JDBC：
 
 ```sql
 load jdbc.`mysql_users`
-where url="jdbc:mysql://192.168.1.179:3306/Dworks"
+options url="jdbc:mysql://192.168.1.179:3306/Dworks"
 and dbtable="cloud_host_info"
 and user="root"
 and password="******"
@@ -319,6 +319,67 @@ OPTIONS (
 
 当前 MVP 只支持 `save overwrite`。它会转成 Spark SQL 的 `INSERT OVERWRITE DIRECTORY`。
 
+为了避免路径写错时覆盖已有目录，默认 `conf/sparkone.toml` 使用：
+
+```toml
+[save]
+overwritePolicy = "requireExplicit"
+overwriteBackup = "rename"
+overwriteBackupPath = "/tmp/sparkone_back"
+allowNativeInsertOverwrite = false
+# 可选：全局保护危险 overwrite 边界路径，命中后不能被 SQL 覆盖。
+# 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
+# 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
+# overwriteProtectedPaths = [
+#   "/",
+#   "/user",
+#   "/tmp",
+# ]
+```
+
+因此覆盖写需要在当前 `save` 语句里显式确认：
+
+```sql
+save overwrite city_stats as parquet.`/tmp/city_stats_parquet`
+options sparkoneOverwrite="allow";
+```
+
+如果目标路径已经存在，`rename` 会先把原目录移动到 `/tmp/sparkone_back` 目录下；如果后续写入失败，SparkOne 会尝试把备份恢复回原路径。
+
+原生 Spark SQL `INSERT OVERWRITE` 默认会被拦截，因为它不会携带 SparkOne save metadata，无法进入 Safe Save 备份流程。需要兼容历史脚本时，才把 `allowNativeInsertOverwrite` 改为 `true`。
+
+测试原生 `INSERT OVERWRITE` 拦截是否生效：
+
+```sql
+insert overwrite directory '/tmp/sparkone_native_insert_overwrite_blocked'
+using parquet
+select 1 as id;
+```
+
+预期：执行失败，错误信息包含 `Native Spark SQL INSERT OVERWRITE is disabled`。目标目录不会被写出。
+
+推荐改成 SparkOne DSL：
+
+```sql
+view sparkone_save_replacement as
+select 1 as id;
+
+save overwrite sparkone_save_replacement
+as parquet.`/tmp/sparkone_native_insert_overwrite_blocked`
+options sparkoneOverwrite="allow";
+```
+
+如果临时需要验证兼容模式，先在 `conf/sparkone.toml` 中配置并重启服务：
+
+```toml
+[save]
+allowNativeInsertOverwrite = true
+```
+
+然后再次执行原生 `INSERT OVERWRITE`，预期可以成功。但此时不会走 SparkOne Safe Save 的备份和保护路径逻辑。
+
+如果配置了 `overwriteProtectedPaths` 且包含 `/tmp`，只会拦截覆盖 `/tmp` 本身；下面这些 `/tmp/...` 子目录示例仍可以作为测试路径。
+
 保存成 Parquet：
 
 ```sql
@@ -327,15 +388,33 @@ select city, count(*) as cnt
 from users
 group by city;
 
-save overwrite city_stats as parquet.`/tmp/city_stats_parquet`;
+save overwrite city_stats as parquet.`/tmp/city_stats_parquet`
+options sparkoneOverwrite="allow";
 ```
 
 保存成 CSV：
 
 ```sql
 save overwrite city_stats as csv.`/tmp/city_stats_csv`
-where header="true";
+options header="true"
+and sparkoneOverwrite="allow";
 ```
+
+单条语句可覆盖全局备份策略：
+
+```sql
+save overwrite city_stats as json.`/tmp/city_stats_json`
+options sparkoneOverwrite="allow"
+and sparkoneOverwriteBackup="trash";
+```
+
+`sparkoneOverwriteBackup` 支持：
+
+- `rename`：默认值，先重命名备份，写失败时尝试恢复。
+- `trash`：写入前移动到 Hadoop Trash，不做自动恢复。
+- `none`：不备份，直接交给 Spark 覆盖，生产环境不建议使用。
+
+更多 Safe Save 测试案例见 [safe-save.md](safe-save.md)。
 
 当前不支持：
 
@@ -355,7 +434,7 @@ HDFS CSV：
 
 ```sql
 load csv.`hdfs:///tmp/users.csv`
-where header="true" and inferSchema="true"
+options header="true" and inferSchema="true"
 as users;
 
 select * from users limit 20;
@@ -392,7 +471,7 @@ packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
 
 ```sql
 load excel.`file:///Users/qindongliang/Downloads/jupyter_tasks.xlsx`
-where header="true" and inferSchema="true"
+options header="true" and inferSchema="true"
 as users_excel;
 
 select * from users_excel limit 20;
@@ -429,7 +508,7 @@ driverBindAddress = "127.0.0.1"
 
 `load hive...` 带 options 报错：
 
-- 当前 `hive` 是 catalog 表语义，不支持 `where/options` 参数。
+- 当前 `hive` 是 catalog 表语义，不支持 `options` 参数。
 
 临时视图查不到：
 

@@ -9,12 +9,13 @@ final class SparkOneCompiler(
     sqlValidator: SqlValidator = SqlValidator.Noop,
     dataSourceResolver: DataSourceResolver = new DataSourceResolver()) {
   def compile(script: String): Seq[CompiledStatement] = {
+    rejectLegacyDslWhere(script)
     val tree = parse(script)
     tree.statement().asScala.map { statement =>
       val source = originalText(script, statement).trim
-      val sql = compileStatement(script, statement)
-      sqlValidator.validate(sql)
-      CompiledStatement(source, sql)
+      val compiled = compileStatement(script, statement)
+      sqlValidator.validate(compiled.sql)
+      CompiledStatement(source, compiled.sql, compiled.save)
     }
   }
 
@@ -29,15 +30,23 @@ final class SparkOneCompiler(
     parser.script()
   }
 
-  private def compileStatement(script: String, statement: SparkOneDslParser.StatementContext): String = {
+  private def compileStatement(script: String, statement: SparkOneDslParser.StatementContext): CompileResult = {
     if (statement.loadStatement() != null) {
-      compileLoad(statement.loadStatement())
+      CompileResult(compileLoad(statement.loadStatement()))
     } else if (statement.saveStatement() != null) {
       compileSave(statement.saveStatement())
     } else if (statement.viewStatement() != null) {
-      compileView(script, statement.viewStatement())
+      CompileResult(compileView(script, statement.viewStatement()))
     } else {
-      originalText(script, statement).trim
+      val sql = originalText(script, statement).trim
+      CompileResult(sql)
+    }
+  }
+
+  private def rejectLegacyDslWhere(sql: String): Unit = {
+    if (SparkOneCompiler.LegacyLoadWherePattern.findFirstIn(sql).nonEmpty ||
+        SparkOneCompiler.LegacySaveWherePattern.findFirstIn(sql).nonEmpty) {
+      throw new CompileException("SparkOne DSL options must use OPTIONS, not WHERE.")
     }
   }
 
@@ -53,7 +62,7 @@ final class SparkOneCompiler(
     }
   }
 
-  private def compileSave(save: SparkOneDslParser.SaveStatementContext): String = {
+  private def compileSave(save: SparkOneDslParser.SaveStatementContext): CompileResult = {
     val mode = Option(save.saveMode()).map(_.getText.toLowerCase).getOrElse("errorifexists")
     if (mode != "overwrite") {
       throw new CompileException(s"SAVE mode '$mode' is not supported by the MVP Spark SQL compiler yet")
@@ -62,10 +71,13 @@ final class SparkOneCompiler(
     val table = SparkOneSqlRender.requireIdentifier(save.table.getText, "SAVE source table")
     val (format, path) = parseSource(save.source(), "SAVE")
     val options = parseOptions(save.optionClause())
+    val (runtimeOptions, providerOptions) = SaveControlOptions.partition(options)
     val provider = dataSourceResolver.resolveSave(format) match {
       case ProviderSaveSource(value) => value
     }
-    SparkOneSqlRender.renderInsertOverwriteDirectory(path, provider, options, table)
+    CompileResult(
+      SparkOneSqlRender.renderInsertOverwriteDirectory(path, provider, providerOptions, table),
+      Some(SaveStatementMetadata(mode, table, format, path, runtimeOptions.toMap)))
   }
 
   private def compileView(script: String, view: SparkOneDslParser.ViewStatementContext): String = {
@@ -106,6 +118,31 @@ final class SparkOneCompiler(
     val start = context.getStart.getStartIndex
     val stop = context.getStop.getStopIndex
     if (start < 0 || stop < start) "" else script.substring(start, stop + 1)
+  }
+}
+
+private final case class CompileResult(sql: String, save: Option[SaveStatementMetadata] = None)
+
+private object SparkOneCompiler {
+  private val DslSource = """[A-Za-z_][A-Za-z0-9_]*\s*\.\s*`(?:``|[^`])*`"""
+
+  private val LegacyLoadWherePattern =
+    ("""(?is)(?:^|;)\s*load\s+""" + DslSource + """\s+where\b""").r
+
+  private val LegacySaveWherePattern =
+    ("""(?is)(?:^|;)\s*save\s+(?:(?:overwrite|append|errorifexists|ignore)\s+)?""" +
+      """[A-Za-z_][A-Za-z0-9_]*\s+as\s+""" + DslSource + """\s+where\b""").r
+}
+
+object SaveControlOptions {
+  val Overwrite: String = "sparkoneOverwrite"
+  val OverwriteBackup: String = "sparkoneOverwriteBackup"
+  val OverwriteBackupPath: String = "sparkoneOverwriteBackupPath"
+
+  private val Names = Set(Overwrite, OverwriteBackup, OverwriteBackupPath).map(_.toLowerCase)
+
+  def partition(options: Seq[(String, String)]): (Seq[(String, String)], Seq[(String, String)]) = {
+    options.partition { case (key, _) => Names.contains(key.toLowerCase) }
   }
 }
 

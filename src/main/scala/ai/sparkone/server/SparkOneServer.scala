@@ -232,6 +232,12 @@ private object ServerOptions {
             properties += "spark.kerberos.keytab" -> requireValue(arg)
           case "--krb5-conf" =>
             properties += "java.security.krb5.conf" -> requireValue(arg)
+          case "--save-overwrite-policy" =>
+            properties += "sparkone.save.overwrite.policy" -> requireValue(arg)
+          case "--save-overwrite-backup" =>
+            properties += "sparkone.save.overwrite.backup" -> requireValue(arg)
+          case "--save-overwrite-backup-path" =>
+            properties += "sparkone.save.overwrite.backup.path" -> requireValue(arg)
           case value if value.forall(_.isDigit) =>
             properties += "sparkone.port" -> value
             port = Some(value.toInt)
@@ -256,6 +262,9 @@ private object ServerOptions {
         case "--principal" => properties += "spark.kerberos.principal" -> value
         case "--keytab" => properties += "spark.kerberos.keytab" -> value
         case "--krb5-conf" => properties += "java.security.krb5.conf" -> value
+        case "--save-overwrite-policy" => properties += "sparkone.save.overwrite.policy" -> value
+        case "--save-overwrite-backup" => properties += "sparkone.save.overwrite.backup" -> value
+        case "--save-overwrite-backup-path" => properties += "sparkone.save.overwrite.backup.path" -> value
         case other => throw new IllegalArgumentException(s"Unknown server argument: $other")
       }
     }
@@ -320,6 +329,7 @@ private final case class SparkOneTomlConfig(
     hadoop: Option[HadoopTomlSection] = None,
     hive: Option[HiveTomlSection] = None,
     kerberos: Option[KerberosTomlSection] = None,
+    save: Option[SaveTomlSection] = None,
     jars: Option[JarsTomlSection] = None) {
 
   def toProperties: Map[String, String] = {
@@ -329,6 +339,7 @@ private final case class SparkOneTomlConfig(
       hadoop.toSeq.flatMap(_.toProperties),
       hive.toSeq.flatMap(_.toProperties),
       kerberos.toSeq.flatMap(_.toProperties),
+      save.toSeq.flatMap(_.toProperties),
       jars.toSeq.flatMap(_.toProperties)).flatten.toMap
   }
 }
@@ -367,6 +378,25 @@ private final case class SparkKerberosTomlSection(
     Seq(
       principal.map("spark.kerberos.principal" -> _),
       keytab.map("spark.kerberos.keytab" -> _)).flatten.toMap
+  }
+}
+
+private final case class SaveTomlSection(
+    overwritePolicy: Option[String] = None,
+    overwriteBackup: Option[String] = None,
+    overwriteBackupPath: Option[String] = None,
+    overwriteProtectedPaths: Option[List[String]] = None,
+    allowNativeInsertOverwrite: Option[Boolean] = None) {
+  def toProperties: Map[String, String] = {
+    Seq(
+      overwritePolicy.map("sparkone.save.overwrite.policy" -> _),
+      overwriteBackup.map("sparkone.save.overwrite.backup" -> _),
+      overwriteBackupPath.map("sparkone.save.overwrite.backup.path" -> _),
+      overwriteProtectedPaths
+        .map(paths => paths.map(_.trim).filter(_.nonEmpty).mkString("\n"))
+        .filter(_.nonEmpty)
+        .map("sparkone.save.overwrite.protected.paths" -> _),
+      allowNativeInsertOverwrite.map(value => "sparkone.save.native.insertOverwrite.enabled" -> value.toString)).flatten.toMap
   }
 }
 

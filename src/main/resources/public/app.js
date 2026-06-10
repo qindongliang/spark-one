@@ -60,7 +60,7 @@ function createEditor(textarea) {
 
 function registerSparkOneSqlMode() {
   const sparkSqlMode = window.CodeMirror.resolveMode('text/x-sparksql');
-  const keywords = Object.assign({}, sparkSqlMode.keywords || {}, keywordSet('view load save'));
+  const keywords = Object.assign({}, sparkSqlMode.keywords || {}, keywordSet('view load save options'));
 
   window.CodeMirror.defineMIME('text/x-sparkone-sql', Object.assign({}, sparkSqlMode, {
     keywords

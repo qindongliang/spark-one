@@ -157,6 +157,20 @@ confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
 
 [kerberos]
 krb5Conf = "/etc/krb5.conf"
+
+[save]
+overwritePolicy = "requireExplicit"
+overwriteBackup = "rename"
+overwriteBackupPath = "/tmp/sparkone_back"
+allowNativeInsertOverwrite = false
+# 生产环境可打开全局保护 overwrite 的高危边界目录，命中后不能被 SQL 或 SET 覆盖。
+# 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
+# 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
+# overwriteProtectedPaths = [
+#   "/",
+#   "/user",
+#   "/tmp",
+# ]
 ```
 
 也可以不使用 TOML，直接传程序参数：
@@ -180,6 +194,41 @@ kinit -kt /Users/qindongliang/bigdata/odep.keytab odep@HADOOP.COM
 ```
 
 更多 HDFS/Hive 说明见 [hadoop-hive.md](hadoop-hive.md)。
+
+## Save Overwrite Safety
+
+文件类 `save overwrite` 默认要求语句显式确认：
+
+```sql
+save overwrite result as parquet.`/tmp/result`
+options sparkoneOverwrite="allow";
+```
+
+全局策略在 TOML 的 `[save]` 中配置：
+
+- `overwritePolicy = "requireExplicit"`：默认值，每条 overwrite 都要写 `sparkoneOverwrite="allow"`。
+- `overwritePolicy = "allow"`：全局允许覆盖。
+- `overwritePolicy = "deny"`：全局拒绝覆盖；单条语句仍可用 `sparkoneOverwrite="allow"` 作为高优先级覆盖。
+- `overwriteBackup = "rename"`：默认值，目标存在时先移动到 `overwriteBackupPath`。
+- `overwriteBackup = "trash"`：目标存在时先移动到 Hadoop Trash。
+- `overwriteBackup = "none"`：不做备份，直接覆盖。
+- `overwriteBackupPath = "/tmp/sparkone_back"`：`rename` 备份根目录；不带 scheme 时按目标文件系统解析。
+- `allowNativeInsertOverwrite = false`：默认禁止原生 Spark SQL `INSERT OVERWRITE`，避免绕过 SparkOne Safe Save。
+- `overwriteProtectedPaths = [...]`：全局保护 overwrite 边界路径，一行一个；支持 `/*`、`/*/*` 这类整段通配；命中后不允许被单条 SQL 或 `SET` 覆盖。
+
+单条 SQL 里的 `sparkoneOverwrite` 和 `sparkoneOverwriteBackup` 只作为 SparkOne 运行时控制参数，不会传给底层 Spark provider。
+
+优先级从高到低是：单条 `save` 参数、当前 SparkSession 的 `SET sparkone.save...`、TOML/启动参数默认值。例如临时放开当前页面会话：
+
+```sql
+set sparkone.save.overwrite.policy=allow;
+set sparkone.save.overwrite.backup=rename;
+set sparkone.save.overwrite.backup.path=/tmp/sparkone_back;
+```
+
+`overwriteProtectedPaths` 不参与上面的优先级，它是启动级硬拦截配置。配置 `/public/odep/user` 后，`/public/odep/user` 本身和它的上级目录会被拦截，`/public/odep/user/userA` 这类具体业务目录可以写。
+
+完整测试案例见 [safe-save.md](safe-save.md)。
 
 ## Smoke Test
 

@@ -1,16 +1,16 @@
-# Copy this file to conf/sparkone.toml for local IDEA or CLI runs.
+# 将本文件复制为 conf/sparkone.toml，供本地 IDEA 或 CLI 启动使用。
 
 [server]
 host = "127.0.0.1"
 port = 7070
 logLevel = "info"
-# Run results hide compiled SQL by default. Set true to show translated SQL per statement.
+# Run 默认隐藏转译后的 SQL；调试时可设为 true，在页面展示每条语句的转译结果。
 showCompiledSql = false
 
 [spark]
 master = "local[*]"
-# Local mode defaults to 127.0.0.1 automatically.
-# If running on YARN/client mode, set driverHost to an address reachable by executors.
+# local 模式会自动使用 127.0.0.1。
+# 如果使用 YARN/client 模式，driverHost 应配置为 executor 可访问的地址。
 # driverHost = "127.0.0.1"
 # driverBindAddress = "127.0.0.1"
 
@@ -31,12 +31,35 @@ confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
 [kerberos]
 krb5Conf = "/etc/krb5.conf"
 
+[save]
+# 文件覆盖写风险较高，默认要求每条 save 语句显式确认，例如：
+# options sparkoneOverwrite="allow"
+overwritePolicy = "requireExplicit"
+# 目标已存在时，先按备份策略处理旧目录；支持：rename、trash、none。
+overwriteBackup = "rename"
+# rename 备份根目录。不带 scheme 的路径会按 save 目标所在文件系统解析。
+overwriteBackupPath = "/tmp/sparkone_back"
+# 默认禁止原生 Spark SQL 的 INSERT OVERWRITE，避免绕过 SparkOne Safe Save。
+# 历史脚本确实需要兼容时，再显式改为 true。
+allowNativeInsertOverwrite = false
+# 全局保护 overwrite 边界路径。命中后不允许被 SQL 参数或 SET 覆盖。
+# 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
+# 例如配置 "/public/odep/user" 后，"/public/odep/user" 会被拦截，
+# "/public/odep/user/userA" 可以写。
+# 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
+# 不带 scheme 的路径会按 save 目标所在文件系统解析。
+# overwriteProtectedPaths = [
+#   "/",
+#   "/user",
+#   "/tmp",
+# ]
+
 [jars]
-# Equivalent to spark-submit --packages / spark.jars.packages.
+# 等价于 spark-submit --packages / spark.jars.packages。
 # packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
-# Equivalent to spark-submit --jars / spark.jars. Use this for dependency jars.
+# 等价于 spark-submit --jars / spark.jars，用于依赖类 JAR。
 # jars = "/path/to/provider.jar,/path/to/another-provider.jar"
-# Equivalent to spark-submit --files / spark.files. Use this for ordinary files, not dependency jars.
+# 等价于 spark-submit --files / spark.files，用于普通文件，不用于依赖类 JAR。
 # files = "/path/to/app.conf,/path/to/dict.txt"
-# Extra Maven repositories for packages.
+# packages 解析时使用的额外 Maven 仓库。
 # repositories = "https://repo1.maven.org/maven2"

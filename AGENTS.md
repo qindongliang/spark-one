@@ -9,6 +9,7 @@
 - 依赖与环境：[docs/dependencies.md](docs/dependencies.md)
 - 数据源扩展：[docs/datasources.md](docs/datasources.md)
 - HDFS 与 Hive 对接：[docs/hadoop-hive.md](docs/hadoop-hive.md)
+- Safe Save 保护：[docs/safe-save.md](docs/safe-save.md)
 - 应用启动方法：[docs/startup.md](docs/startup.md)
 - SQL 编辑器测试：[docs/editor-testing.md](docs/editor-testing.md)
 - 运行与部署：[docs/runtime.md](docs/runtime.md)
@@ -32,3 +33,10 @@
 - `view name as select ...` 是注册临时视图的主语法糖；不支持尾部 `select ... as table`，避免跟 Spark 原生别名冲突。
 - DataFrame API 只作为少数 Spark SQL 难表达能力的 runtime adapter，不作为 MVP 主路径。
 - 不复刻 MLSQL 的重运行时；吸收其 SQL 体验，但保持 compiler/runtime 边界轻。
+
+提交与 PR：
+
+- 提交信息默认使用中文类型前缀：`功能：`、`修复：`、`重构：`、`更新：`、`清理：`。
+- 每次提交聚焦一个逻辑变更，例如 DSL/compiler、runtime、前端、配置、文档或测试。
+- commit 正文按主题分段说明改动原因和影响，不写验证命令；验证信息放最终回复或 PR 描述。
+- 详细规范见 [docs/commits.md](docs/commits.md)。

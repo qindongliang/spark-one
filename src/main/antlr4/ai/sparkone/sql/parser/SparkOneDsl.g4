@@ -28,7 +28,7 @@ source
     ;
 
 optionClause
-    : (WHERE | OPTIONS) option (AND option)*
+    : OPTIONS option (AND option)*
     ;
 
 option
