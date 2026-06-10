@@ -52,6 +52,7 @@ object SparkOneServer {
         })
       }
     }).start(host, port)
+    app.get("/api/config", (ctx: Context) => handleConfig(ctx))
     app.post("/api/compile", (ctx: Context) => handleCompile(ctx))
     app.post("/api/run", (ctx: Context) => handleRun(ctx))
 
@@ -60,6 +61,11 @@ object SparkOneServer {
     }
 
     logger.info(s"SparkOne SQL is listening on http://$host:$port")
+  }
+
+  private def handleConfig(ctx: Context): Unit = {
+    json(ctx, Map(
+      "showCompiledSql" -> enabled("sparkone.ui.showCompiledSql", defaultValue = false)))
   }
 
   private def handleCompile(ctx: Context): Unit = {
@@ -122,6 +128,12 @@ object SparkOneServer {
     if (!sys.props.contains(key)) {
       sys.props.put(key, value)
     }
+  }
+
+  private def enabled(key: String, defaultValue: Boolean): Boolean = {
+    sys.props.get(key)
+      .map(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
+      .getOrElse(defaultValue)
   }
 }
 
@@ -324,12 +336,14 @@ private final case class SparkOneTomlConfig(
 private final case class ServerTomlSection(
     host: Option[String] = None,
     port: Option[Int] = None,
-    logLevel: Option[String] = None) {
+    logLevel: Option[String] = None,
+    showCompiledSql: Option[Boolean] = None) {
   def toProperties: Map[String, String] = {
     Seq(
       host.map("sparkone.host" -> _),
       port.map(value => "sparkone.port" -> value.toString),
-      logLevel.map("sparkone.logLevel" -> _)).flatten.toMap
+      logLevel.map("sparkone.logLevel" -> _),
+      showCompiledSql.map(value => "sparkone.ui.showCompiledSql" -> value.toString)).flatten.toMap
   }
 }
 

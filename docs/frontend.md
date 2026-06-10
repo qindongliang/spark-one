@@ -22,7 +22,8 @@
 - `Compile` 调 `/api/compile`。
 - `Run` 调 `/api/run`。
 - 有选区时 `Compile` / `Run` 只提交选中的 SQL；没有选区时提交整篇脚本。
-- 展示编译后的 SQL。
+- `Compile` 展示编译后的 SQL。
+- `Run` 默认不展示每条 statement 的编译后 SQL；需要展示时配置 `[server] showCompiledSql = true`。
 - 展示执行结果 schema 和 rows，宽表在结果区横向滚动。
 
 为什么暂不上 React：

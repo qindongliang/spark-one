@@ -6,9 +6,22 @@ const summary = document.getElementById('summary');
 const compileButton = document.getElementById('compile');
 const runButton = document.getElementById('run');
 const editor = createEditor(script);
+const appConfig = { showCompiledSql: false };
+
+loadConfig();
 
 compileButton.addEventListener('click', () => submit('/api/compile'));
 runButton.addEventListener('click', () => submit('/api/run'));
+
+async function loadConfig() {
+  try {
+    const res = await fetch('/api/config');
+    const data = await res.json();
+    appConfig.showCompiledSql = Boolean(data.showCompiledSql);
+  } catch (err) {
+    appConfig.showCompiledSql = false;
+  }
+}
 
 async function submit(path) {
   const scope = getScriptScope();
@@ -99,7 +112,8 @@ function render(data, path, scope) {
   }
 
   for (const statement of data.statements || []) {
-    const parts = [pre(statement.sql + ';')];
+    const parts = [];
+    if (appConfig.showCompiledSql) parts.push(pre(statement.sql + ';'));
     if (statement.error) parts.push(errorBlock(statement.error));
     if (statement.schema && statement.schema.length) {
       parts.push(table(statement.schema, statement.rows || []));

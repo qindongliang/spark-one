@@ -90,6 +90,57 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesSaveOverwriteAsParquet(): Unit = {
+    val sql = compiler.compile("save overwrite city_stats as parquet.`/tmp/city_stats`;").head.sql
+
+    assertEquals(
+      "INSERT OVERWRITE DIRECTORY '/tmp/city_stats' USING parquet SELECT * FROM city_stats",
+      sql)
+  }
+
+  @Test
+  def compilesSaveOverwriteWithOptions(): Unit = {
+    val sql = compiler.compile(
+      """save overwrite users as csv.`/tmp/users_csv`
+        |where header="true"
+        |and delimiter=","
+        |and compression="gzip";
+        |""".stripMargin).head.sql
+
+    assertEquals(
+      "INSERT OVERWRITE DIRECTORY '/tmp/users_csv' USING csv OPTIONS " +
+        "(header 'true', delimiter ',', compression 'gzip') SELECT * FROM users",
+      sql)
+  }
+
+  @Test
+  def compilesSaveOverwriteWithLocalFilePath(): Unit = {
+    val sql = compiler.compile("save overwrite users as json.`file:///tmp/users_json`;").head.sql
+
+    assertEquals(
+      "INSERT OVERWRITE DIRECTORY 'file:///tmp/users_json' USING json SELECT * FROM users",
+      sql)
+  }
+
+  @Test
+  def compilesViewThenSavePipeline(): Unit = {
+    val sql = compiler.compile(
+      """view active_users as
+        |select *
+        |from users
+        |where status = 'active';
+        |
+        |save overwrite active_users as parquet.`/tmp/active_users`;
+        |""".stripMargin).map(_.sql)
+
+    assertEquals(
+      Seq(
+        "CREATE OR REPLACE TEMPORARY VIEW active_users AS select *\nfrom users\nwhere status = 'active'",
+        "INSERT OVERWRITE DIRECTORY '/tmp/active_users' USING parquet SELECT * FROM active_users"),
+      sql)
+  }
+
+  @Test
   def leavesNativeCreateViewSqlUntouched(): Unit = {
     val sql = compiler.compile(
       """create or replace temporary view result_table as
@@ -218,6 +269,17 @@ final class SparkOneCompilerTest {
     } catch {
       case e: CompileException =>
         assertTrue(e.getMessage.contains("append"))
+    }
+  }
+
+  @Test
+  def rejectsSaveToCatalogSources(): Unit = {
+    try {
+      compiler.compile("save overwrite users as hive.`default.users`;")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("catalog"))
     }
   }
 

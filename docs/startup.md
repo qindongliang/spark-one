@@ -135,6 +135,7 @@ java.lang.IllegalAccessError: class org.apache.spark.storage.StorageUtils$ canno
 [server]
 host = "127.0.0.1"
 port = 7070
+showCompiledSql = false
 
 [spark]
 master = "local[*]"

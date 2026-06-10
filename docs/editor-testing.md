@@ -14,6 +14,7 @@ http://127.0.0.1:7070
 - `Compile`：只编译，不执行。适合检查 `load/save` 这类 SparkOne DSL 被转成了什么 Spark SQL。
 - `Run`：编译后按顺序执行每条 SQL，后面的语句可以使用前面创建的临时视图。
 - 选中执行：如果编辑器里有选中的 SQL，`Compile` 和 `Run` 只处理选中部分；没有选区时处理整篇脚本。
+- `Run` 默认隐藏每条 statement 的编译后 SQL；如果需要调试转译结果，在 `conf/sparkone.toml` 里配置 `[server] showCompiledSql = true`。
 - `Rows`：控制每条查询最多展示多少行，服务端会限制在 `1` 到 `1000`。
 - 右侧结果区：展示每条语句的编译后 SQL、耗时、schema 和结果数据；失败语句会显示错误信息。
 
