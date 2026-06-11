@@ -10,4 +10,12 @@ final case class SaveStatementMetadata(
     table: String,
     format: String,
     path: String,
-    options: Map[String, String])
+    options: Map[String, String],
+    targetType: SaveTargetType = SaveTargetType.File)
+
+sealed trait SaveTargetType
+
+object SaveTargetType {
+  case object File extends SaveTargetType
+  case object Catalog extends SaveTargetType
+}

@@ -317,7 +317,7 @@ OPTIONS (
 
 ## 使用 SparkOne Save DSL
 
-当前 MVP 只支持 `save overwrite`。它会转成 Spark SQL 的 `INSERT OVERWRITE DIRECTORY`。
+文件类 save 当前只支持 `save overwrite`。它会转成 Spark SQL 的 `INSERT OVERWRITE DIRECTORY`。
 
 为了避免路径写错时覆盖已有目录，默认 `conf/sparkone.toml` 使用：
 
@@ -327,6 +327,7 @@ overwritePolicy = "requireExplicit"
 overwriteBackup = "rename"
 overwriteBackupPath = "/tmp/sparkone_back"
 allowNativeInsertOverwrite = false
+allowNativeDropTable = false
 # 可选：全局保护危险 overwrite 边界路径，命中后不能被 SQL 覆盖。
 # 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
 # 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
@@ -378,6 +379,34 @@ allowNativeInsertOverwrite = true
 
 然后再次执行原生 `INSERT OVERWRITE`，预期可以成功。但此时不会走 SparkOne Safe Save 的备份和保护路径逻辑。
 
+原生 Spark SQL `DROP TABLE` 默认也会被拦截，避免误删 Hive/catalog 表：
+
+```sql
+create table if not exists default.sparkone_drop_table_blocked (
+  id int
+)
+using parquet;
+
+drop table default.sparkone_drop_table_blocked;
+```
+
+预期：第二条语句失败，错误信息包含 `Native Spark SQL DROP TABLE is disabled`。
+
+下面这种页面内 `SET` 不会放开 `DROP TABLE`，因为危险 DDL 开关只允许启动配置生效：
+
+```sql
+set sparkone.save.native.dropTable.enabled=true;
+
+drop table default.sparkone_drop_table_blocked;
+```
+
+如果测试环境确实需要执行原生删表，先在 `conf/sparkone.toml` 中配置并重启服务：
+
+```toml
+[save]
+allowNativeDropTable = true
+```
+
 如果配置了 `overwriteProtectedPaths` 且包含 `/tmp`，只会拦截覆盖 `/tmp` 本身；下面这些 `/tmp/...` 子目录示例仍可以作为测试路径。
 
 保存成 Parquet：
@@ -425,6 +454,119 @@ save errorifexists city_stats as parquet.`/tmp/city_stats_parquet`;
 ```
 
 这些模式会在编译阶段报错，后续需要时再扩展 compiler。
+
+Hive/catalog 表 save 支持 `append` 和 `overwrite`，目标表需要先存在。下面这些 case 都用页面内联数据构造视图，方便直接复制执行。
+
+Case 1：append 写入 Hive 表。
+
+```sql
+drop table if exists default.sparkone_save_hive_append;
+
+create table default.sparkone_save_hive_append (
+  city string,
+  cnt bigint
+) using parquet;
+
+view sparkone_hive_append_data as
+select * from values
+  ('beijing', 3L),
+  ('shanghai', 2L)
+as sparkone_hive_append_data(city, cnt);
+
+save append sparkone_hive_append_data
+as hive.`default.sparkone_save_hive_append`;
+
+select city, cnt
+from default.sparkone_save_hive_append
+order by city;
+```
+
+预期：查询结果有 `beijing=3`、`shanghai=2` 两行。
+
+Case 2：overwrite 默认会被 Safe Save 拦截。
+
+```sql
+drop table if exists default.sparkone_save_hive_overwrite_block;
+
+create table default.sparkone_save_hive_overwrite_block (
+  id int,
+  name string
+) using parquet;
+
+view sparkone_hive_overwrite_seed as
+select * from values
+  (1, 'old')
+as sparkone_hive_overwrite_seed(id, name);
+
+save append sparkone_hive_overwrite_seed
+as hive.`default.sparkone_save_hive_overwrite_block`;
+
+view sparkone_hive_overwrite_new as
+select * from values
+  (2, 'new')
+as sparkone_hive_overwrite_new(id, name);
+
+save overwrite sparkone_hive_overwrite_new
+as hive.`default.sparkone_save_hive_overwrite_block`;
+```
+
+预期：最后一条 `save overwrite` 失败，提示需要添加 `sparkoneOverwrite="allow"`。这是故意的，用来确认 Hive 表覆盖写也进入 Safe Save 策略。
+
+Case 3：显式允许 overwrite Hive 表。
+
+```sql
+view sparkone_hive_overwrite_new as
+select * from values
+  (2, 'new')
+as sparkone_hive_overwrite_new(id, name);
+
+save overwrite sparkone_hive_overwrite_new
+as hive.`default.sparkone_save_hive_overwrite_block`
+options sparkoneOverwrite="allow";
+
+select id, name
+from default.sparkone_save_hive_overwrite_block
+order by id;
+```
+
+预期：查询结果只剩 `2, new`。日志会出现 `catalog overwrite allowed`，说明这是 catalog 表覆盖确认，不做文件目录备份。
+
+Case 4：动态分区 append。
+
+```sql
+drop table if exists default.sparkone_save_hive_partition;
+
+create table default.sparkone_save_hive_partition (
+  city string,
+  cnt bigint
+)
+using parquet
+partitioned by (dt string);
+
+view sparkone_hive_partition_data as
+select * from values
+  ('beijing', 3L, '2026-06-10'),
+  ('shanghai', 2L, '2026-06-10'),
+  ('hangzhou', 1L, '2026-06-11')
+as sparkone_hive_partition_data(city, cnt, dt);
+
+save append sparkone_hive_partition_data
+as hive.`default.sparkone_save_hive_partition`
+partitionBy dt;
+
+select city, cnt, dt
+from default.sparkone_save_hive_partition
+order by dt, city;
+```
+
+预期：查询结果有 3 行，并按 `dt` 写入两个动态分区。`partitionBy dt` 会编译成 Spark SQL 的 `PARTITION (dt)`，分区列必须在源视图字段中。
+
+说明：
+
+- `save ... as hive` 会编译成 Spark 原生 `INSERT INTO/OVERWRITE TABLE`。
+- `partitionBy` 对应 Spark SQL 的动态分区 `PARTITION (...)`，分区列需要出现在源视图字段中。
+- Hive 表 overwrite 不做文件目录 `rename/trash` 备份；它只复用 Safe Save 的显式确认策略。
+- `options` 当前只建议放 SparkOne 控制参数，例如 `sparkoneOverwrite="allow"`；建表格式、分区定义和表结构使用 Spark 原生 `CREATE TABLE` 明确声明。
 
 ## HDFS 和 Hive 测试
 

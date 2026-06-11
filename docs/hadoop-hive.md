@@ -78,6 +78,34 @@ load hive.`default.some_table` as t;
 select * from t limit 10;
 ```
 
+验证 Hive 表写入：
+
+```sql
+create table if not exists default.sparkone_hive_test (
+  id int,
+  name string
+) using parquet;
+
+view hive_write_test as
+select * from values
+  (1, 'alice'),
+  (2, 'bob')
+as hive_write_test(id, name);
+
+save append hive_write_test as hive.`default.sparkone_hive_test`;
+
+select * from default.sparkone_hive_test limit 10;
+```
+
+覆盖写需要显式确认：
+
+```sql
+save overwrite hive_write_test as hive.`default.sparkone_hive_test`
+options sparkoneOverwrite="allow";
+```
+
+`save ... as hive` 会编译成 Spark 原生 `INSERT INTO/OVERWRITE TABLE`。它不做文件目录备份；建表、表格式和分区定义建议用 Spark 原生 `CREATE TABLE` 明确声明。
+
 常见认证错误：
 
 ```text

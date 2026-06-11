@@ -16,7 +16,7 @@ final class SparkOneRuntime(
   extends AutoCloseable {
 
   private val saveOverwriteGuard = new SaveOverwriteGuard(spark)
-  private val nativeInsertOverwriteGuard = new NativeInsertOverwriteGuard
+  private val nativeSqlSafetyGuard = new NativeSqlSafetyGuard
 
   def compile(script: String): Seq[String] = {
     compiler.compile(script).map(_.sql)
@@ -28,7 +28,7 @@ final class SparkOneRuntime(
       val started = System.nanoTime()
       var preparation: Option[SaveOverwriteGuard.OverwritePreparation] = None
       try {
-        nativeInsertOverwriteGuard.validate(statement)
+        nativeSqlSafetyGuard.validate(statement)
         preparation = saveOverwriteGuard.prepare(statement.save)
         val dataFrame = spark.sql(statement.sql)
         preparation.foreach(_.commit())
@@ -88,8 +88,8 @@ final class SparkOneRuntime(
   }
 }
 
-private final class NativeInsertOverwriteGuard {
-  import NativeInsertOverwriteGuard._
+private final class NativeSqlSafetyGuard {
+  import NativeSqlSafetyGuard._
 
   private val logger = LoggerFactory.getLogger(getClass)
 
@@ -103,10 +103,23 @@ private final class NativeInsertOverwriteGuard {
           "Use SparkOne DSL `save overwrite ...` so overwrite protection can run, " +
           "or set [save] allowNativeInsertOverwrite = true in TOML for compatibility.")
     }
+    if (statement.save.isEmpty && containsDropTable(statement.sql) && !isNativeDropTableEnabled) {
+      logger.warn(
+        s"Safe Save: native DROP TABLE blocked, " +
+          s"allowNativeDropTable=false, sql=${summarizeSql(statement.sql)}")
+      throw new CompileException(
+        "Native Spark SQL DROP TABLE is disabled by SparkOne DDL safety policy. " +
+          "Set [save] allowNativeDropTable = true in TOML only when the deployment explicitly allows table drops.")
+    }
   }
 
   private def isNativeInsertOverwriteEnabled: Boolean = {
     sys.props.get(AllowNativeInsertOverwriteKey)
+      .exists(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
+  }
+
+  private def isNativeDropTableEnabled: Boolean = {
+    sys.props.get(AllowNativeDropTableKey)
       .exists(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
   }
 
@@ -116,13 +129,22 @@ private final class NativeInsertOverwriteGuard {
   }
 }
 
-private object NativeInsertOverwriteGuard {
+private object NativeSqlSafetyGuard {
   private val AllowNativeInsertOverwriteKey = "sparkone.save.native.insertOverwrite.enabled"
+  private val AllowNativeDropTableKey = "sparkone.save.native.dropTable.enabled"
 
   private[runtime] def containsInsertOverwrite(sql: String): Boolean = {
     val tokens = sqlKeywordTokens(sql).map(_.toLowerCase)
     tokens.sliding(2).exists {
       case Seq("insert", "overwrite") => true
+      case _ => false
+    }
+  }
+
+  private[runtime] def containsDropTable(sql: String): Boolean = {
+    val tokens = sqlKeywordTokens(sql).map(_.toLowerCase)
+    tokens.sliding(2).exists {
+      case Seq("drop", "table") => true
       case _ => false
     }
   }

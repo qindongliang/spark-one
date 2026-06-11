@@ -1,8 +1,10 @@
 # Safe Save
 
-SparkOne 对文件类 `save overwrite` 默认做保护，避免路径写错时直接覆盖已有目录。
+SparkOne 对 `save overwrite` 默认做保护，避免路径写错或表写错时直接覆盖已有数据。
 
-SparkOne DSL 编译出来的 `save overwrite ... as provider.\`path\`` 会走 Safe Save 备份与保护流程。用户直接写 Spark 原生 `INSERT OVERWRITE ...` 不携带 SparkOne save metadata，默认会被拦截，避免绕过 Safe Save。
+SparkOne DSL 编译出来的文件类 `save overwrite ... as provider.\`path\`` 会走 Safe Save 备份与保护流程。`save overwrite ... as hive.\`db.table\`` 会走 catalog 表覆盖确认流程，但不会做文件目录备份。
+
+用户直接写 Spark 原生 `INSERT OVERWRITE ...` 不携带 SparkOne save metadata，默认会被拦截，避免绕过 Safe Save。
 
 ## 配置优先级
 
@@ -30,6 +32,7 @@ Safe Save 的后端日志统一使用 `Safe Save:` 前缀，默认 `[server] log
 - `backup success`：目标存在且备份完成，包含 `rename` / `trash` / `none`、备份路径或 Trash 目录、备份耗时。
 - `commit success`：Spark 写入成功后的收尾日志。
 - `rollback restored backup`：写入失败时恢复了 rename 备份。
+- `catalog overwrite allowed`：Hive/catalog 表 overwrite 已通过显式确认；该类目标不会执行文件备份。
 
 策略来源说明：
 
@@ -40,7 +43,9 @@ Safe Save 的后端日志统一使用 `Safe Save:` 前缀，默认 `[server] log
 
 ## 事务性边界
 
-Safe Save 不是严格的分布式事务，它提供的是覆盖写前的保护流程：
+Safe Save 不是严格的分布式事务，它提供的是覆盖写前的保护流程。
+
+文件类 save：
 
 1. 先解析目标路径和文件系统。
 2. 如果目标不存在，直接放行 Spark 写入。
@@ -52,6 +57,13 @@ Safe Save 不是严格的分布式事务，它提供的是覆盖写前的保护�
 
 因此可以把 Safe Save 理解为“先备份成功，再执行覆盖写；失败时尽力回滚”，而不是数据库意义上的原子提交。
 
+Hive/catalog 表 save：
+
+1. `save overwrite ... as hive.\`db.table\`` 默认同样要求显式 `sparkoneOverwrite="allow"`。
+2. 通过确认后编译成 Spark 原生 `INSERT OVERWRITE TABLE db.table SELECT ...`。
+3. SparkOne 不对 Hive 表做文件目录 `rename/trash` 备份，也不承诺回滚；具体提交和失败语义由 Spark/Hive catalog 负责。
+4. 如果要建表、改表结构或指定存储格式，使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE`，不要放进 SparkOne `save` 的 provider options。
+
 ## TOML 全局开关
 
 推荐默认配置：
@@ -62,6 +74,7 @@ overwritePolicy = "requireExplicit"
 overwriteBackup = "rename"
 overwriteBackupPath = "/tmp/sparkone_back"
 allowNativeInsertOverwrite = false
+allowNativeDropTable = false
 ```
 
 生产环境可以额外配置全局保护的 overwrite 边界目录：
@@ -86,6 +99,7 @@ overwriteProtectedPaths = [
 - `rename`：默认值，目标存在时先移动到 `overwriteBackupPath`，写失败时尝试恢复。
 - `trash`：目标存在时先移动到 Hadoop Trash，不做自动恢复。
 - `none`：不备份，直接交给 Spark 覆盖，生产环境不建议使用。
+- 该配置只对文件类 save 生效；Hive/catalog 表 save 不做目录备份。
 
 `overwriteBackupPath`：
 
@@ -100,6 +114,13 @@ overwriteProtectedPaths = [
 - 如果历史脚本必须继续执行原生 `INSERT OVERWRITE TABLE ...` 或 `INSERT OVERWRITE DIRECTORY ...`，可以临时设为 `true`。
 - 打开后，原生 `INSERT OVERWRITE` 由 Spark 直接执行，不会走 SparkOne 的备份、保护路径和回滚逻辑。
 
+`allowNativeDropTable`：
+
+- 默认值是 `false`，表示禁止原生 Spark SQL `DROP TABLE`。
+- 这个配置只从启动 TOML / 启动属性读取，不允许被页面里的 `SET` 或单条 SQL 参数覆盖。
+- 如果历史脚本必须继续执行 `DROP TABLE`，需要在启动配置里显式改为 `true` 并重启服务。
+- 打开后，`DROP TABLE` 由 Spark/Hive catalog 直接执行，SparkOne 不做表数据备份或回滚。
+
 `overwriteProtectedPaths`：
 
 - 用于全局保护危险的 `save overwrite` 边界路径。
@@ -110,7 +131,7 @@ overwriteProtectedPaths = [
 - 配置 `/tmp` 后，会拦截 `/tmp` 本身，但允许 `/tmp/sparkone_test` 这类更具体目录。
 - 支持整段通配符 `*`：`/*` 保护所有一级目录，`/*/*` 保护所有一级和二级目录，`/public/*/user` 保护 `/public` 下任意租户的 `user` 边界目录。
 - 多条规则之间是“任意命中即拒绝”。这里的命中指当前 overwrite 目标等于某条保护边界，或者是某条保护边界的上级目录。
-- 只校验 `save overwrite` 的目标路径，不校验 `overwriteBackupPath`。如果生产环境也不希望备份写到 `/tmp`，需要同时把 `overwriteBackupPath` 改到安全目录。
+- 只校验文件类 `save overwrite` 的目标路径，不校验 Hive/catalog 表名，也不校验 `overwriteBackupPath`。如果生产环境也不希望备份写到 `/tmp`，需要同时把 `overwriteBackupPath` 改到安全目录。
 - 这个配置是启动级硬拦截，不允许被 `options sparkoneOverwrite="allow"` 或 `set sparkone.save...` 覆盖。
 
 规则语义速查：
@@ -177,6 +198,87 @@ save overwrite native_insert_replacement
 as parquet.`/tmp/sparkone_native_insert_overwrite`
 options sparkoneOverwrite="allow";
 ```
+
+## 案例 1.1.1：默认拒绝原生 DROP TABLE
+
+原生 Spark SQL 的 `DROP TABLE` 默认会被 SparkOne 拦截：
+
+```sql
+drop table default.sparkone_danger_table;
+```
+
+预期：执行失败，提示 `Native Spark SQL DROP TABLE is disabled`。
+
+页面里执行下面的 `SET` 也不会放开：
+
+```sql
+set sparkone.save.native.dropTable.enabled=true;
+
+drop table default.sparkone_danger_table;
+```
+
+如果确实要兼容已有删除表脚本，需要在 `conf/sparkone.toml` 中显式打开并重启服务：
+
+```toml
+[save]
+allowNativeDropTable = true
+```
+
+## 案例 1.2：Hive 表 overwrite 也需要显式确认
+
+Hive/catalog 表 save 不走文件目录备份，但 overwrite 仍然需要确认：
+
+```sql
+create table if not exists default.sparkone_safe_hive_target (
+  id int
+) using parquet;
+
+view safe_hive_result as
+select 1 as id;
+
+save overwrite safe_hive_result
+as hive.`default.sparkone_safe_hive_target`;
+```
+
+预期：执行失败，提示需要添加 `sparkoneOverwrite="allow"`。
+
+显式确认后可以执行：
+
+```sql
+view safe_hive_result as
+select 2 as id;
+
+save overwrite safe_hive_result
+as hive.`default.sparkone_safe_hive_target`
+options sparkoneOverwrite="allow";
+
+select * from default.sparkone_safe_hive_target;
+```
+
+预期：写入成功，表中结果为 `2`。日志会出现 `catalog overwrite allowed`，并说明 catalog 目标不会做文件备份。
+
+## 案例 1.3：Hive append 和动态分区
+
+`append` 不属于覆盖写，不需要 `sparkoneOverwrite`：
+
+```sql
+create table if not exists default.sparkone_safe_hive_dt (
+  id int
+)
+using parquet
+partitioned by (dt string);
+
+view safe_hive_partition_result as
+select 1 as id, "2026-06-10" as dt;
+
+save append safe_hive_partition_result
+as hive.`default.sparkone_safe_hive_dt`
+partitionBy dt;
+
+select * from default.sparkone_safe_hive_dt;
+```
+
+`partitionBy dt` 会编译成 Spark SQL 的动态分区 `PARTITION (dt)`；分区列必须在源视图字段里。
 
 ## 案例 2：单条语句显式允许
 

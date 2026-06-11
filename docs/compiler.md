@@ -10,6 +10,7 @@ load hive.`default.users` as hive_users;
 load excel.`/tmp/users.xlsx` options header="true" as users_excel;
 view city_stats as select city, count(*) as cnt from users group by city;
 save overwrite users as parquet.`/tmp/users_out`;
+save append city_stats as hive.`default.city_stats` partitionBy dt;
 ```
 
 编译结果示例：
@@ -20,6 +21,7 @@ CREATE OR REPLACE TEMPORARY VIEW hive_users AS SELECT * FROM default.users;
 CREATE OR REPLACE TEMPORARY VIEW users_excel USING excel OPTIONS (path '/tmp/users.xlsx', header 'true');
 CREATE OR REPLACE TEMPORARY VIEW city_stats AS select city, count(*) as cnt from users group by city;
 INSERT OVERWRITE DIRECTORY '/tmp/users_out' USING parquet SELECT * FROM users;
+INSERT INTO TABLE default.city_stats PARTITION (dt) SELECT * FROM city_stats;
 ```
 
 普通 Spark SQL 原样透传：
@@ -38,7 +40,9 @@ group by city;
 - `SparkSqlValidator` 使用 `org.apache.spark.sql.execution.SparkSqlParser` 校验生成 SQL。
 - 不要使用 `CatalystSqlParser` 作为最终校验器；它会拒绝部分 Spark SQL execution 层语法。
 - 数据源映射集中在 `DataSourceResolver`，不要把 provider 别名和特殊 source 判断散落在 compiler 主流程。
-- `hive` 是 catalog 表语义，编译成 `CREATE ... AS SELECT * FROM db.table`。
+- `load hive` 是 catalog 表读取语义，编译成 `CREATE ... AS SELECT * FROM db.table`。
+- `save ... as hive` 是 catalog 表写入语义，编译成 `INSERT INTO/OVERWRITE TABLE db.table SELECT * FROM source`。
+- `save ... partitionBy col1, col2` 只用于 catalog 表写入，编译成 Spark SQL 动态分区 `PARTITION (col1, col2)`。
 - `excel` 是外部 Spark DataSource provider，编译成 `USING excel`，由依赖注册 provider 短名。
 
 ANTLR 文件：

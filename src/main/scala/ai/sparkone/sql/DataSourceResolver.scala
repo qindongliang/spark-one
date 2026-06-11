@@ -15,7 +15,7 @@ final class DataSourceResolver(
       if (options.nonEmpty) {
         throw new CompileException(s"LOAD source '$format' does not support Spark SQL OPTIONS in the MVP compiler")
       }
-      CatalogTableSource(renderMultipartIdentifier(path))
+      CatalogTableSource(SparkOneSqlRender.renderMultipartIdentifier(path, "LOAD catalog table"))
     } else {
       ProviderLoadSource(resolveProvider(format), ("path" -> path) +: options)
     }
@@ -24,22 +24,16 @@ final class DataSourceResolver(
   def resolveSave(format: String): ResolvedSaveSource = {
     val normalized = format.toLowerCase
     if (normalizedCatalogFormats.contains(normalized)) {
-      throw new CompileException(s"SAVE to catalog source '$format' is not supported by the MVP Spark SQL compiler yet")
+      CatalogSaveSource(format)
+    } else {
+      ProviderSaveSource(resolveProvider(format))
     }
-    ProviderSaveSource(resolveProvider(format))
   }
 
   private def resolveProvider(format: String): String = {
     normalizedProviderAliases.getOrElse(format.toLowerCase, format)
   }
 
-  private def renderMultipartIdentifier(identifier: String): String = {
-    val parts = identifier.split("\\.", -1).toSeq
-    if (parts.isEmpty || parts.exists(_.isEmpty)) {
-      throw new CompileException(s"Catalog table must be a non-empty multipart identifier: $identifier")
-    }
-    parts.map(part => SparkOneSqlRender.requireIdentifier(part, "catalog identifier part")).mkString(".")
-  }
 }
 
 object DataSourceResolver {
@@ -55,3 +49,4 @@ final case class CatalogTableSource(identifier: String) extends ResolvedLoadSour
 
 sealed trait ResolvedSaveSource
 final case class ProviderSaveSource(provider: String) extends ResolvedSaveSource
+final case class CatalogSaveSource(format: String) extends ResolvedSaveSource

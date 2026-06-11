@@ -386,7 +386,8 @@ private final case class SaveTomlSection(
     overwriteBackup: Option[String] = None,
     overwriteBackupPath: Option[String] = None,
     overwriteProtectedPaths: Option[List[String]] = None,
-    allowNativeInsertOverwrite: Option[Boolean] = None) {
+    allowNativeInsertOverwrite: Option[Boolean] = None,
+    allowNativeDropTable: Option[Boolean] = None) {
   def toProperties: Map[String, String] = {
     Seq(
       overwritePolicy.map("sparkone.save.overwrite.policy" -> _),
@@ -396,7 +397,8 @@ private final case class SaveTomlSection(
         .map(paths => paths.map(_.trim).filter(_.nonEmpty).mkString("\n"))
         .filter(_.nonEmpty)
         .map("sparkone.save.overwrite.protected.paths" -> _),
-      allowNativeInsertOverwrite.map(value => "sparkone.save.native.insertOverwrite.enabled" -> value.toString)).flatten.toMap
+      allowNativeInsertOverwrite.map(value => "sparkone.save.native.insertOverwrite.enabled" -> value.toString),
+      allowNativeDropTable.map(value => "sparkone.save.native.dropTable.enabled" -> value.toString)).flatten.toMap
   }
 }
 

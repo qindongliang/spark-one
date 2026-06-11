@@ -314,9 +314,37 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def rejectsSaveToCatalogSources(): Unit = {
+  def compilesSaveAppendToHiveTable(): Unit = {
+    val statement = compiler.compile("save append users as hive.`default.users`;").head
+
+    assertEquals("INSERT INTO TABLE default.users SELECT * FROM users", statement.sql)
+    assertEquals(Some("append"), statement.save.map(_.mode))
+    assertEquals(Some(SaveTargetType.Catalog), statement.save.map(_.targetType))
+  }
+
+  @Test
+  def compilesSaveOverwriteToHiveTableWithControlOptions(): Unit = {
+    val statement = compiler.compile(
+      """save overwrite users as hive.`default.users`
+        |options sparkoneOverwrite="allow";
+        |""".stripMargin).head
+
+    assertEquals("INSERT OVERWRITE TABLE default.users SELECT * FROM users", statement.sql)
+    assertEquals(Some("allow"), statement.save.flatMap(_.options.get("sparkoneoverwrite")))
+    assertEquals(Some(SaveTargetType.Catalog), statement.save.map(_.targetType))
+  }
+
+  @Test
+  def compilesSaveAppendToHivePartition(): Unit = {
+    val sql = compiler.compile("save append users as hive.`default.users` partitionBy dt, region;").head.sql
+
+    assertEquals("INSERT INTO TABLE default.users PARTITION (dt, region) SELECT * FROM users", sql)
+  }
+
+  @Test
+  def rejectsProviderOptionsForHiveSaveUntilThereIsASparkSqlMapping(): Unit = {
     try {
-      compiler.compile("save overwrite users as hive.`default.users`;")
+      compiler.compile("save append users as hive.`default.users` options file_format='parquet';")
       fail("Expected CompileException")
     } catch {
       case e: CompileException =>
@@ -341,9 +369,10 @@ final class SparkOneCompilerTest {
         |load excel.`/tmp/users.xlsx` options header="true" as excel_users;
         |view city_stats as select city, count(*) as cnt from users group by city;
         |save overwrite city_stats as parquet.`/tmp/city_stats`;
+        |save append city_stats as hive.`default.city_stats` partitionBy dt;
         |""".stripMargin).map(_.sql)
 
-    assertEquals(5, sql.size)
+    assertEquals(6, sql.size)
   }
 
   @Test

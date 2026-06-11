@@ -10,6 +10,7 @@ import scala.collection.JavaConverters._
 final class SaveOverwriteGuardTest {
   private val ProtectedPathsKey = "sparkone.save.overwrite.protected.paths"
   private val AllowNativeInsertOverwriteKey = "sparkone.save.native.insertOverwrite.enabled"
+  private val AllowNativeDropTableKey = "sparkone.save.native.dropTable.enabled"
 
   @Test
   def sessionOverwritePolicyAllowsSaveAndKeepsBackup(): Unit = {
@@ -166,6 +167,53 @@ final class SaveOverwriteGuardTest {
   }
 
   @Test
+  def nativeDropTableIsBlockedByDefaultAndCannotBeAllowedBySessionSet(): Unit = {
+    val root = Files.createTempDirectory("sparkone-native-drop-table-block-")
+    val table = "sparkone_drop_table_block_target"
+
+    val spark = localSpark(root)
+    try {
+      spark.sql(s"CREATE TABLE default.$table (id INT) USING parquet")
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        s"""set sparkone.save.native.dropTable.enabled=true;
+           |
+           |drop table default.$table;
+           |""".stripMargin)
+
+      assertFalse(result.success)
+      val error = result.statements.flatMap(_.error).mkString("\n")
+      assertTrue(error, error.contains("Native Spark SQL DROP TABLE is disabled"))
+      assertTrue(spark.catalog.tableExists("default", table))
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def nativeDropTableCanBeAllowedFromStartupConfiguration(): Unit = {
+    val root = Files.createTempDirectory("sparkone-native-drop-table-allow-")
+    val table = "sparkone_drop_table_allow_target"
+
+    withSystemProperty(AllowNativeDropTableKey, "true") {
+      val spark = localSpark(root)
+      try {
+        spark.sql(s"CREATE TABLE default.$table (id INT) USING parquet")
+        val runtime = new SparkOneRuntime(spark)
+        val result = runtime.run(s"drop table default.$table;")
+
+        assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+        assertFalse(spark.catalog.tableExists("default", table))
+      } finally {
+        spark.stop()
+      }
+    }
+
+    deleteRecursively(root)
+  }
+
+  @Test
   def wildcardProtectedPathRejectsConfiguredDepthAndAllowsDeeperPath(): Unit = {
     val root = Files.createTempDirectory("sparkone-save-guard-wildcard-")
     val firstLevel = root.resolve("public")
@@ -226,6 +274,64 @@ final class SaveOverwriteGuardTest {
       assertTrue(error, error.contains("does not support"))
       assertTrue(error, error.contains("trash"))
       assertTrue(Files.exists(target.resolve("old.txt")))
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def hiveSaveAppendUsesCatalogInsert(): Unit = {
+    val root = Files.createTempDirectory("sparkone-hive-save-append-")
+    val spark = localSpark(root)
+    try {
+      spark.sql("CREATE TABLE default.sparkone_hive_append_target (id INT) USING parquet")
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """view result_view as select 1 as id;
+          |
+          |save append result_view as hive.`default.sparkone_hive_append_target`;
+          |
+          |select count(*) as cnt from default.sparkone_hive_append_target;
+          |""".stripMargin)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals("1", result.statements.last.rows.head.head)
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def hiveSaveOverwriteRequiresExplicitAllowAndDoesNotUseFileBackup(): Unit = {
+    val root = Files.createTempDirectory("sparkone-hive-save-overwrite-")
+    val spark = localSpark(root)
+    try {
+      spark.sql("CREATE TABLE default.sparkone_hive_overwrite_target (id INT) USING parquet")
+      spark.sql("INSERT INTO TABLE default.sparkone_hive_overwrite_target SELECT 0")
+
+      val runtime = new SparkOneRuntime(spark)
+      val rejected = runtime.run(
+        """view result_view as select 1 as id;
+          |
+          |save overwrite result_view as hive.`default.sparkone_hive_overwrite_target`;
+          |""".stripMargin)
+
+      assertFalse(rejected.success)
+      assertTrue(rejected.statements.flatMap(_.error).mkString("\n").contains("requires explicit confirmation"))
+
+      val allowed = runtime.run(
+        """view result_view as select 2 as id;
+          |
+          |save overwrite result_view as hive.`default.sparkone_hive_overwrite_target`
+          |options sparkoneOverwrite="allow";
+          |
+          |select id from default.sparkone_hive_overwrite_target;
+          |""".stripMargin)
+
+      assertTrue(allowed.statements.flatMap(_.error).mkString("\n"), allowed.success)
+      assertEquals(Seq(Seq("2")), allowed.statements.last.rows)
     } finally {
       spark.stop()
       deleteRecursively(root)

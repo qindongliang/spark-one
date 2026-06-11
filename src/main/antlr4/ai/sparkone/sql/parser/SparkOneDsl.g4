@@ -16,7 +16,7 @@ loadStatement
     ;
 
 saveStatement
-    : SAVE saveMode? table=identifier AS source optionClause?
+    : SAVE saveMode? table=identifier AS source optionClause? partitionClause?
     ;
 
 viewStatement
@@ -29,6 +29,10 @@ source
 
 optionClause
     : OPTIONS option (AND option)*
+    ;
+
+partitionClause
+    : PARTITIONBY identifier (COMMA identifier)*
     ;
 
 option
@@ -69,6 +73,7 @@ sqlToken
     | AS
     | WHERE
     | OPTIONS
+    | PARTITIONBY
     | AND
     | OVERWRITE
     | APPEND
@@ -81,6 +86,7 @@ sqlToken
     | NUMBER
     | DOT
     | EQ
+    | COMMA
     | SQL_CHAR
     ;
 
@@ -94,6 +100,7 @@ VIEW: V I E W;
 AS: A S;
 WHERE: W H E R E;
 OPTIONS: O P T I O N S;
+PARTITIONBY: P A R T I T I O N B Y;
 AND: A N D;
 OVERWRITE: O V E R W R I T E;
 APPEND: A P P E N D;
@@ -108,6 +115,7 @@ DOUBLE_QUOTED_STRING: '"' ('\\' . | ~["\\])* '"';
 
 DOT: '.';
 EQ: '=';
+COMMA: ',';
 SEMICOLON: ';';
 
 LINE_COMMENT: '--' ~[\r\n]* -> skip;
@@ -135,3 +143,4 @@ fragment T: [tT];
 fragment V: [vV];
 fragment W: [wW];
 fragment X: [xX];
+fragment Y: [yY];

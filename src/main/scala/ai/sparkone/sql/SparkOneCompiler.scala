@@ -64,20 +64,36 @@ final class SparkOneCompiler(
 
   private def compileSave(save: SparkOneDslParser.SaveStatementContext): CompileResult = {
     val mode = Option(save.saveMode()).map(_.getText.toLowerCase).getOrElse("errorifexists")
-    if (mode != "overwrite") {
-      throw new CompileException(s"SAVE mode '$mode' is not supported by the MVP Spark SQL compiler yet")
-    }
-
     val table = SparkOneSqlRender.requireIdentifier(save.table.getText, "SAVE source table")
     val (format, path) = parseSource(save.source(), "SAVE")
     val options = parseOptions(save.optionClause())
+    val partitionColumns = parsePartitionColumns(save.partitionClause())
     val (runtimeOptions, providerOptions) = SaveControlOptions.partition(options)
-    val provider = dataSourceResolver.resolveSave(format) match {
-      case ProviderSaveSource(value) => value
+    val runtimeOptionMap = runtimeOptions.map { case (key, value) => key.toLowerCase -> value }.toMap
+
+    dataSourceResolver.resolveSave(format) match {
+      case ProviderSaveSource(provider) =>
+        if (mode != "overwrite") {
+          throw new CompileException(s"SAVE mode '$mode' is not supported for file/provider source '$format' yet")
+        }
+        if (partitionColumns.nonEmpty) {
+          throw new CompileException(s"SAVE partitionBy is only supported for catalog source in the MVP compiler")
+        }
+        CompileResult(
+          SparkOneSqlRender.renderInsertOverwriteDirectory(path, provider, providerOptions, table),
+          Some(SaveStatementMetadata(mode, table, format, path, runtimeOptionMap)))
+      case CatalogSaveSource(_) =>
+        if (mode != "overwrite" && mode != "append") {
+          throw new CompileException(s"SAVE mode '$mode' is not supported for catalog source '$format'")
+        }
+        if (providerOptions.nonEmpty) {
+          throw new CompileException(s"SAVE to catalog source '$format' does not support provider OPTIONS yet")
+        }
+        val targetTable = SparkOneSqlRender.renderMultipartIdentifier(path, "SAVE catalog table")
+        CompileResult(
+          SparkOneSqlRender.renderInsertTable(mode, targetTable, table, partitionColumns),
+          Some(SaveStatementMetadata(mode, table, format, targetTable, runtimeOptionMap, SaveTargetType.Catalog)))
     }
-    CompileResult(
-      SparkOneSqlRender.renderInsertOverwriteDirectory(path, provider, providerOptions, table),
-      Some(SaveStatementMetadata(mode, table, format, path, runtimeOptions.toMap)))
   }
 
   private def compileView(script: String, view: SparkOneDslParser.ViewStatementContext): String = {
@@ -98,6 +114,14 @@ final class SparkOneCompiler(
         val key = SparkOneSqlRender.requireIdentifier(option.key.getText, "option key")
         val value = stripQuoted(option.value.getText)
         key -> value
+      }
+    }
+  }
+
+  private def parsePartitionColumns(partitionClause: SparkOneDslParser.PartitionClauseContext): Seq[String] = {
+    Option(partitionClause).toSeq.flatMap { clause =>
+      clause.identifier().asScala.map { identifier =>
+        SparkOneSqlRender.requireIdentifier(identifier.getText, "partition column")
       }
     }
   }
@@ -172,6 +196,30 @@ private[sql] object SparkOneSqlRender {
       if (options.isEmpty) ""
       else s" OPTIONS (${renderOptions(options)})"
     s"INSERT OVERWRITE DIRECTORY '${escapeSql(path)}' USING $provider$optionSql SELECT * FROM $table"
+  }
+
+  def renderInsertTable(
+      mode: String,
+      targetTable: String,
+      sourceTable: String,
+      partitionColumns: Seq[String]): String = {
+    val command = mode.toLowerCase match {
+      case "overwrite" => "INSERT OVERWRITE TABLE"
+      case "append" => "INSERT INTO TABLE"
+      case other => throw new CompileException(s"SAVE mode '$other' is not supported for catalog table")
+    }
+    val partitionSql =
+      if (partitionColumns.isEmpty) ""
+      else s" PARTITION (${partitionColumns.mkString(", ")})"
+    s"$command $targetTable$partitionSql SELECT * FROM $sourceTable"
+  }
+
+  def renderMultipartIdentifier(value: String, label: String): String = {
+    val parts = value.split("\\.", -1).toSeq
+    if (parts.isEmpty || parts.exists(_.isEmpty)) {
+      throw new CompileException(s"$label must be a non-empty multipart identifier: $value")
+    }
+    parts.map(part => requireIdentifier(part, "catalog identifier part")).mkString(".")
   }
 
   def requireIdentifier(value: String, label: String): String = {

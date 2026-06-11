@@ -163,6 +163,7 @@ overwritePolicy = "requireExplicit"
 overwriteBackup = "rename"
 overwriteBackupPath = "/tmp/sparkone_back"
 allowNativeInsertOverwrite = false
+allowNativeDropTable = false
 # 生产环境可打开全局保护 overwrite 的高危边界目录，命中后不能被 SQL 或 SET 覆盖。
 # 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
 # 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
@@ -214,6 +215,7 @@ options sparkoneOverwrite="allow";
 - `overwriteBackup = "none"`：不做备份，直接覆盖。
 - `overwriteBackupPath = "/tmp/sparkone_back"`：`rename` 备份根目录；不带 scheme 时按目标文件系统解析。
 - `allowNativeInsertOverwrite = false`：默认禁止原生 Spark SQL `INSERT OVERWRITE`，避免绕过 SparkOne Safe Save。
+- `allowNativeDropTable = false`：默认禁止原生 Spark SQL `DROP TABLE`，避免误删 Hive/catalog 表；该开关只从启动配置读取。
 - `overwriteProtectedPaths = [...]`：全局保护 overwrite 边界路径，一行一个；支持 `/*`、`/*/*` 这类整段通配；命中后不允许被单条 SQL 或 `SET` 覆盖。
 
 单条 SQL 里的 `sparkoneOverwrite` 和 `sparkoneOverwriteBackup` 只作为 SparkOne 运行时控制参数，不会传给底层 Spark provider。

@@ -42,6 +42,9 @@ overwriteBackupPath = "/tmp/sparkone_back"
 # 默认禁止原生 Spark SQL 的 INSERT OVERWRITE，避免绕过 SparkOne Safe Save。
 # 历史脚本确实需要兼容时，再显式改为 true。
 allowNativeInsertOverwrite = false
+# 默认禁止原生 Spark SQL 的 DROP TABLE，避免误删 Hive/catalog 表。
+# 该开关只允许通过启动配置打开，不允许被 SQL 或 SET 覆盖。
+allowNativeDropTable = false
 # 全局保护 overwrite 边界路径。命中后不允许被 SQL 参数或 SET 覆盖。
 # 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
 # 例如配置 "/public/odep/user" 后，"/public/odep/user" 会被拦截，

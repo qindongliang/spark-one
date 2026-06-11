@@ -1,6 +1,6 @@
 package ai.sparkone.runtime
 
-import ai.sparkone.sql.{CompileException, SaveControlOptions, SaveStatementMetadata}
+import ai.sparkone.sql.{CompileException, SaveControlOptions, SaveStatementMetadata, SaveTargetType}
 import org.apache.hadoop.fs.{FileSystem, Path, Trash}
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
@@ -30,7 +30,10 @@ final class SaveOverwriteGuard(spark: SparkSession) {
             s"SAVE overwrite requires explicit confirmation for path: ${metadata.path}. " +
               s"""Add option ${SaveControlOptions.Overwrite}="allow", or set [save] overwritePolicy = "allow" in TOML.""")
         case OverwritePolicy.Allow =>
-          prepareBackup(metadata, policy)
+          metadata.targetType match {
+            case SaveTargetType.File => prepareBackup(metadata, policy)
+            case SaveTargetType.Catalog => prepareCatalogOverwrite(metadata, policy)
+          }
       }
     }
   }
@@ -201,6 +204,17 @@ final class SaveOverwriteGuard(spark: SparkSession) {
             s"backup=$backup, costMs=$backupCostMs")
         Some(new RenamePreparation(fs, target, qualifiedTarget, backup))
     }
+  }
+
+  private def prepareCatalogOverwrite(
+      metadata: SaveStatementMetadata,
+      policy: ResolvedSetting[OverwritePolicy]): Option[OverwritePreparation] = {
+    val backup = effectiveBackup(metadata)
+    logger.warn(
+      s"Safe Save: catalog overwrite allowed, table=${metadata.table}, format=${metadata.format}, " +
+        s"target=${metadata.path}, policy=${formatSetting(policy)}, " +
+        s"backup=${formatSetting(backup)} ignored for catalog target")
+    Some(new CatalogPreparation(metadata.path))
   }
 
   private def validateProtectedPaths(
@@ -386,6 +400,18 @@ object SaveOverwriteGuard {
       } else {
         logger.warn(s"Safe Save: rollback failed to restore backup, backup=$backup, writeTarget=$writeTarget")
       }
+    }
+  }
+
+  private final class CatalogPreparation(targetTable: String) extends OverwritePreparation {
+    private val logger = LoggerFactory.getLogger(getClass)
+
+    override def commit(): Unit = {
+      logger.warn(s"Safe Save: catalog overwrite commit success, target=$targetTable")
+    }
+
+    override def rollback(): Unit = {
+      logger.warn(s"Safe Save: catalog overwrite rollback is not available, target=$targetTable")
     }
   }
 
