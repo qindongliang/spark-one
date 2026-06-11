@@ -30,7 +30,7 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def compilesMysqlLoadFromTomlDatasourceWithoutRenderingCredentials(): Unit = {
+  def compilesMysqlLoadFromHoconDatasourceWithoutRenderingCredentials(): Unit = {
     withSystemProperties(Map(
       "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
       "sparkone.datasource.mysql.analytics.user" -> "reader",

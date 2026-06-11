@@ -47,7 +47,7 @@ group by city;
 - `load hive` 是 catalog 表读取语义，编译成 `CREATE ... AS SELECT * FROM db.table`。
 - `save ... as hive` 是 catalog 表写入语义，编译成 `INSERT INTO/OVERWRITE TABLE db.table SELECT * FROM source`。
 - `save ... partitionBy col1, col2` 只用于 catalog 表写入，编译成 Spark SQL 动态分区 `PARTITION (col1, col2)`。
-- `load/save mysql` 是薄 runtime adapter：连接信息从 TOML 读取，编译展示安全占位 SQL，执行时使用 Spark JDBC reader/writer。
+- `load/save mysql` 是薄 runtime adapter：连接信息从 HOCON 读取，编译展示安全占位 SQL，执行时使用 Spark JDBC reader/writer。
 - 不支持 `load/save jdbc`，避免账号密码和连接串散落在 SQL 里。
 - `excel` 是外部 Spark DataSource provider，编译成 `USING excel`，由依赖注册 provider 短名。
 

@@ -178,7 +178,7 @@ private final class NativeSqlSafetyGuard {
       throw new CompileException(
         "Native Spark SQL INSERT OVERWRITE is disabled by SparkOne Safe Save policy. " +
           "Use SparkOne DSL `save overwrite ...` so overwrite protection can run, " +
-          "or set [save] allowNativeInsertOverwrite = true in TOML for compatibility.")
+          "or set save.allowNativeInsertOverwrite = true in HOCON for compatibility.")
     }
     if (statement.save.isEmpty && containsDropTable(statement.sql) && !isNativeDropTableEnabled) {
       logger.warn(
@@ -186,7 +186,7 @@ private final class NativeSqlSafetyGuard {
           s"allowNativeDropTable=false, sql=${summarizeSql(statement.sql)}")
       throw new CompileException(
         "Native Spark SQL DROP TABLE is disabled by SparkOne DDL safety policy. " +
-          "Set [save] allowNativeDropTable = true in TOML only when the deployment explicitly allows table drops.")
+          "Set save.allowNativeDropTable = true in HOCON only when the deployment explicitly allows table drops.")
     }
   }
 

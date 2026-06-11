@@ -14,7 +14,7 @@ http://127.0.0.1:7070
 - `Compile`：只编译，不执行。适合检查 `load/save` 这类 SparkOne DSL 被转成了什么 Spark SQL。
 - `Run`：编译后按顺序执行每条 SQL，后面的语句可以使用前面创建的临时视图。
 - 选中执行：如果编辑器里有选中的 SQL，`Compile` 和 `Run` 只处理选中部分；没有选区时处理整篇脚本。
-- `Run` 默认隐藏每条 statement 的编译后 SQL；如果需要调试转译结果，在 `conf/sparkone.toml` 里配置 `[server] showCompiledSql = true`。
+- `Run` 默认隐藏每条 statement 的编译后 SQL；如果需要调试转译结果，在 `conf/sparkone.conf` 里配置 `server.showCompiledSql = true`。
 - `Rows`：控制每条查询最多展示多少行，服务端会限制在 `1` 到 `1000`。
 - 右侧结果区：展示每条语句的编译后 SQL、耗时、schema 和结果数据；失败语句会显示错误信息。
 
@@ -281,26 +281,29 @@ SELECT * FROM default.some_table;
 
 MySQL：
 
-先在 `conf/sparkone.toml` 配置连接，SQL 里只引用连接名：
+先在 `conf/sparkone.conf` 配置连接，SQL 里只引用连接名：
 
-```toml
-[datasources.mysql.analytics]
-url = "jdbc:mysql://192.168.1.179:3306/Dworks?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
-driver = "com.mysql.cj.jdbc.Driver"
-user = "root"
-password = "******"
+```hocon
+datasources.mysql.analytics {
+  url = "jdbc:mysql://192.168.1.179:3306/Dworks?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+  driver = "com.mysql.cj.jdbc.Driver"
+  user = "root"
+  password = "******"
 
-[datasources.mysql.analytics.options]
-fetchsize = "1000"
-batchsize = "1000"
+  options {
+    fetchsize = 1000
+    batchsize = 1000
+  }
+}
 ```
 
-运行时还需要 MySQL JDBC driver 在 classpath 中，可以在 TOML 里选择 `packages` 或本地 JAR：
+运行时还需要 MySQL JDBC driver 在 classpath 中，可以在 HOCON 里选择 `packages` 或本地 JAR：
 
-```toml
-[jars]
-packages = "com.mysql:mysql-connector-j:8.4.0"
-# jars = "/Users/qindongliang/.m2/repository/com/mysql/mysql-connector-j/8.4.0/mysql-connector-j-8.4.0.jar"
+```hocon
+jars {
+  packages = "com.mysql:mysql-connector-j:8.4.0"
+  # jars = "/Users/qindongliang/.m2/repository/com/mysql/mysql-connector-j/8.4.0/mysql-connector-j-8.4.0.jar"
+}
 ```
 
 先在 MySQL 客户端准备测试表和数据：
@@ -342,7 +345,7 @@ load mysql.`analytics.sparkone_mysql_seed` as mysql_seed;
 select * from mysql_seed order by id;
 ```
 
-`load mysql` 会在运行时用 Spark JDBC reader 注册临时视图。`Compile` 只展示安全占位 SQL，不展示 TOML 里的账号密码：
+`load mysql` 会在运行时用 Spark JDBC reader 注册临时视图。`Compile` 只展示安全占位 SQL，不展示 HOCON 里的账号密码：
 
 ```sql
 SELECT 'LOAD MYSQL' AS sparkone_action, 'sparkone_mysql_seed AS mysql_seed' AS sparkone_target
@@ -374,11 +377,12 @@ select * from mysql_saved_result order by city;
 
 测试 `save overwrite` 覆盖 MySQL：
 
-MySQL overwrite 默认被启动级安全开关拦截。确认要测试覆盖写时，先在 `conf/sparkone.toml` 的 `[save]` 中打开：
+MySQL overwrite 默认被启动级安全开关拦截。确认要测试覆盖写时，先在 `conf/sparkone.conf` 的 `save` 中打开：
 
-```toml
-[save]
-allowMysqlOverwrite = true
+```hocon
+save {
+  allowMysqlOverwrite = true
+}
 ```
 
 然后在编辑器里执行：
@@ -405,32 +409,33 @@ select * from mysql_overwritten_result order by city;
 说明：
 
 - SparkOne DSL 不支持 `load/save jdbc`；MySQL 统一使用 `load/save mysql`。
-- `mysql.\`analytics.sparkone_mysql_seed\`` 中 `analytics` 是 TOML 连接名，`sparkone_mysql_seed` 是 MySQL 表名。
+- `mysql.\`analytics.sparkone_mysql_seed\`` 中 `analytics` 是 HOCON 连接名，`sparkone_mysql_seed` 是 MySQL 表名。
 - SQL 里的 `options` 只能补充 `fetchsize`、`batchsize`、`truncate` 等非连接参数，不能覆盖 `url/user/password/driver/dbtable`。
-- `save overwrite ... as mysql` 需要先用 TOML 打开 `[save] allowMysqlOverwrite = true`，再用单条 SQL 的 `sparkoneOverwrite="allow"` 显式确认；SparkOne 不会对 MySQL 表做备份。
+- `save overwrite ... as mysql` 需要先用 HOCON 打开 `save.allowMysqlOverwrite = true`，再用单条 SQL 的 `sparkoneOverwrite="allow"` 显式确认；SparkOne 不会对 MySQL 表做备份。
 - `load` 只是注册临时视图，不负责限制结果行数；需要抽样查看时，在后续 `select * from mysql_seed limit 10` 中限制。
 
 ## 使用 SparkOne Save DSL
 
 文件类 save 当前只支持 `save overwrite`。它会转成 Spark SQL 的 `INSERT OVERWRITE DIRECTORY`。
 
-为了避免路径写错时覆盖已有目录，默认 `conf/sparkone.toml` 使用：
+为了避免路径写错时覆盖已有目录，默认 `conf/sparkone.conf` 使用：
 
-```toml
-[save]
-overwritePolicy = "requireExplicit"
-overwriteBackup = "rename"
-overwriteBackupPath = "/tmp/sparkone_back"
-allowNativeInsertOverwrite = false
-allowNativeDropTable = false
-# 可选：全局保护危险 overwrite 边界路径，命中后不能被 SQL 覆盖。
-# 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
-# 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
-# overwriteProtectedPaths = [
-#   "/",
-#   "/user",
-#   "/tmp",
-# ]
+```hocon
+save {
+  overwritePolicy = "requireExplicit"
+  overwriteBackup = "rename"
+  overwriteBackupPath = "/tmp/sparkone_back"
+  allowNativeInsertOverwrite = false
+  allowNativeDropTable = false
+  # 可选：全局保护危险 overwrite 边界路径，命中后不能被 SQL 覆盖。
+  # 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
+  # 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
+  # overwriteProtectedPaths = [
+  #   "/",
+  #   "/user",
+  #   "/tmp",
+  # ]
+}
 ```
 
 因此覆盖写需要在当前 `save` 语句里显式确认：
@@ -465,11 +470,12 @@ as parquet.`/tmp/sparkone_native_insert_overwrite_blocked`
 options sparkoneOverwrite="allow";
 ```
 
-如果临时需要验证兼容模式，先在 `conf/sparkone.toml` 中配置并重启服务：
+如果临时需要验证兼容模式，先在 `conf/sparkone.conf` 中配置并重启服务：
 
-```toml
-[save]
-allowNativeInsertOverwrite = true
+```hocon
+save {
+  allowNativeInsertOverwrite = true
+}
 ```
 
 然后再次执行原生 `INSERT OVERWRITE`，预期可以成功。但此时不会走 SparkOne Safe Save 的备份和保护路径逻辑。
@@ -495,11 +501,12 @@ set sparkone.save.native.dropTable.enabled=true;
 drop table default.sparkone_drop_table_blocked;
 ```
 
-如果测试环境确实需要执行原生删表，先在 `conf/sparkone.toml` 中配置并重启服务：
+如果测试环境确实需要执行原生删表，先在 `conf/sparkone.conf` 中配置并重启服务：
 
-```toml
-[save]
-allowNativeDropTable = true
+```hocon
+save {
+  allowNativeDropTable = true
+}
 ```
 
 如果配置了 `overwriteProtectedPaths` 且包含 `/tmp`，只会拦截覆盖 `/tmp` 本身；下面这些 `/tmp/...` 子目录示例仍可以作为测试路径。
@@ -665,7 +672,7 @@ order by dt, city;
 
 ## HDFS 和 Hive 测试
 
-如果使用 `conf/sparkone.toml` 配置了 Hadoop/Hive/Kerberos，页面里可以直接写 HDFS 路径或 Hive 表。裸路径 `/tmp/...` 会按 Hadoop `fs.defaultFS` 解析；为了让脚本更明确，也可以写成 `hdfs:///tmp/...`。
+如果使用 `conf/sparkone.conf` 配置了 Hadoop/Hive/Kerberos，页面里可以直接写 HDFS 路径或 Hive 表。裸路径 `/tmp/...` 会按 Hadoop `fs.defaultFS` 解析；为了让脚本更明确，也可以写成 `hdfs:///tmp/...`。
 
 HDFS CSV：
 
@@ -691,15 +698,16 @@ select * from t limit 20;
 
 ## Excel 测试
 
-`excel` 当前只是 provider 别名，主包不内置 Excel connector。要测试 Excel，启动时必须提供对应 provider jar 或 Maven package，例如在 `conf/sparkone.toml` 中配置：
+`excel` 当前只是 provider 别名，主包不内置 Excel connector。要测试 Excel，启动时必须提供对应 provider jar 或 Maven package，例如在 `conf/sparkone.conf` 中配置：
 
-```toml
-[jars]
-packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
-# 或者直接指定本地 jar：
-# jars = "/Users/qindongliang/.m2/repository/dev/mauch/spark-excel_2.12/3.5.6_0.31.2/spark-excel_2.12-3.5.6_0.31.2.jar"
-# 如果只是分发普通配置文件，用 files，不要用来放 provider jar：
-# files = "/path/to/app.conf"
+```hocon
+jars {
+  packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
+  # 或者直接指定本地 jar：
+  # jars = "/Users/qindongliang/.m2/repository/dev/mauch/spark-excel_2.12/3.5.6_0.31.2/spark-excel_2.12-3.5.6_0.31.2.jar"
+  # 如果只是分发普通配置文件，用 files，不要用来放 provider jar：
+  # files = "/path/to/app.conf"
+}
 ```
 
 `packages` 使用 Maven 坐标，由 Spark/Ivy 解析依赖；`jars` 对应 Spark 原生 `spark.jars`，可以直接写本地 jar 的绝对路径。`files` 对应 Spark 原生 `spark.files`，只分发普通文件，不会加入 classpath，不能用来加载 Excel provider。
@@ -716,11 +724,13 @@ select * from users_excel limit 20;
 
 如果 provider 没加载，`Compile` 可能成功，但 `Run` 会失败，因为真正解析 provider 的是 Spark runtime。
 
-如果启动 SparkContext 时出现 `Failed to connect to /192.168...` 且日志里有 `Added JAR ... at spark://.../jars/...`，通常是本地调试时 Spark driver 广播地址和实际绑定地址不一致。`conf/sparkone.toml` 的 `[spark]` 建议保留：
+如果启动 SparkContext 时出现 `Failed to connect to /192.168...` 且日志里有 `Added JAR ... at spark://.../jars/...`，通常是本地调试时 Spark driver 广播地址和实际绑定地址不一致。`conf/sparkone.conf` 的 `spark` 建议保留：
 
-```toml
-driverHost = "127.0.0.1"
-driverBindAddress = "127.0.0.1"
+```hocon
+spark {
+  driverHost = "127.0.0.1"
+  driverBindAddress = "127.0.0.1"
+}
 ```
 
 这个配置只适合本地 `local[*]` 调试；如果改成 `master = "yarn"`，不要把 `driverHost` 固定为 `127.0.0.1`，应使用 executor 能访问到的 driver 地址，或交给 Spark/YARN 环境决定。

@@ -10,12 +10,10 @@ import io.javalin.http.Context
 import io.javalin.http.RequestLogger
 import io.javalin.http.staticfiles.Location
 import org.slf4j.LoggerFactory
-import toml.derivation.auto._
+import com.typesafe.config.{Config, ConfigException, ConfigFactory}
 
-import java.io.FileInputStream
 import java.nio.file.Files
 import java.nio.file.Paths
-import java.util.Properties
 import java.util.function.Consumer
 import scala.collection.JavaConverters._
 
@@ -153,7 +151,7 @@ final case class SqlRequest(script: String, limit: Int)
 private final case class ServerOptions(port: Option[Int], properties: Map[String, String])
 
 private object ServerOptions {
-  private val DefaultConfigFile = "conf/sparkone.toml"
+  private val DefaultConfigFile = "conf/sparkone.conf"
 
   def parse(args: Array[String]): ServerOptions = {
     val arguments = args.toSeq
@@ -297,195 +295,155 @@ private object ServerOptions {
 
 private[server] object ServerConfigFile {
   def load(path: String): Map[String, String] = {
-    if (path.endsWith(".toml")) {
-      loadToml(path)
-    } else {
-      loadProperties(path)
-    }
+    loadHocon(path)
   }
 
-  private def loadToml(path: String): Map[String, String] = {
-    val content = new String(Files.readAllBytes(Paths.get(path)), "UTF-8")
-    toml.Toml.parseAs[SparkOneTomlConfig](content) match {
-      case Right(config) => config.toProperties
-      case Left((path, message)) =>
-        val location = if (path.isEmpty) "<root>" else path.mkString(".")
-        throw new IllegalArgumentException(s"Invalid TOML config file $path: $location $message")
-    }
-  }
-
-  private def loadProperties(path: String): Map[String, String] = {
-    val properties = new Properties()
-    val input = new FileInputStream(path)
+  private def loadHocon(path: String): Map[String, String] = {
     try {
-      properties.load(input)
-    } finally {
-      input.close()
+      SparkOneHoconConfig.toProperties(ConfigFactory.parseFile(Paths.get(path).toFile).resolve())
+    } catch {
+      case e: ConfigException =>
+        throw new IllegalArgumentException(s"Invalid HOCON config file $path: ${e.getMessage}", e)
     }
-
-    properties.stringPropertyNames().asScala
-      .filter(name =>
-        name.startsWith("sparkone.") ||
-          name.startsWith("spark.") ||
-          name == "java.security.krb5.conf")
-      .map(name => name -> properties.getProperty(name).trim)
-      .filter(_._2.nonEmpty)
-      .toMap
   }
 }
 
-private final case class SparkOneTomlConfig(
-    server: Option[ServerTomlSection] = None,
-    spark: Option[SparkTomlSection] = None,
-    hadoop: Option[HadoopTomlSection] = None,
-    hive: Option[HiveTomlSection] = None,
-    kerberos: Option[KerberosTomlSection] = None,
-    save: Option[SaveTomlSection] = None,
-    jars: Option[JarsTomlSection] = None,
-    datasources: Option[DataSourcesTomlSection] = None) {
-
-  def toProperties: Map[String, String] = {
+private[server] object SparkOneHoconConfig {
+  def toProperties(config: Config): Map[String, String] = {
     Seq(
-      server.toSeq.flatMap(_.toProperties),
-      spark.toSeq.flatMap(_.toProperties),
-      hadoop.toSeq.flatMap(_.toProperties),
-      hive.toSeq.flatMap(_.toProperties),
-      kerberos.toSeq.flatMap(_.toProperties),
-      save.toSeq.flatMap(_.toProperties),
-      jars.toSeq.flatMap(_.toProperties),
-      datasources.toSeq.flatMap(_.toProperties)).flatten.toMap
+      serverProperties(config),
+      sparkProperties(config),
+      hadoopProperties(config),
+      hiveProperties(config),
+      kerberosProperties(config),
+      saveProperties(config),
+      jarsProperties(config),
+      dataSourceProperties(config),
+      passthroughProperties(config)).flatten.toMap
   }
-}
 
-private final case class ServerTomlSection(
-    host: Option[String] = None,
-    port: Option[Int] = None,
-    logLevel: Option[String] = None,
-    showCompiledSql: Option[Boolean] = None) {
-  def toProperties: Map[String, String] = {
+  private def serverProperties(config: Config): Map[String, String] = {
     Seq(
-      host.map("sparkone.host" -> _),
-      port.map(value => "sparkone.port" -> value.toString),
-      logLevel.map("sparkone.logLevel" -> _),
-      showCompiledSql.map(value => "sparkone.ui.showCompiledSql" -> value.toString)).flatten.toMap
+      string(config, "server.host").map("sparkone.host" -> _),
+      int(config, "server.port").map(value => "sparkone.port" -> value.toString),
+      string(config, "server.logLevel").map("sparkone.logLevel" -> _),
+      boolean(config, "server.showCompiledSql").map(value => "sparkone.ui.showCompiledSql" -> value.toString)).flatten.toMap
   }
-}
 
-private final case class SparkTomlSection(
-    master: Option[String] = None,
-    driverHost: Option[String] = None,
-    driverBindAddress: Option[String] = None,
-    kerberos: Option[SparkKerberosTomlSection] = None) {
-  def toProperties: Map[String, String] = {
-    (master.map("spark.master" -> _).toSeq ++
-      driverHost.map("spark.driver.host" -> _).toSeq ++
-      driverBindAddress.map("spark.driver.bindAddress" -> _).toSeq ++
-      kerberos.toSeq.flatMap(_.toProperties)).toMap
-  }
-}
-
-private final case class SparkKerberosTomlSection(
-    principal: Option[String] = None,
-    keytab: Option[String] = None) {
-  def toProperties: Map[String, String] = {
+  private def sparkProperties(config: Config): Map[String, String] = {
     Seq(
-      principal.map("spark.kerberos.principal" -> _),
-      keytab.map("spark.kerberos.keytab" -> _)).flatten.toMap
+      string(config, "spark.master").map("spark.master" -> _),
+      string(config, "spark.driverHost").map("spark.driver.host" -> _),
+      string(config, "spark.driverBindAddress").map("spark.driver.bindAddress" -> _),
+      string(config, "spark.kerberos.principal").map("spark.kerberos.principal" -> _),
+      string(config, "spark.kerberos.keytab").map("spark.kerberos.keytab" -> _)).flatten.toMap
   }
-}
 
-private final case class SaveTomlSection(
-    overwritePolicy: Option[String] = None,
-    overwriteBackup: Option[String] = None,
-    overwriteBackupPath: Option[String] = None,
-    overwriteProtectedPaths: Option[List[String]] = None,
-    allowMysqlOverwrite: Option[Boolean] = None,
-    allowNativeInsertOverwrite: Option[Boolean] = None,
-    allowNativeDropTable: Option[Boolean] = None) {
-  def toProperties: Map[String, String] = {
+  private def saveProperties(config: Config): Map[String, String] = {
     Seq(
-      overwritePolicy.map("sparkone.save.overwrite.policy" -> _),
-      overwriteBackup.map("sparkone.save.overwrite.backup" -> _),
-      overwriteBackupPath.map("sparkone.save.overwrite.backup.path" -> _),
-      overwriteProtectedPaths
+      string(config, "save.overwritePolicy").map("sparkone.save.overwrite.policy" -> _),
+      string(config, "save.overwriteBackup").map("sparkone.save.overwrite.backup" -> _),
+      string(config, "save.overwriteBackupPath").map("sparkone.save.overwrite.backup.path" -> _),
+      stringList(config, "save.overwriteProtectedPaths")
         .map(paths => paths.map(_.trim).filter(_.nonEmpty).mkString("\n"))
         .filter(_.nonEmpty)
         .map("sparkone.save.overwrite.protected.paths" -> _),
-      allowMysqlOverwrite.map(value => "sparkone.save.mysql.overwrite.enabled" -> value.toString),
-      allowNativeInsertOverwrite.map(value => "sparkone.save.native.insertOverwrite.enabled" -> value.toString),
-      allowNativeDropTable.map(value => "sparkone.save.native.dropTable.enabled" -> value.toString)).flatten.toMap
+      boolean(config, "save.allowMysqlOverwrite").map(value => "sparkone.save.mysql.overwrite.enabled" -> value.toString),
+      boolean(config, "save.allowNativeInsertOverwrite").map(value => "sparkone.save.native.insertOverwrite.enabled" -> value.toString),
+      boolean(config, "save.allowNativeDropTable").map(value => "sparkone.save.native.dropTable.enabled" -> value.toString)).flatten.toMap
   }
-}
 
-private final case class HadoopTomlSection(
-    confDir: Option[String] = None,
-    confFiles: Option[String] = None,
-    groupStaticOverrides: Option[String] = None) {
-  def toProperties: Map[String, String] = {
+  private def hadoopProperties(config: Config): Map[String, String] = {
     Seq(
-      confDir.map("sparkone.hadoop.conf.dir" -> _),
-      confFiles.map("sparkone.hadoop.conf.files" -> _),
-      groupStaticOverrides.map("sparkone.hadoop.group.static.mapping.overrides" -> _)).flatten.toMap
+      string(config, "hadoop.confDir").map("sparkone.hadoop.conf.dir" -> _),
+      string(config, "hadoop.confFiles").map("sparkone.hadoop.conf.files" -> _),
+      string(config, "hadoop.groupStaticOverrides").map("sparkone.hadoop.group.static.mapping.overrides" -> _)).flatten.toMap
   }
-}
 
-private final case class HiveTomlSection(
-    enabled: Option[Boolean] = None,
-    confFile: Option[String] = None,
-    confDir: Option[String] = None) {
-  def toProperties: Map[String, String] = {
+  private def hiveProperties(config: Config): Map[String, String] = {
     Seq(
-      enabled.map(value => "sparkone.hive.enabled" -> value.toString),
-      confFile.map("sparkone.hive.conf.file" -> _),
-      confDir.map("sparkone.hive.conf.dir" -> _)).flatten.toMap
+      boolean(config, "hive.enabled").map(value => "sparkone.hive.enabled" -> value.toString),
+      string(config, "hive.confFile").map("sparkone.hive.conf.file" -> _),
+      string(config, "hive.confDir").map("sparkone.hive.conf.dir" -> _)).flatten.toMap
   }
-}
 
-private final case class KerberosTomlSection(
-    krb5Conf: Option[String] = None) {
-  def toProperties: Map[String, String] = {
-    Seq(krb5Conf.map("java.security.krb5.conf" -> _)).flatten.toMap
+  private def kerberosProperties(config: Config): Map[String, String] = {
+    Seq(string(config, "kerberos.krb5Conf").map("java.security.krb5.conf" -> _)).flatten.toMap
   }
-}
 
-private final case class JarsTomlSection(
-    packages: Option[String] = None,
-    jars: Option[String] = None,
-    files: Option[String] = None,
-    repositories: Option[String] = None) {
-  def toProperties: Map[String, String] = {
+  private def jarsProperties(config: Config): Map[String, String] = {
     Seq(
-      packages.map("spark.jars.packages" -> _),
-      jars.map("spark.jars" -> _),
-      files.map("spark.files" -> _),
-      repositories.map("spark.jars.repositories" -> _)).flatten.toMap
+      string(config, "jars.packages").map("spark.jars.packages" -> _),
+      string(config, "jars.jars").map("spark.jars" -> _),
+      string(config, "jars.files").map("spark.files" -> _),
+      string(config, "jars.repositories").map("spark.jars.repositories" -> _)).flatten.toMap
   }
-}
 
-private final case class DataSourcesTomlSection(
-    mysql: Option[Map[String, MysqlDataSourceTomlSection]] = None) {
-  def toProperties: Map[String, String] = {
-    mysql.toSeq.flatMap(_.toSeq).flatMap { case (name, config) =>
-      config.toProperties(name)
-    }.toMap
+  private def dataSourceProperties(config: Config): Map[String, String] = {
+    if (!config.hasPath("datasources.mysql")) {
+      Map.empty
+    } else {
+      config.getConfig("datasources.mysql").root().keySet().asScala.flatMap { name =>
+        val datasource = config.getConfig(s"datasources.mysql.$name")
+        mysqlProperties(name, datasource)
+      }.toMap
+    }
   }
-}
 
-private final case class MysqlDataSourceTomlSection(
-    url: Option[String] = None,
-    driver: Option[String] = None,
-    user: Option[String] = None,
-    password: Option[String] = None,
-    options: Option[Map[String, String]] = None) {
-  def toProperties(name: String): Map[String, String] = {
+  private def mysqlProperties(name: String, config: Config): Map[String, String] = {
     val prefix = s"sparkone.datasource.mysql.$name"
     (Seq(
-      url.map(s"$prefix.url" -> _),
-      driver.map(s"$prefix.driver" -> _),
-      user.map(s"$prefix.user" -> _),
-      password.map(s"$prefix.password" -> _)).flatten ++
-      options.toSeq.flatMap(_.toSeq).map { case (key, value) =>
+      string(config, "url").map(s"$prefix.url" -> _),
+      string(config, "driver").map(s"$prefix.driver" -> _),
+      string(config, "user").map(s"$prefix.user" -> _),
+      string(config, "password").map(s"$prefix.password" -> _)).flatten ++
+      stringMap(config, "options").map { case (key, value) =>
         s"$prefix.option.$key" -> value
       }).toMap
+  }
+
+  private def passthroughProperties(config: Config): Map[String, String] = {
+    config.entrySet().asScala
+      .map(entry => entry.getKey -> unwrappedString(entry.getValue.unwrapped()))
+      .collect {
+        case (key, value) if value.nonEmpty &&
+          (key.startsWith("sparkone.") || key.startsWith("spark.") || key == "java.security.krb5.conf") =>
+          key -> value
+      }
+      .toMap
+  }
+
+  private def string(config: Config, path: String): Option[String] = {
+    if (config.hasPath(path)) {
+      Some(config.getString(path).trim).filter(_.nonEmpty)
+    } else {
+      None
+    }
+  }
+
+  private def int(config: Config, path: String): Option[Int] = {
+    if (config.hasPath(path)) Some(config.getInt(path)) else None
+  }
+
+  private def boolean(config: Config, path: String): Option[Boolean] = {
+    if (config.hasPath(path)) Some(config.getBoolean(path)) else None
+  }
+
+  private def stringList(config: Config, path: String): Option[List[String]] = {
+    if (config.hasPath(path)) Some(config.getStringList(path).asScala.toList) else None
+  }
+
+  private def stringMap(config: Config, path: String): Map[String, String] = {
+    if (config.hasPath(path)) {
+      config.getConfig(path).entrySet().asScala.map { entry =>
+        entry.getKey -> unwrappedString(entry.getValue.unwrapped())
+      }.filter(_._2.nonEmpty).toMap
+    } else {
+      Map.empty
+    }
+  }
+
+  private def unwrappedString(value: Any): String = {
+    Option(value).map(_.toString.trim).getOrElse("")
   }
 }

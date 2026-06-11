@@ -12,7 +12,7 @@ final class DataSourceResolver(
   def resolveLoad(format: String, path: String, options: Seq[(String, String)]): ResolvedLoadSource = {
     val normalized = format.toLowerCase
     if (normalized == "jdbc") {
-      throw new CompileException("SparkOne does not support LOAD jdbc. Use LOAD mysql with TOML datasource config.")
+      throw new CompileException("SparkOne does not support LOAD jdbc. Use LOAD mysql with HOCON datasource config.")
     } else if (normalized == "mysql") {
       val target = mysqlTarget(path, "LOAD")
       MysqlLoadSource(target.dbtable, mysqlOptions(target.connection, target.dbtable, options))
@@ -29,7 +29,7 @@ final class DataSourceResolver(
   def resolveSave(format: String, path: String, options: Seq[(String, String)]): ResolvedSaveSource = {
     val normalized = format.toLowerCase
     if (normalized == "jdbc") {
-      throw new CompileException("SparkOne does not support SAVE jdbc. Use SAVE mysql with TOML datasource config.")
+      throw new CompileException("SparkOne does not support SAVE jdbc. Use SAVE mysql with HOCON datasource config.")
     } else if (normalized == "mysql") {
       val target = mysqlTarget(path, "SAVE")
       MysqlSaveSource(target.dbtable, mysqlOptions(target.connection, target.dbtable, options))
@@ -60,7 +60,7 @@ final class DataSourceResolver(
       statementOptions: Seq[(String, String)]): Seq[(String, String)] = {
     val forbidden = Set("url", "driver", "user", "password", "dbtable")
     statementOptions.find { case (key, _) => forbidden.contains(key.toLowerCase) }.foreach { case (key, _) =>
-      throw new CompileException(s"MySQL connection option '$key' must be configured in TOML, not SQL OPTIONS")
+      throw new CompileException(s"MySQL connection option '$key' must be configured in HOCON, not SQL OPTIONS")
     }
 
     val base = mysqlConnectionOptions(connection)
@@ -89,7 +89,7 @@ final class DataSourceResolver(
 
   private def requiredMysqlProperty(connection: String, key: String): String = {
     optionalMysqlProperty(connection, key).getOrElse {
-      throw new CompileException(s"Missing TOML config [datasources.mysql.$connection] $key for MySQL datasource")
+      throw new CompileException(s"Missing HOCON config datasources.mysql.$connection.$key for MySQL datasource")
     }
   }
 

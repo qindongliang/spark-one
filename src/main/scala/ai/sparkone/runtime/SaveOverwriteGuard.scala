@@ -30,7 +30,7 @@ final class SaveOverwriteGuard(spark: SparkSession) {
               s"""add ${SaveControlOptions.Overwrite}="allow" to this save statement""")
           throw new CompileException(
             s"SAVE overwrite requires explicit confirmation for path: ${metadata.path}. " +
-              s"""Add option ${SaveControlOptions.Overwrite}="allow", or set [save] overwritePolicy = "allow" in TOML.""")
+              s"""Add option ${SaveControlOptions.Overwrite}="allow", or set save.overwritePolicy = "allow" in HOCON.""")
         case OverwritePolicy.Allow =>
           metadata.targetType match {
             case SaveTargetType.File => prepareBackup(metadata, policy)
@@ -48,7 +48,7 @@ final class SaveOverwriteGuard(spark: SparkSession) {
           s"allowMysqlOverwrite=false")
       throw new CompileException(
         s"SAVE overwrite for MySQL is disabled by SparkOne policy for table: ${metadata.path}. " +
-          "Set [save] allowMysqlOverwrite = true in TOML, then use option sparkoneOverwrite=\"allow\" for this statement.")
+          "Set save.allowMysqlOverwrite = true in HOCON, then use option sparkoneOverwrite=\"allow\" for this statement.")
     }
   }
 

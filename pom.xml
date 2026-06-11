@@ -23,7 +23,7 @@
         <javalin.version>4.6.7</javalin.version>
         <codemirror.version>5.65.19</codemirror.version>
         <jackson.version>2.15.2</jackson.version>
-        <toml.scala.version>0.3.0</toml.scala.version>
+        <typesafe.config.version>1.4.3</typesafe.config.version>
         <slf4j.version>2.0.7</slf4j.version>
         <junit.version>4.13.2</junit.version>
     </properties>
@@ -65,9 +65,9 @@
             <version>${jackson.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.indoorvivants</groupId>
-            <artifactId>toml_${scala.binary.version}</artifactId>
-            <version>${toml.scala.version}</version>
+            <groupId>com.typesafe</groupId>
+            <artifactId>config</artifactId>
+            <version>${typesafe.config.version}</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>

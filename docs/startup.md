@@ -29,15 +29,15 @@ mvn exec:java \
   -Dexec.args="--port 7071"
 ```
 
-## TOML
+## HOCON
 
-推荐本地开发和 IDEA 都使用 TOML：
+推荐本地开发和 IDEA 都使用 HOCON：
 
 ```bash
-cp conf/sparkone.toml.template conf/sparkone.toml
+cp conf/sparkone.conf.template conf/sparkone.conf
 ```
 
-默认启动会自动读取 `conf/sparkone.toml`：
+默认启动会自动读取 `conf/sparkone.conf`：
 
 ```bash
 mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
@@ -48,7 +48,7 @@ mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
 ```bash
 mvn exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
-  -Dexec.args="--conf conf/sparkone.toml"
+  -Dexec.args="--conf conf/sparkone.conf"
 ```
 
 临时覆盖端口：
@@ -56,15 +56,15 @@ mvn exec:java \
 ```bash
 mvn exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
-  -Dexec.args="--conf conf/sparkone.toml --port 7071"
+  -Dexec.args="--conf conf/sparkone.conf --port 7071"
 ```
 
 说明：
 
-- `conf/sparkone.toml.template` 是可提交模板。
-- `conf/sparkone.toml` 是本地实际配置，已被 `.gitignore` 忽略。
-- 如果没有传 `--conf`，启动时会自动读取存在的 `conf/sparkone.toml`。
-- 命令行参数优先级高于 TOML。
+- `conf/sparkone.conf.template` 是可提交模板。
+- `conf/sparkone.conf` 是本地实际配置，已被 `.gitignore` 忽略。
+- 如果没有传 `--conf`，启动时会自动读取存在的 `conf/sparkone.conf`。
+- 命令行参数优先级高于 HOCON。
 
 ## IDEA
 
@@ -73,12 +73,12 @@ mvn exec:java \
 - Main class: `ai.sparkone.server.SparkOneServer`
 - Working directory: `/Users/qindongliang/project/ai/spark-one`
 - Use classpath of module: `spark-one`
-- Program arguments: 可留空；如果要显式指定配置文件，可填 `--conf conf/sparkone.toml`
+- Program arguments: 可留空；如果要显式指定配置文件，可填 `--conf conf/sparkone.conf`
 
 运行前先复制模板：
 
 ```bash
-cp conf/sparkone.toml.template conf/sparkone.toml
+cp conf/sparkone.conf.template conf/sparkone.conf
 ```
 
 Java 17 运行 Spark 需要 `.mvn/jvm.config` 中的 module open 参数。若 IDEA 没自动带上，把 `.mvn/jvm.config` 内容复制到 VM options。
@@ -89,15 +89,15 @@ Java 17 运行 Spark 需要 `.mvn/jvm.config` 中的 module open 参数。若 ID
 SIMPLE authentication is not enabled. Available: [TOKEN, KERBEROS]
 ```
 
-通常说明当前进程没有读到 Kerberos/Hadoop/Hive 配置，或 keytab 登录没有生效。先确认 IDEA 的 Working directory 是项目根目录，并且 `conf/sparkone.toml` 存在；或者在 Program arguments 显式填写 `--conf conf/sparkone.toml`。
+通常说明当前进程没有读到 Kerberos/Hadoop/Hive 配置，或 keytab 登录没有生效。先确认 IDEA 的 Working directory 是项目根目录，并且 `conf/sparkone.conf` 存在；或者在 Program arguments 显式填写 `--conf conf/sparkone.conf`。
 
-如果 Hive 查询时出现 `id: odep: no such user` 这类本机用户组 WARN，说明 Hadoop 在 macOS 上尝试解析 Kerberos 用户对应的本地 Unix 组。`conf/sparkone.toml` 里可用 `[hadoop] groupStaticOverrides = "odep=odep"` 处理；未显式配置时，SparkOne 会根据 Kerberos principal 自动补一条 short name 映射。
+如果 Hive 查询时出现 `id: odep: no such user` 这类本机用户组 WARN，说明 Hadoop 在 macOS 上尝试解析 Kerberos 用户对应的本地 Unix 组。`conf/sparkone.conf` 里可用 `hadoop.groupStaticOverrides = "odep=odep"` 处理；未显式配置时，SparkOne 会根据 Kerberos principal 自动补一条 short name 映射。
 
 日志配置：
 
 - 默认使用 `src/main/resources/log4j2.xml`。
 - Console appender 输出到 `SYSTEM_OUT`，IDEA 中普通 INFO/WARN 日志不应再因为 stderr 被整体渲染成红色。
-- 日志级别可通过 `conf/sparkone.toml` 的 `[server] logLevel = "warn"` 或启动参数 `--log-level warn` 调整。
+- 日志级别可通过 `conf/sparkone.conf` 的 `server.logLevel = "warn"` 或启动参数 `--log-level warn` 调整。
 
 如果 IDEA 启动时报类似错误：
 
@@ -129,66 +129,78 @@ java.lang.IllegalAccessError: class org.apache.spark.storage.StorageUtils$ canno
 
 ## HDFS And Hive
 
-推荐把测试环境参数写入 `conf/sparkone.toml`：
+推荐把测试环境参数写入 `conf/sparkone.conf`：
 
-```toml
-[server]
-host = "127.0.0.1"
-port = 7070
-showCompiledSql = false
+```hocon
+server {
+  host = "127.0.0.1"
+  port = 7070
+  showCompiledSql = false
+}
 
-[spark]
-master = "local[*]"
-# local[*] 会默认使用 127.0.0.1；YARN/client 模式不要把 driverHost 固定为 127.0.0.1。
-# driverHost = "127.0.0.1"
-# driverBindAddress = "127.0.0.1"
+spark {
+  master = "local[*]"
+  # local[*] 会默认使用 127.0.0.1；YARN/client 模式不要把 driverHost 固定为 127.0.0.1。
+  # driverHost = "127.0.0.1"
+  # driverBindAddress = "127.0.0.1"
 
-[spark.kerberos]
-principal = "odep@HADOOP.COM"
-keytab = "/Users/qindongliang/bigdata/odep.keytab"
+  kerberos {
+    principal = "odep@HADOOP.COM"
+    keytab = "/Users/qindongliang/bigdata/odep.keytab"
+  }
+}
 
-[hadoop]
-confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
-groupStaticOverrides = "odep=odep"
+hadoop {
+  confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
+  groupStaticOverrides = "odep=odep"
+}
 
-[hive]
-enabled = true
-confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
+hive {
+  enabled = true
+  confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
+}
 
-[kerberos]
-krb5Conf = "/etc/krb5.conf"
+kerberos {
+  krb5Conf = "/etc/krb5.conf"
+}
 
-[save]
-overwritePolicy = "requireExplicit"
-overwriteBackup = "rename"
-overwriteBackupPath = "/tmp/sparkone_back"
-allowMysqlOverwrite = false
-allowNativeInsertOverwrite = false
-allowNativeDropTable = false
-# 生产环境可打开全局保护 overwrite 的高危边界目录，命中后不能被 SQL 或 SET 覆盖。
-# 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
-# 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
-# overwriteProtectedPaths = [
-#   "/",
-#   "/user",
-#   "/tmp",
-# ]
+save {
+  overwritePolicy = "requireExplicit"
+  overwriteBackup = "rename"
+  overwriteBackupPath = "/tmp/sparkone_back"
+  allowMysqlOverwrite = false
+  allowNativeInsertOverwrite = false
+  allowNativeDropTable = false
+  # 生产环境可打开全局保护 overwrite 的高危边界目录，命中后不能被 SQL 或 SET 覆盖。
+  # 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
+  # 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
+  # overwriteProtectedPaths = [
+  #   "/",
+  #   "/user",
+  #   "/tmp",
+  # ]
+}
 
-[datasources.mysql.analytics]
-url = "jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
-driver = "com.mysql.cj.jdbc.Driver"
-user = "root"
-password = "change-me"
+datasources.mysql {
+  analytics {
+    url = "jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+    driver = "com.mysql.cj.jdbc.Driver"
+    user = "root"
+    password = "change-me"
 
-[datasources.mysql.analytics.options]
-fetchsize = "1000"
-batchsize = "1000"
+    options {
+      fetchsize = 1000
+      batchsize = 1000
+    }
+  }
+}
 
-[jars]
-packages = "com.mysql:mysql-connector-j:8.4.0"
+jars {
+  packages = "com.mysql:mysql-connector-j:8.4.0"
+}
 ```
 
-也可以不使用 TOML，直接传程序参数：
+也可以不使用 HOCON，直接传程序参数：
 
 ```bash
 mvn exec:java \
@@ -219,7 +231,7 @@ save overwrite result as parquet.`/tmp/result`
 options sparkoneOverwrite="allow";
 ```
 
-全局策略在 TOML 的 `[save]` 中配置：
+全局策略在 HOCON 的 `save` 中配置：
 
 - `overwritePolicy = "requireExplicit"`：默认值，每条 overwrite 都要写 `sparkoneOverwrite="allow"`。
 - `overwritePolicy = "allow"`：全局允许覆盖。
@@ -235,7 +247,7 @@ options sparkoneOverwrite="allow";
 
 单条 SQL 里的 `sparkoneOverwrite` 和 `sparkoneOverwriteBackup` 只作为 SparkOne 运行时控制参数，不会传给底层 Spark provider。
 
-优先级从高到低是：单条 `save` 参数、当前 SparkSession 的 `SET sparkone.save...`、TOML/启动参数默认值。例如临时放开当前页面会话：
+优先级从高到低是：单条 `save` 参数、当前 SparkSession 的 `SET sparkone.save...`、HOCON/启动参数默认值。例如临时放开当前页面会话：
 
 ```sql
 set sparkone.save.overwrite.policy=allow;

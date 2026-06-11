@@ -12,7 +12,7 @@ SparkOne DSL 编译出来的文件类 `save overwrite ... as provider.\`path\`` 
 
 1. 单条 `save` 语句里的控制参数。
 2. 当前 SparkSession 的 `SET sparkone.save...`。
-3. TOML 或启动参数里的全局默认值。
+3. HOCON 或启动参数里的全局默认值。
 
 例外：`overwriteProtectedPaths` 是全局硬拦截配置，只从启动级配置读取，不允许被单条 `save` 参数或页面里的 `SET` 覆盖。
 
@@ -24,7 +24,7 @@ SparkOne DSL 编译出来的文件类 `save overwrite ... as provider.\`path\`` 
 
 ## 后端日志观察
 
-Safe Save 的后端日志统一使用 `Safe Save:` 前缀，默认 `[server] logLevel = "info"` 时可以在 IDEA 控制台看到。
+Safe Save 的后端日志统一使用 `Safe Save:` 前缀，默认 `server.logLevel = "info"` 时可以在 IDEA 控制台看到。
 
 典型日志包括：
 
@@ -38,7 +38,7 @@ Safe Save 的后端日志统一使用 `Safe Save:` 前缀，默认 `[server] log
 
 - `statement`：来自单条 `save` 的 `sparkoneOverwrite` 或 `sparkoneOverwriteBackup`。
 - `session`：来自当前 SparkSession 的 `SET sparkone.save...`。
-- `global`：来自 TOML 或启动参数。
+- `global`：来自 HOCON 或启动参数。
 - `default`：没有配置时使用 SparkOne 默认值。
 
 ## 事务性边界
@@ -60,35 +60,37 @@ Safe Save 不是严格的分布式事务，它提供的是覆盖写前的保护�
 Hive/catalog 表和 MySQL save：
 
 1. `save overwrite ... as hive.\`db.table\`` 默认同样要求显式 `sparkoneOverwrite="allow"`。
-2. `save overwrite ... as mysql.\`connection.table\`` 默认被 `[save] allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 TOML 打开 `allowMysqlOverwrite = true`，然后仍要在单条语句里显式 `sparkoneOverwrite="allow"`。
+2. `save overwrite ... as mysql.\`connection.table\`` 默认被 `save.allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 HOCON 打开 `save.allowMysqlOverwrite = true`，然后仍要在单条语句里显式 `sparkoneOverwrite="allow"`。
 3. Hive 通过确认后编译成 Spark 原生 `INSERT OVERWRITE TABLE db.table SELECT ...`；MySQL 通过 Spark JDBC writer 执行。
 4. SparkOne 不对 Hive/MySQL 表做文件目录 `rename/trash` 备份，也不承诺回滚；具体提交和失败语义由 Spark/Hive catalog 或 MySQL 负责。
 5. 如果要建表、改表结构或指定存储格式，使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE` 或数据库 DDL，不要放进 SparkOne `save` 的 provider options。
 6. Spark JDBC 的 MySQL overwrite 不是稳定等价于“先 truncate 再 insert”；即使写了 `truncate="true"`，也可能受 schema、dialect 和 Spark 行为影响，所以 SparkOne 默认拦截。
 
-## TOML 全局开关
+## HOCON 全局开关
 
 推荐默认配置：
 
-```toml
-[save]
-overwritePolicy = "requireExplicit"
-overwriteBackup = "rename"
-overwriteBackupPath = "/tmp/sparkone_back"
-allowMysqlOverwrite = false
-allowNativeInsertOverwrite = false
-allowNativeDropTable = false
+```hocon
+save {
+  overwritePolicy = "requireExplicit"
+  overwriteBackup = "rename"
+  overwriteBackupPath = "/tmp/sparkone_back"
+  allowMysqlOverwrite = false
+  allowNativeInsertOverwrite = false
+  allowNativeDropTable = false
+}
 ```
 
 生产环境可以额外配置全局保护的 overwrite 边界目录：
 
-```toml
-[save]
-overwriteProtectedPaths = [
-  "/",
-  "/user",
-  "/tmp",
-]
+```hocon
+save {
+  overwriteProtectedPaths = [
+    "/",
+    "/user",
+    "/tmp",
+  ]
+}
 ```
 
 `overwritePolicy`：
@@ -120,21 +122,21 @@ overwriteProtectedPaths = [
 `allowNativeDropTable`：
 
 - 默认值是 `false`，表示禁止原生 Spark SQL `DROP TABLE`。
-- 这个配置只从启动 TOML / 启动属性读取，不允许被页面里的 `SET` 或单条 SQL 参数覆盖。
+- 这个配置只从启动 HOCON / 启动属性读取，不允许被页面里的 `SET` 或单条 SQL 参数覆盖。
 - 如果历史脚本必须继续执行 `DROP TABLE`，需要在启动配置里显式改为 `true` 并重启服务。
 - 打开后，`DROP TABLE` 由 Spark/Hive catalog 直接执行，SparkOne 不做表数据备份或回滚。
 
 `allowMysqlOverwrite`：
 
 - 默认值是 `false`，表示禁止 `save overwrite ... as mysql.\`connection.table\``。
-- 这个配置只从启动 TOML / 启动属性读取，不允许被页面里的 `SET` 或单条 SQL 参数覆盖。
+- 这个配置只从启动 HOCON / 启动属性读取，不允许被页面里的 `SET` 或单条 SQL 参数覆盖。
 - 打开为 `true` 后，MySQL overwrite 仍然需要现有 Safe Save 显式确认，例如 `options sparkoneOverwrite="allow"`。
 - 打开后，具体是 truncate 还是 drop/recreate 由 Spark JDBC、MySQL dialect、目标表结构和写入 schema 决定；SparkOne 不做 MySQL 表备份或回滚。
 
 `overwriteProtectedPaths`：
 
 - 用于全局保护危险的 `save overwrite` 边界路径。
-- TOML 中推荐用数组配置，一行一个路径。
+- HOCON 中推荐用数组配置，一行一个路径。
 - 不带 scheme 的路径会按 save 目标所在文件系统解析。
 - 命中规则是“等于该目录，或者目标路径是该目录的上级目录”。
 - 配置 `/public/odep/user` 后，会拦截 `/`、`/public`、`/public/odep`、`/public/odep/user`，但允许 `/public/odep/user/userA`、`/public/odep/user/userB`。
@@ -191,11 +193,12 @@ select 1 as id;
 
 预期：执行失败，提示 `Native Spark SQL INSERT OVERWRITE is disabled`。
 
-如果确实要兼容已有 Spark SQL 脚本，需要在 `conf/sparkone.toml` 中显式打开：
+如果确实要兼容已有 Spark SQL 脚本，需要在 `conf/sparkone.conf` 中显式打开：
 
-```toml
-[save]
-allowNativeInsertOverwrite = true
+```hocon
+save {
+  allowNativeInsertOverwrite = true
+}
 ```
 
 注意：打开后原生 `INSERT OVERWRITE` 不走 Safe Save。生产环境更推荐把写出语句改成 SparkOne DSL：
@@ -227,11 +230,12 @@ set sparkone.save.native.dropTable.enabled=true;
 drop table default.sparkone_danger_table;
 ```
 
-如果确实要兼容已有删除表脚本，需要在 `conf/sparkone.toml` 中显式打开并重启服务：
+如果确实要兼容已有删除表脚本，需要在 `conf/sparkone.conf` 中显式打开并重启服务：
 
-```toml
-[save]
-allowNativeDropTable = true
+```hocon
+save {
+  allowNativeDropTable = true
+}
 ```
 
 ## 案例 1.2：Hive 表 overwrite 也需要显式确认
@@ -444,13 +448,14 @@ and sparkoneOverwriteBackup="none";
 
 ## 案例 8：全局允许但默认保留备份
 
-如果希望测试环境里少写确认参数，可以在 `conf/sparkone.toml` 配置：
+如果希望测试环境里少写确认参数，可以在 `conf/sparkone.conf` 配置：
 
-```toml
-[save]
-overwritePolicy = "allow"
-overwriteBackup = "rename"
-overwriteBackupPath = "/tmp/sparkone_back"
+```hocon
+save {
+  overwritePolicy = "allow"
+  overwriteBackup = "rename"
+  overwriteBackupPath = "/tmp/sparkone_back"
+}
 ```
 
 然后 SQL 可以简化为：
@@ -471,16 +476,17 @@ as parquet.`file:///tmp/sparkone_safe_save_global_allow`;
 
 这个配置适合“一个公共目录下面有大量用户目录”的场景。例如 `/public/odep/user` 是用户根目录，下面有 `/public/odep/user/userA`、`/public/odep/user/userB`。
 
-先在 `conf/sparkone.toml` 配置并重启服务：
+先在 `conf/sparkone.conf` 配置并重启服务：
 
-```toml
-[save]
-overwritePolicy = "allow"
-overwriteBackup = "rename"
-overwriteBackupPath = "/public/odep/sparkone_back"
-overwriteProtectedPaths = [
-  "/public/odep/user",
-]
+```hocon
+save {
+  overwritePolicy = "allow"
+  overwriteBackup = "rename"
+  overwriteBackupPath = "/public/odep/sparkone_back"
+  overwriteProtectedPaths = [
+    "/public/odep/user",
+  ]
+}
 ```
 
 覆盖用户根目录会被拦截：
@@ -515,11 +521,12 @@ as parquet.`/public/odep/user/userA`;
 
 继续使用案例 9 的配置：
 
-```toml
-[save]
-overwriteProtectedPaths = [
-  "/public/odep/user",
-]
+```hocon
+save {
+  overwriteProtectedPaths = [
+    "/public/odep/user",
+  ]
+}
 ```
 
 覆盖它的上级目录也会被拦截：
@@ -540,11 +547,12 @@ as parquet.`/public/odep`;
 
 如果只想避免误写 `save overwrite ... as parquet.\`/tmp\`` 这种危险操作，可以这样配置：
 
-```toml
-[save]
-overwriteProtectedPaths = [
-  "/tmp",
-]
+```hocon
+save {
+  overwriteProtectedPaths = [
+    "/tmp",
+  ]
+}
 ```
 
 覆盖 `/tmp` 本身会被拦截：
@@ -577,11 +585,12 @@ as parquet.`/tmp/sparkone_safe_save_tmp_case`;
 
 继续以 `/public/odep/user` 作为保护边界：
 
-```toml
-[save]
-overwriteProtectedPaths = [
-  "/public/odep/user",
-]
+```hocon
+save {
+  overwriteProtectedPaths = [
+    "/public/odep/user",
+  ]
+}
 ```
 
 这条配置只保护 `/public/odep/user` 以及它的上级目录。下面这些路径都不属于这个保护链路，因此会按普通 Safe Save 规则继续执行：
@@ -622,11 +631,12 @@ as parquet.`/public/odep/data`;
 
 如果希望禁止直接覆盖 HDFS 根目录下的一级目录，例如 `/hive`、`/tmp`、`/user`，可以配置：
 
-```toml
-[save]
-overwriteProtectedPaths = [
-  "/*",
-]
+```hocon
+save {
+  overwriteProtectedPaths = [
+    "/*",
+  ]
+}
 ```
 
 下面会被拦截：
@@ -657,11 +667,12 @@ as parquet.`/hive/warehouse`;
 
 如果希望一级目录和二级目录都不能直接覆盖，可以配置：
 
-```toml
-[save]
-overwriteProtectedPaths = [
-  "/*/*",
-]
+```hocon
+save {
+  overwriteProtectedPaths = [
+    "/*/*",
+  ]
+}
 ```
 
 `/*/*` 代表保护所有二级目录边界；由于覆盖一级目录也会影响其下二级目录，所以一级目录也会被拦截。
@@ -704,12 +715,13 @@ as parquet.`/public/odep/userA`;
 
 多条规则可以混用，SparkOne 不做“允许规则”覆盖，避免规则冲突：
 
-```toml
-[save]
-overwriteProtectedPaths = [
-  "/*/*",
-  "/public/odep/user",
-]
+```hocon
+save {
+  overwriteProtectedPaths = [
+    "/*/*",
+    "/public/odep/user",
+  ]
+}
 ```
 
 效果是：

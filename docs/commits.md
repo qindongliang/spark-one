@@ -35,7 +35,7 @@ SparkOne 常用分类：
 
 - `DSL 与编译器：` 用于 `load/save/view` 语法、ANTLR grammar、SQL 转译。
 - `运行时：` 用于 SparkSession、Safe Save、HDFS/Hive、Kerberos、执行保护。
-- `配置与依赖：` 用于 TOML 模板、Maven 依赖、JAR/packages/files、JVM 参数。
+- `配置与依赖：` 用于 HOCON 模板、Maven 依赖、JAR/packages/files、JVM 参数。
 - `前端交互：` 用于 SQL 编辑器、语法高亮、结果展示、选中执行。
 - `文档与测试：` 用于 docs、示例 SQL、单元测试或测试说明。
 
@@ -60,6 +60,6 @@ DSL 与编译器：
 ## PR 描述
 
 - 改动内容与原因
-- TOML、JVM 参数、Hadoop/Hive、Kerberos、JAR 依赖或兼容性影响说明
+- HOCON、JVM 参数、Hadoop/Hive、Kerberos、JAR 依赖或兼容性影响说明
 - 涉及前端改动时附截图或说明页面验证点
 - 手工验证步骤

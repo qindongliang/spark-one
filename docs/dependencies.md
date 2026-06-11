@@ -8,7 +8,7 @@
 - Javalin: `4.6.7`
 - CodeMirror WebJar: `5.65.19`
 - Jackson Scala module: `2.15.2`
-- TOML parser: `toml-scala 0.3.0`
+- HOCON parser: Lightbend Config `com.typesafe:config 1.4.3`
 - SLF4J API: `2.0.7`
 - JUnit: `4.13.2`
 
@@ -45,8 +45,8 @@ Shade jar：
 
 配置文件依赖：
 
-- 启动配置使用 TOML。
-- TOML 解析使用 `toml-scala`，它支持 Scala 2.12，基于 FastParse，避免引入新的 ANTLR runtime 与 Spark 固定的 ANTLR `4.9.3` 冲突。
+- 启动配置使用 HOCON。
+- HOCON 解析使用 Lightbend Config `com.typesafe:config`。它是 JVM 通用配置库，不引入 ANTLR runtime，也不会和 Spark 固定的 ANTLR `4.9.3` 冲突。
 
 日志依赖：
 

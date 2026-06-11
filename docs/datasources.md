@@ -22,9 +22,36 @@ libsvm
 - `save overwrite t as hive.\`db.table\`` 编译成 `INSERT OVERWRITE TABLE db.table SELECT * FROM t`，默认仍需要 `options sparkoneOverwrite="allow"` 显式确认。
 - `partitionBy` 仅用于 catalog 表写入：`save append t as hive.\`db.table\` partitionBy dt` 编译成动态分区插入。
 - SparkOne 不复刻 MLSQL 的 `storage="hive"` / 数据湖替换逻辑；如果要创建表、指定存储格式或改表结构，优先使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE`。
-- `mysql` 是关系库特殊 source：`load mysql.\`analytics.users\` as users` 从 TOML 的 `[datasources.mysql.analytics]` 读取连接，再用 Spark JDBC reader 注册临时视图。
+- `mysql` 是关系库特殊 source：`load mysql.\`analytics.users\` as users` 从 HOCON 的 `datasources.mysql.analytics` 读取连接，再用 Spark JDBC reader 注册临时视图。
 - `save append t as mysql.\`analytics.target_table\`` 用 Spark JDBC writer 追加写入 MySQL。
-- `save overwrite t as mysql.\`analytics.target_table\`` 默认被 `[save] allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 TOML 打开 `allowMysqlOverwrite = true`，再在单条语句里显式写 `options sparkoneOverwrite="allow"`；SparkOne 不对 MySQL 表做备份。
+- `save overwrite t as mysql.\`analytics.target_table\`` 默认被 `save.allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 HOCON 打开 `save.allowMysqlOverwrite = true`，再在单条语句里显式写 `options sparkoneOverwrite="allow"`；SparkOne 不对 MySQL 表做备份。
+
+HOCON 数据源推荐按类型和连接名分层，连接信息仍留在启动配置中，SQL 只引用连接名：
+
+```hocon
+datasources.mysql {
+  analytics {
+    url = "jdbc:mysql://127.0.0.1:3306/app"
+    user = "reader"
+    password = ${?SPARKONE_MYSQL_ANALYTICS_PASSWORD}
+
+    options {
+      fetchsize = 1000
+      batchsize = 1000
+    }
+  }
+
+  reporting = ${datasources.mysql.analytics}
+  reporting.url = "jdbc:mysql://127.0.0.1:3306/reporting"
+}
+```
+
+数据源增多时，不建议把所有连接硬塞进一个大文件。HOCON 支持 `include`、对象合并和环境变量替换，可以按环境或团队拆分，例如主配置只保留：
+
+```hocon
+include "datasources/mysql.conf"
+include "datasources/hive.conf"
+```
 - SparkOne DSL 不支持 `load/save jdbc`，避免连接串、账号、密码散落在 SQL 中。需要 MySQL 时统一使用 `mysql`。
 
 文件类 save：

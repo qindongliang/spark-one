@@ -50,7 +50,7 @@ options in `.mvn/jvm.config`. More startup methods are documented in
 sdk env
 mvn test
 mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.toml"
+mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.conf"
 ```
 
 Open:
@@ -65,7 +65,7 @@ Use another port:
 
 ```bash
 mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args=7071
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.toml --port 7071"
+mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.conf --port 7071"
 ```
 
 Compile only:
