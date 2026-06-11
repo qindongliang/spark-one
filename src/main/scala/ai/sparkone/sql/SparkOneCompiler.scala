@@ -15,7 +15,7 @@ final class SparkOneCompiler(
       val source = originalText(script, statement).trim
       val compiled = compileStatement(script, statement)
       sqlValidator.validate(compiled.sql)
-      CompiledStatement(source, compiled.sql, compiled.save)
+      CompiledStatement(source, compiled.sql, compiled.load, compiled.save)
     }
   }
 
@@ -32,7 +32,7 @@ final class SparkOneCompiler(
 
   private def compileStatement(script: String, statement: SparkOneDslParser.StatementContext): CompileResult = {
     if (statement.loadStatement() != null) {
-      CompileResult(compileLoad(statement.loadStatement()))
+      compileLoad(statement.loadStatement())
     } else if (statement.saveStatement() != null) {
       compileSave(statement.saveStatement())
     } else if (statement.viewStatement() != null) {
@@ -50,15 +50,19 @@ final class SparkOneCompiler(
     }
   }
 
-  private def compileLoad(load: SparkOneDslParser.LoadStatementContext): String = {
+  private def compileLoad(load: SparkOneDslParser.LoadStatementContext): CompileResult = {
     val (format, path) = parseSource(load.source(), "LOAD")
     val table = SparkOneSqlRender.requireIdentifier(load.table.getText, "LOAD target table")
     val options = parseOptions(load.optionClause())
     dataSourceResolver.resolveLoad(format, path, options) match {
       case ProviderLoadSource(provider, providerOptions) =>
-        SparkOneSqlRender.renderCreateTempViewUsing(table, provider, providerOptions)
+        CompileResult(SparkOneSqlRender.renderCreateTempViewUsing(table, provider, providerOptions))
       case CatalogTableSource(identifier) =>
-        SparkOneSqlRender.renderCreateTempViewAsSelect(table, identifier)
+        CompileResult(SparkOneSqlRender.renderCreateTempViewAsSelect(table, identifier))
+      case MysqlLoadSource(dbtable, jdbcOptions) =>
+        CompileResult(
+          SparkOneSqlRender.renderSparkOneAction("LOAD MYSQL", s"$dbtable AS $table"),
+          load = Some(LoadStatementMetadata(table, format, dbtable, jdbcOptions.toMap, LoadTargetType.Mysql)))
     }
   }
 
@@ -71,7 +75,7 @@ final class SparkOneCompiler(
     val (runtimeOptions, providerOptions) = SaveControlOptions.partition(options)
     val runtimeOptionMap = runtimeOptions.map { case (key, value) => key.toLowerCase -> value }.toMap
 
-    dataSourceResolver.resolveSave(format) match {
+    dataSourceResolver.resolveSave(format, path, providerOptions) match {
       case ProviderSaveSource(provider) =>
         if (mode != "overwrite") {
           throw new CompileException(s"SAVE mode '$mode' is not supported for file/provider source '$format' yet")
@@ -93,6 +97,16 @@ final class SparkOneCompiler(
         CompileResult(
           SparkOneSqlRender.renderInsertTable(mode, targetTable, table, partitionColumns),
           Some(SaveStatementMetadata(mode, table, format, targetTable, runtimeOptionMap, SaveTargetType.Catalog)))
+      case MysqlSaveSource(dbtable, jdbcOptions) =>
+        if (mode != "overwrite" && mode != "append") {
+          throw new CompileException(s"SAVE mode '$mode' is not supported for mysql source")
+        }
+        if (partitionColumns.nonEmpty) {
+          throw new CompileException("SAVE partitionBy is not supported for mysql source")
+        }
+        CompileResult(
+          SparkOneSqlRender.renderSparkOneAction("SAVE MYSQL", s"$table TO $dbtable"),
+          Some(SaveStatementMetadata(mode, table, format, dbtable, runtimeOptionMap, SaveTargetType.Mysql, jdbcOptions.toMap)))
     }
   }
 
@@ -145,7 +159,10 @@ final class SparkOneCompiler(
   }
 }
 
-private final case class CompileResult(sql: String, save: Option[SaveStatementMetadata] = None)
+private final case class CompileResult(
+    sql: String,
+    save: Option[SaveStatementMetadata] = None,
+    load: Option[LoadStatementMetadata] = None)
 
 private object SparkOneCompiler {
   private val DslSource = """[A-Za-z_][A-Za-z0-9_]*\s*\.\s*`(?:``|[^`])*`"""
@@ -212,6 +229,10 @@ private[sql] object SparkOneSqlRender {
       if (partitionColumns.isEmpty) ""
       else s" PARTITION (${partitionColumns.mkString(", ")})"
     s"$command $targetTable$partitionSql SELECT * FROM $sourceTable"
+  }
+
+  def renderSparkOneAction(action: String, target: String): String = {
+    s"SELECT '${escapeSql(action)}' AS sparkone_action, '${escapeSql(target)}' AS sparkone_target"
   }
 
   def renderMultipartIdentifier(value: String, label: String): String = {

@@ -60,7 +60,7 @@ function createEditor(textarea) {
 
 function registerSparkOneSqlMode() {
   const sparkSqlMode = window.CodeMirror.resolveMode('text/x-sparksql');
-  const keywords = Object.assign({}, sparkSqlMode.keywords || {}, keywordSet('view load save options partitionby'));
+  const keywords = Object.assign({}, sparkSqlMode.keywords || {}, keywordSet('view load save options partitionby mysql'));
 
   window.CodeMirror.defineMIME('text/x-sparkone-sql', Object.assign({}, sparkSqlMode, {
     keywords
@@ -111,13 +111,18 @@ function render(data, path, scope) {
     return;
   }
 
+  const showCompiledSql = Object.prototype.hasOwnProperty.call(data, 'showCompiledSql')
+    ? Boolean(data.showCompiledSql)
+    : appConfig.showCompiledSql;
+
   for (const statement of data.statements || []) {
     const parts = [];
-    if (appConfig.showCompiledSql) parts.push(pre(statement.sql + ';'));
+    if (showCompiledSql) parts.push(compiledSqlBlock(statement.sql + ';'));
     if (statement.error) parts.push(errorBlock(statement.error));
     if (statement.schema && statement.schema.length) {
       parts.push(table(statement.schema, statement.rows || []));
     }
+    if (!parts.length) parts.push(emptyBlock('Statement executed with no result rows.'));
     output.appendChild(section(`Statement ${statement.index} · ${statement.durationMs} ms`, parts));
   }
 }
@@ -138,6 +143,26 @@ function section(title, content) {
 
 function pre(text) {
   const node = document.createElement('pre');
+  node.textContent = text;
+  return node;
+}
+
+function compiledSqlBlock(sql) {
+  const node = document.createElement('div');
+  node.className = 'compiled-sql';
+
+  const label = document.createElement('div');
+  label.className = 'block-label';
+  label.textContent = 'Compiled SQL';
+  node.appendChild(label);
+  node.appendChild(pre(sql));
+
+  return node;
+}
+
+function emptyBlock(text) {
+  const node = document.createElement('div');
+  node.className = 'empty';
   node.textContent = text;
   return node;
 }

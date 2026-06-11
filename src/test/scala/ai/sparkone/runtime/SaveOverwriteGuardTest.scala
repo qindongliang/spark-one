@@ -1,5 +1,6 @@
 package ai.sparkone.runtime
 
+import ai.sparkone.sql.{SaveStatementMetadata, SaveTargetType}
 import org.apache.spark.sql.SparkSession
 import org.junit.Assert._
 import org.junit.Test
@@ -9,6 +10,7 @@ import scala.collection.JavaConverters._
 
 final class SaveOverwriteGuardTest {
   private val ProtectedPathsKey = "sparkone.save.overwrite.protected.paths"
+  private val AllowMysqlOverwriteKey = "sparkone.save.mysql.overwrite.enabled"
   private val AllowNativeInsertOverwriteKey = "sparkone.save.native.insertOverwrite.enabled"
   private val AllowNativeDropTableKey = "sparkone.save.native.dropTable.enabled"
 
@@ -214,6 +216,74 @@ final class SaveOverwriteGuardTest {
   }
 
   @Test
+  def mysqlOverwriteIsBlockedByDefaultEvenWhenStatementAllowsOverwrite(): Unit = {
+    val root = Files.createTempDirectory("sparkone-mysql-overwrite-block-")
+    val spark = localSpark(root)
+    try {
+      val guard = new SaveOverwriteGuard(spark)
+
+      try {
+        guard.prepare(Some(mysqlOverwriteMetadata(options = Map("sparkoneoverwrite" -> "allow"))))
+        fail("Expected CompileException")
+      } catch {
+        case e: ai.sparkone.sql.CompileException =>
+          assertTrue(e.getMessage.contains("MySQL"))
+          assertTrue(e.getMessage.contains("allowMysqlOverwrite"))
+      }
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def mysqlOverwriteCannotBeAllowedBySessionSetOnly(): Unit = {
+    val root = Files.createTempDirectory("sparkone-mysql-overwrite-session-block-")
+    val spark = localSpark(root)
+    try {
+      spark.conf.set(AllowMysqlOverwriteKey, "true")
+      val guard = new SaveOverwriteGuard(spark)
+
+      try {
+        guard.prepare(Some(mysqlOverwriteMetadata(options = Map("sparkoneoverwrite" -> "allow"))))
+        fail("Expected CompileException")
+      } catch {
+        case e: ai.sparkone.sql.CompileException =>
+          assertTrue(e.getMessage.contains("MySQL"))
+          assertTrue(e.getMessage.contains("allowMysqlOverwrite"))
+      }
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def mysqlOverwriteRequiresStatementConfirmationAfterStartupConfigurationAllowsIt(): Unit = {
+    val root = Files.createTempDirectory("sparkone-mysql-overwrite-allow-")
+    withSystemProperty(AllowMysqlOverwriteKey, "true") {
+      val spark = localSpark(root)
+      try {
+        val guard = new SaveOverwriteGuard(spark)
+
+        try {
+          guard.prepare(Some(mysqlOverwriteMetadata()))
+          fail("Expected CompileException")
+        } catch {
+          case e: ai.sparkone.sql.CompileException =>
+            assertTrue(e.getMessage.contains("requires explicit confirmation"))
+        }
+
+        assertTrue(guard.prepare(Some(mysqlOverwriteMetadata(options = Map("sparkoneoverwrite" -> "allow")))).nonEmpty)
+      } finally {
+        spark.stop()
+      }
+    }
+
+    deleteRecursively(root)
+  }
+
+  @Test
   def wildcardProtectedPathRejectsConfiguredDepthAndAllowsDeeperPath(): Unit = {
     val root = Files.createTempDirectory("sparkone-save-guard-wildcard-")
     val firstLevel = root.resolve("public")
@@ -359,6 +429,17 @@ final class SaveOverwriteGuardTest {
          |options sparkoneOverwrite="allow"
          |and sparkoneOverwriteBackup="none";
          |""".stripMargin)
+  }
+
+  private def mysqlOverwriteMetadata(options: Map[String, String] = Map.empty): SaveStatementMetadata = {
+    SaveStatementMetadata(
+      mode = "overwrite",
+      table = "source_view",
+      format = "mysql",
+      path = "target_table",
+      options = options,
+      targetType = SaveTargetType.Mysql,
+      targetOptions = Map("url" -> "jdbc:mysql://host/db", "dbtable" -> "target_table"))
   }
 
   private def withSystemProperty(key: String, value: String)(body: => Unit): Unit = {

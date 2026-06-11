@@ -39,6 +39,9 @@ overwritePolicy = "requireExplicit"
 overwriteBackup = "rename"
 # rename 备份根目录。不带 scheme 的路径会按 save 目标所在文件系统解析。
 overwriteBackupPath = "/tmp/sparkone_back"
+# 默认禁止 MySQL overwrite。该行为可能 truncate 或 drop/recreate 目标表，只有明确接受风险时再打开。
+# 打开后，单条 save overwrite mysql 仍然需要 options sparkoneOverwrite="allow"。
+allowMysqlOverwrite = false
 # 默认禁止原生 Spark SQL 的 INSERT OVERWRITE，避免绕过 SparkOne Safe Save。
 # 历史脚本确实需要兼容时，再显式改为 true。
 allowNativeInsertOverwrite = false
@@ -57,9 +60,23 @@ allowNativeDropTable = false
 #   "/tmp",
 # ]
 
+[datasources.mysql.analytics]
+# MySQL 连接统一放在 TOML 中，SQL 里只引用连接名，例如 mysql.`analytics.users`。
+url = "jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+driver = "com.mysql.cj.jdbc.Driver"
+user = "root"
+password = "change-me"
+
+[datasources.mysql.analytics.options]
+# 这里放 Spark JDBC reader/writer 通用参数；SQL 里的 options 可继续补充 batchsize、fetchsize 等非连接参数。
+fetchsize = "1000"
+batchsize = "1000"
+
 [jars]
 # 等价于 spark-submit --packages / spark.jars.packages。
 # packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
+# MySQL 连接器也可以用 packages 引入，例如：
+# packages = "com.mysql:mysql-connector-j:8.4.0"
 # 等价于 spark-submit --jars / spark.jars，用于依赖类 JAR。
 # jars = "/path/to/provider.jar,/path/to/another-provider.jar"
 # 等价于 spark-submit --files / spark.files，用于普通文件，不用于依赖类 JAR。

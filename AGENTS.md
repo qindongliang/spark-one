@@ -24,6 +24,7 @@
 - 数据源别名和特殊 source 统一放在 `DataSourceResolver`。
 - ANTLR 版本必须跟 Spark 3.5.x 对齐为 `4.9.3`。
 - 当前 runtime 是本地 `SparkSession local[*]` 测试台，不是多租户生产运行时。
+- 后端执行链路捕获异常时，必须先在服务端日志记录失败语句、关键上下文和异常堆栈；前端只展示用户可读错误，不能成为唯一排障入口。
 - 前端使用 `src/main/resources/public` 静态资源，不把页面写进 Scala 字符串。
 
 最佳路线：
@@ -32,6 +33,7 @@
 - Spark SQL 是开放执行协议，优先承载加载、计算、保存等 SQL-first 数据分析链路。
 - `view name as select ...` 是注册临时视图的主语法糖；不支持尾部 `select ... as table`，避免跟 Spark 原生别名冲突。
 - `save ... as hive` 走 Spark catalog 表写入，优先编译成 `INSERT INTO/OVERWRITE TABLE`，不使用文件目录备份语义。
+- MySQL 统一使用 `load/save mysql`，连接信息来自 TOML；不支持 `load/save jdbc`。
 - 原生 `DROP TABLE` 默认被危险 DDL 策略拦截，只能通过启动 TOML 显式打开。
 - DataFrame API 只作为少数 Spark SQL 难表达能力的 runtime adapter，不作为 MVP 主路径。
 - 不复刻 MLSQL 的重运行时；吸收其 SQL 体验，但保持 compiler/runtime 边界轻。

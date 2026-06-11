@@ -64,8 +64,7 @@ object SparkOneServer {
   }
 
   private def handleConfig(ctx: Context): Unit = {
-    json(ctx, Map(
-      "showCompiledSql" -> enabled("sparkone.ui.showCompiledSql", defaultValue = false)))
+    json(ctx, uiConfig)
   }
 
   private def handleCompile(ctx: Context): Unit = {
@@ -88,12 +87,24 @@ object SparkOneServer {
   private def handleRun(ctx: Context): Unit = {
     val request = readSqlRequest(ctx)
     try {
-      json(ctx, runtime.run(request.script, request.limit))
+      val result = runtime.run(request.script, request.limit)
+      json(ctx, Map(
+        "success" -> result.success,
+        "showCompiledSql" -> showCompiledSql,
+        "statements" -> result.statements))
     } catch {
       case e: Throwable =>
         logger.warn("Failed to run SQL request", e)
         json(ctx.status(400), Map("success" -> false, "error" -> errorMessage(e)))
     }
+  }
+
+  private def uiConfig: Map[String, Boolean] = {
+    Map("showCompiledSql" -> showCompiledSql)
+  }
+
+  private def showCompiledSql: Boolean = {
+    enabled("sparkone.ui.showCompiledSql", defaultValue = false)
   }
 
   private def runtime: SparkOneRuntime = {
@@ -284,7 +295,7 @@ private object ServerOptions {
   }
 }
 
-private object ServerConfigFile {
+private[server] object ServerConfigFile {
   def load(path: String): Map[String, String] = {
     if (path.endsWith(".toml")) {
       loadToml(path)
@@ -330,7 +341,8 @@ private final case class SparkOneTomlConfig(
     hive: Option[HiveTomlSection] = None,
     kerberos: Option[KerberosTomlSection] = None,
     save: Option[SaveTomlSection] = None,
-    jars: Option[JarsTomlSection] = None) {
+    jars: Option[JarsTomlSection] = None,
+    datasources: Option[DataSourcesTomlSection] = None) {
 
   def toProperties: Map[String, String] = {
     Seq(
@@ -340,7 +352,8 @@ private final case class SparkOneTomlConfig(
       hive.toSeq.flatMap(_.toProperties),
       kerberos.toSeq.flatMap(_.toProperties),
       save.toSeq.flatMap(_.toProperties),
-      jars.toSeq.flatMap(_.toProperties)).flatten.toMap
+      jars.toSeq.flatMap(_.toProperties),
+      datasources.toSeq.flatMap(_.toProperties)).flatten.toMap
   }
 }
 
@@ -386,6 +399,7 @@ private final case class SaveTomlSection(
     overwriteBackup: Option[String] = None,
     overwriteBackupPath: Option[String] = None,
     overwriteProtectedPaths: Option[List[String]] = None,
+    allowMysqlOverwrite: Option[Boolean] = None,
     allowNativeInsertOverwrite: Option[Boolean] = None,
     allowNativeDropTable: Option[Boolean] = None) {
   def toProperties: Map[String, String] = {
@@ -397,6 +411,7 @@ private final case class SaveTomlSection(
         .map(paths => paths.map(_.trim).filter(_.nonEmpty).mkString("\n"))
         .filter(_.nonEmpty)
         .map("sparkone.save.overwrite.protected.paths" -> _),
+      allowMysqlOverwrite.map(value => "sparkone.save.mysql.overwrite.enabled" -> value.toString),
       allowNativeInsertOverwrite.map(value => "sparkone.save.native.insertOverwrite.enabled" -> value.toString),
       allowNativeDropTable.map(value => "sparkone.save.native.dropTable.enabled" -> value.toString)).flatten.toMap
   }
@@ -444,5 +459,33 @@ private final case class JarsTomlSection(
       jars.map("spark.jars" -> _),
       files.map("spark.files" -> _),
       repositories.map("spark.jars.repositories" -> _)).flatten.toMap
+  }
+}
+
+private final case class DataSourcesTomlSection(
+    mysql: Option[Map[String, MysqlDataSourceTomlSection]] = None) {
+  def toProperties: Map[String, String] = {
+    mysql.toSeq.flatMap(_.toSeq).flatMap { case (name, config) =>
+      config.toProperties(name)
+    }.toMap
+  }
+}
+
+private final case class MysqlDataSourceTomlSection(
+    url: Option[String] = None,
+    driver: Option[String] = None,
+    user: Option[String] = None,
+    password: Option[String] = None,
+    options: Option[Map[String, String]] = None) {
+  def toProperties(name: String): Map[String, String] = {
+    val prefix = s"sparkone.datasource.mysql.$name"
+    (Seq(
+      url.map(s"$prefix.url" -> _),
+      driver.map(s"$prefix.driver" -> _),
+      user.map(s"$prefix.user" -> _),
+      password.map(s"$prefix.password" -> _)).flatten ++
+      options.toSeq.flatMap(_.toSeq).map { case (key, value) =>
+        s"$prefix.option.$key" -> value
+      }).toMap
   }
 }

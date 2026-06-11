@@ -162,6 +162,7 @@ krb5Conf = "/etc/krb5.conf"
 overwritePolicy = "requireExplicit"
 overwriteBackup = "rename"
 overwriteBackupPath = "/tmp/sparkone_back"
+allowMysqlOverwrite = false
 allowNativeInsertOverwrite = false
 allowNativeDropTable = false
 # 生产环境可打开全局保护 overwrite 的高危边界目录，命中后不能被 SQL 或 SET 覆盖。
@@ -172,6 +173,19 @@ allowNativeDropTable = false
 #   "/user",
 #   "/tmp",
 # ]
+
+[datasources.mysql.analytics]
+url = "jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+driver = "com.mysql.cj.jdbc.Driver"
+user = "root"
+password = "change-me"
+
+[datasources.mysql.analytics.options]
+fetchsize = "1000"
+batchsize = "1000"
+
+[jars]
+packages = "com.mysql:mysql-connector-j:8.4.0"
 ```
 
 也可以不使用 TOML，直接传程序参数：
@@ -214,6 +228,7 @@ options sparkoneOverwrite="allow";
 - `overwriteBackup = "trash"`：目标存在时先移动到 Hadoop Trash。
 - `overwriteBackup = "none"`：不做备份，直接覆盖。
 - `overwriteBackupPath = "/tmp/sparkone_back"`：`rename` 备份根目录；不带 scheme 时按目标文件系统解析。
+- `allowMysqlOverwrite = false`：默认禁止 `save overwrite ... as mysql`；确需覆盖时只从启动配置打开，并且单条语句仍要写 `sparkoneOverwrite="allow"`。
 - `allowNativeInsertOverwrite = false`：默认禁止原生 Spark SQL `INSERT OVERWRITE`，避免绕过 SparkOne Safe Save。
 - `allowNativeDropTable = false`：默认禁止原生 Spark SQL `DROP TABLE`，避免误删 Hive/catalog 表；该开关只从启动配置读取。
 - `overwriteProtectedPaths = [...]`：全局保护 overwrite 边界路径，一行一个；支持 `/*`、`/*/*` 这类整段通配；命中后不允许被单条 SQL 或 `SET` 覆盖。

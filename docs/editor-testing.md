@@ -279,41 +279,136 @@ CREATE OR REPLACE TEMPORARY VIEW some_table AS
 SELECT * FROM default.some_table;
 ```
 
-MySQL / JDBC：
+MySQL：
 
-```sql
-load jdbc.`mysql_users`
-options url="jdbc:mysql://192.168.1.179:3306/Dworks"
-and dbtable="cloud_host_info"
-and user="root"
-and password="******"
-and driver="com.mysql.cj.jdbc.Driver"
-as users_mysql;
+先在 `conf/sparkone.toml` 配置连接，SQL 里只引用连接名：
 
-select * from users_mysql limit 10;
+```toml
+[datasources.mysql.analytics]
+url = "jdbc:mysql://192.168.1.179:3306/Dworks?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+driver = "com.mysql.cj.jdbc.Driver"
+user = "root"
+password = "******"
+
+[datasources.mysql.analytics.options]
+fetchsize = "1000"
+batchsize = "1000"
 ```
 
-它会编译成 Spark 原生 JDBC 临时视图：
+运行时还需要 MySQL JDBC driver 在 classpath 中，可以在 TOML 里选择 `packages` 或本地 JAR：
+
+```toml
+[jars]
+packages = "com.mysql:mysql-connector-j:8.4.0"
+# jars = "/Users/qindongliang/.m2/repository/com/mysql/mysql-connector-j/8.4.0/mysql-connector-j-8.4.0.jar"
+```
+
+先在 MySQL 客户端准备测试表和数据：
 
 ```sql
-CREATE OR REPLACE TEMPORARY VIEW users_mysql
-USING jdbc
-OPTIONS (
-  path 'mysql_users',
-  url 'jdbc:mysql://192.168.1.179:3306/Dworks',
-  dbtable 'cloud_host_info',
-  user 'root',
-  password '******',
-  driver 'com.mysql.cj.jdbc.Driver'
+CREATE DATABASE IF NOT EXISTS Dworks
+  DEFAULT CHARACTER SET utf8mb4
+  DEFAULT COLLATE utf8mb4_unicode_ci;
+
+USE Dworks;
+
+DROP TABLE IF EXISTS sparkone_mysql_seed;
+CREATE TABLE sparkone_mysql_seed (
+  id BIGINT PRIMARY KEY,
+  city VARCHAR(64) NOT NULL,
+  cnt BIGINT NOT NULL,
+  biz_date DATE NOT NULL
+);
+
+INSERT INTO sparkone_mysql_seed (id, city, cnt, biz_date) VALUES
+  (1, 'beijing', 10, '2026-06-01'),
+  (2, 'shanghai', 20, '2026-06-01'),
+  (3, 'beijing', 30, '2026-06-02'),
+  (4, 'hangzhou', 40, '2026-06-02');
+
+DROP TABLE IF EXISTS sparkone_city_result;
+CREATE TABLE sparkone_city_result (
+  city VARCHAR(64) NOT NULL,
+  row_count BIGINT NOT NULL,
+  total_cnt BIGINT NOT NULL
 );
 ```
 
+在 SparkOne 编辑器里读取 MySQL 表：
+
+```sql
+load mysql.`analytics.sparkone_mysql_seed` as mysql_seed;
+
+select * from mysql_seed order by id;
+```
+
+`load mysql` 会在运行时用 Spark JDBC reader 注册临时视图。`Compile` 只展示安全占位 SQL，不展示 TOML 里的账号密码：
+
+```sql
+SELECT 'LOAD MYSQL' AS sparkone_action, 'sparkone_mysql_seed AS mysql_seed' AS sparkone_target
+```
+
+测试 `save append` 写入 MySQL：
+
+```sql
+load mysql.`analytics.sparkone_mysql_seed` as mysql_seed;
+
+view mysql_city_stats as
+select
+  city,
+  count(*) as row_count,
+  sum(cnt) as total_cnt
+from mysql_seed
+group by city;
+
+save append mysql_city_stats
+as mysql.`analytics.sparkone_city_result`
+options batchsize="500";
+
+load mysql.`analytics.sparkone_city_result` as mysql_saved_result;
+
+select * from mysql_saved_result order by city;
+```
+
+预期可以看到 `beijing/shanghai/hangzhou` 的聚合结果。重复执行 append 会重复追加数据，这是 Spark JDBC append 的正常语义。
+
+测试 `save overwrite` 覆盖 MySQL：
+
+MySQL overwrite 默认被启动级安全开关拦截。确认要测试覆盖写时，先在 `conf/sparkone.toml` 的 `[save]` 中打开：
+
+```toml
+[save]
+allowMysqlOverwrite = true
+```
+
+然后在编辑器里执行：
+
+```sql
+view mysql_overwrite_result as
+select
+  "overwrite_city" as city,
+  cast(1 as bigint) as row_count,
+  cast(999 as bigint) as total_cnt;
+
+save overwrite mysql_overwrite_result
+as mysql.`analytics.sparkone_city_result`
+options sparkoneOverwrite="allow"
+and truncate="true";
+
+load mysql.`analytics.sparkone_city_result` as mysql_overwritten_result;
+
+select * from mysql_overwritten_result order by city;
+```
+
+预期 `sparkone_city_result` 中只剩 `overwrite_city` 这一行。`truncate="true"` 表示 Spark JDBC 会尽量复用已有表结构并清空数据；如果 schema 不兼容或 dialect 不支持，Spark JDBC 仍可能退化为 drop/recreate 之类行为，所以 SparkOne 默认禁止 MySQL overwrite。
+
 说明：
 
-- `load jdbc` 走 Spark 内置 JDBC provider。
-- `dbtable` 可以是表名，也可以按 Spark JDBC 规则写成带别名的子查询，例如 `"(select * from cloud_host_info limit 10) t"`。
-- 运行时需要 MySQL JDBC driver 在 classpath 中；本地可通过 `[jars] jars = "/path/to/mysql-connector-j.jar"` 或 Maven package 提供。
-- `load` 只是注册临时视图，不负责限制结果行数；需要抽样查看时，在后续 `select * from users_mysql limit 10` 中限制。
+- SparkOne DSL 不支持 `load/save jdbc`；MySQL 统一使用 `load/save mysql`。
+- `mysql.\`analytics.sparkone_mysql_seed\`` 中 `analytics` 是 TOML 连接名，`sparkone_mysql_seed` 是 MySQL 表名。
+- SQL 里的 `options` 只能补充 `fetchsize`、`batchsize`、`truncate` 等非连接参数，不能覆盖 `url/user/password/driver/dbtable`。
+- `save overwrite ... as mysql` 需要先用 TOML 打开 `[save] allowMysqlOverwrite = true`，再用单条 SQL 的 `sparkoneOverwrite="allow"` 显式确认；SparkOne 不会对 MySQL 表做备份。
+- `load` 只是注册临时视图，不负责限制结果行数；需要抽样查看时，在后续 `select * from mysql_seed limit 10` 中限制。
 
 ## 使用 SparkOne Save DSL
 

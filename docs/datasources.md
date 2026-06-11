@@ -1,6 +1,6 @@
 # Data Sources
 
-SparkOne 的数据源策略是：compiler 负责把 SQL 友好的 `load/save` 薄 DSL 编译成 Spark SQL，connector jar 由 Spark/Kyuubi 运行环境提供。
+SparkOne 的数据源策略是：compiler 负责把 SQL 友好的 `load/save` 薄 DSL 编译成 Spark SQL 或极薄 runtime adapter，connector jar 由 Spark/Kyuubi 运行环境提供。
 
 默认主包不内置第三方 provider。这样可以避免 Excel、Mongo、ES、Kafka 等 connector 和 SparkOne 主应用强耦合，也减少 shade 冲突。
 
@@ -12,7 +12,6 @@ json
 parquet
 orc
 text
-jdbc
 libsvm
 ```
 
@@ -23,6 +22,10 @@ libsvm
 - `save overwrite t as hive.\`db.table\`` 编译成 `INSERT OVERWRITE TABLE db.table SELECT * FROM t`，默认仍需要 `options sparkoneOverwrite="allow"` 显式确认。
 - `partitionBy` 仅用于 catalog 表写入：`save append t as hive.\`db.table\` partitionBy dt` 编译成动态分区插入。
 - SparkOne 不复刻 MLSQL 的 `storage="hive"` / 数据湖替换逻辑；如果要创建表、指定存储格式或改表结构，优先使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE`。
+- `mysql` 是关系库特殊 source：`load mysql.\`analytics.users\` as users` 从 TOML 的 `[datasources.mysql.analytics]` 读取连接，再用 Spark JDBC reader 注册临时视图。
+- `save append t as mysql.\`analytics.target_table\`` 用 Spark JDBC writer 追加写入 MySQL。
+- `save overwrite t as mysql.\`analytics.target_table\`` 默认被 `[save] allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 TOML 打开 `allowMysqlOverwrite = true`，再在单条语句里显式写 `options sparkoneOverwrite="allow"`；SparkOne 不对 MySQL 表做备份。
+- SparkOne DSL 不支持 `load/save jdbc`，避免连接串、账号、密码散落在 SQL 中。需要 MySQL 时统一使用 `mysql`。
 
 文件类 save：
 
@@ -42,4 +45,5 @@ libsvm
 
 - 能用 Spark SQL provider 表达的，只在 `DataSourceResolver` 增加别名。
 - 需要特殊 catalog 语义的，增加特殊 source 分支。
+- 需要隐藏密钥或运行时 API 的，增加薄 runtime adapter，例如当前 `mysql`。
 - 不把 connector 依赖默认加进主 `pom.xml`，除非它成为 SparkOne 自身运行所必需的核心依赖。

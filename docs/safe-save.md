@@ -57,12 +57,14 @@ Safe Save 不是严格的分布式事务，它提供的是覆盖写前的保护�
 
 因此可以把 Safe Save 理解为“先备份成功，再执行覆盖写；失败时尽力回滚”，而不是数据库意义上的原子提交。
 
-Hive/catalog 表 save：
+Hive/catalog 表和 MySQL save：
 
 1. `save overwrite ... as hive.\`db.table\`` 默认同样要求显式 `sparkoneOverwrite="allow"`。
-2. 通过确认后编译成 Spark 原生 `INSERT OVERWRITE TABLE db.table SELECT ...`。
-3. SparkOne 不对 Hive 表做文件目录 `rename/trash` 备份，也不承诺回滚；具体提交和失败语义由 Spark/Hive catalog 负责。
-4. 如果要建表、改表结构或指定存储格式，使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE`，不要放进 SparkOne `save` 的 provider options。
+2. `save overwrite ... as mysql.\`connection.table\`` 默认被 `[save] allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 TOML 打开 `allowMysqlOverwrite = true`，然后仍要在单条语句里显式 `sparkoneOverwrite="allow"`。
+3. Hive 通过确认后编译成 Spark 原生 `INSERT OVERWRITE TABLE db.table SELECT ...`；MySQL 通过 Spark JDBC writer 执行。
+4. SparkOne 不对 Hive/MySQL 表做文件目录 `rename/trash` 备份，也不承诺回滚；具体提交和失败语义由 Spark/Hive catalog 或 MySQL 负责。
+5. 如果要建表、改表结构或指定存储格式，使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE` 或数据库 DDL，不要放进 SparkOne `save` 的 provider options。
+6. Spark JDBC 的 MySQL overwrite 不是稳定等价于“先 truncate 再 insert”；即使写了 `truncate="true"`，也可能受 schema、dialect 和 Spark 行为影响，所以 SparkOne 默认拦截。
 
 ## TOML 全局开关
 
@@ -73,6 +75,7 @@ Hive/catalog 表 save：
 overwritePolicy = "requireExplicit"
 overwriteBackup = "rename"
 overwriteBackupPath = "/tmp/sparkone_back"
+allowMysqlOverwrite = false
 allowNativeInsertOverwrite = false
 allowNativeDropTable = false
 ```
@@ -99,7 +102,7 @@ overwriteProtectedPaths = [
 - `rename`：默认值，目标存在时先移动到 `overwriteBackupPath`，写失败时尝试恢复。
 - `trash`：目标存在时先移动到 Hadoop Trash，不做自动恢复。
 - `none`：不备份，直接交给 Spark 覆盖，生产环境不建议使用。
-- 该配置只对文件类 save 生效；Hive/catalog 表 save 不做目录备份。
+- 该配置只对文件类 save 生效；Hive/catalog 和 MySQL 表 save 不做目录备份。
 
 `overwriteBackupPath`：
 
@@ -121,6 +124,13 @@ overwriteProtectedPaths = [
 - 如果历史脚本必须继续执行 `DROP TABLE`，需要在启动配置里显式改为 `true` 并重启服务。
 - 打开后，`DROP TABLE` 由 Spark/Hive catalog 直接执行，SparkOne 不做表数据备份或回滚。
 
+`allowMysqlOverwrite`：
+
+- 默认值是 `false`，表示禁止 `save overwrite ... as mysql.\`connection.table\``。
+- 这个配置只从启动 TOML / 启动属性读取，不允许被页面里的 `SET` 或单条 SQL 参数覆盖。
+- 打开为 `true` 后，MySQL overwrite 仍然需要现有 Safe Save 显式确认，例如 `options sparkoneOverwrite="allow"`。
+- 打开后，具体是 truncate 还是 drop/recreate 由 Spark JDBC、MySQL dialect、目标表结构和写入 schema 决定；SparkOne 不做 MySQL 表备份或回滚。
+
 `overwriteProtectedPaths`：
 
 - 用于全局保护危险的 `save overwrite` 边界路径。
@@ -131,7 +141,7 @@ overwriteProtectedPaths = [
 - 配置 `/tmp` 后，会拦截 `/tmp` 本身，但允许 `/tmp/sparkone_test` 这类更具体目录。
 - 支持整段通配符 `*`：`/*` 保护所有一级目录，`/*/*` 保护所有一级和二级目录，`/public/*/user` 保护 `/public` 下任意租户的 `user` 边界目录。
 - 多条规则之间是“任意命中即拒绝”。这里的命中指当前 overwrite 目标等于某条保护边界，或者是某条保护边界的上级目录。
-- 只校验文件类 `save overwrite` 的目标路径，不校验 Hive/catalog 表名，也不校验 `overwriteBackupPath`。如果生产环境也不希望备份写到 `/tmp`，需要同时把 `overwriteBackupPath` 改到安全目录。
+- 只校验文件类 `save overwrite` 的目标路径，不校验 Hive/catalog 或 MySQL 表名，也不校验 `overwriteBackupPath`。如果生产环境也不希望备份写到 `/tmp`，需要同时把 `overwriteBackupPath` 改到安全目录。
 - 这个配置是启动级硬拦截，不允许被 `options sparkoneOverwrite="allow"` 或 `set sparkone.save...` 覆盖。
 
 规则语义速查：

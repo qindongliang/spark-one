@@ -1,10 +1,10 @@
 package ai.sparkone.runtime
 
-import ai.sparkone.sql.{CompileException, SparkOneCompiler, SparkSqlValidator}
+import ai.sparkone.sql.{CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SaveStatementMetadata, SaveTargetType, SparkOneCompiler, SparkSqlValidator}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.UserGroupInformation
-import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
 import org.slf4j.LoggerFactory
 
 import java.io.File
@@ -12,9 +12,12 @@ import java.net.URLClassLoader
 
 final class SparkOneRuntime(
     spark: SparkSession,
-    compiler: SparkOneCompiler = new SparkOneCompiler(new SparkSqlValidator))
+    compiler: SparkOneCompiler = new SparkOneCompiler(new SparkSqlValidator),
+    driverClassLoader: Option[ClassLoader] = None)
   extends AutoCloseable {
 
+  private val logger = LoggerFactory.getLogger(getClass)
+  private val runLock = new AnyRef
   private val saveOverwriteGuard = new SaveOverwriteGuard(spark)
   private val nativeSqlSafetyGuard = new NativeSqlSafetyGuard
 
@@ -22,54 +25,123 @@ final class SparkOneRuntime(
     compiler.compile(script).map(_.sql)
   }
 
-  def run(script: String, limit: Int = 200): RunResult = {
-    val compiled = compiler.compile(script)
-    val results = compiled.zipWithIndex.map { case (statement, offset) =>
-      val started = System.nanoTime()
-      var preparation: Option[SaveOverwriteGuard.OverwritePreparation] = None
-      try {
-        nativeSqlSafetyGuard.validate(statement)
-        preparation = saveOverwriteGuard.prepare(statement.save)
-        val dataFrame = spark.sql(statement.sql)
-        preparation.foreach(_.commit())
-        val schema = dataFrame.schema.fields.map { field =>
-          FieldInfo(field.name, field.dataType.simpleString, field.nullable)
-        }
-        val collected = dataFrame.limit(limit + 1).collect().toSeq
-        val visibleRows = collected.take(limit).map(rowToStrings)
-        StatementResult(
-          index = offset + 1,
-          source = statement.source,
-          sql = statement.sql,
-          success = true,
-          schema = schema,
-          rows = visibleRows,
-          rowCount = visibleRows.size,
-          truncated = collected.size > limit,
-          durationMs = elapsedMs(started),
-          error = None)
-      } catch {
-        case e: Exception =>
-          preparation.foreach(_.rollback())
+  def run(script: String, limit: Int = 200): RunResult = runLock.synchronized {
+    withDriverClassLoader {
+      val compiled = compiler.compile(script)
+      val results = compiled.zipWithIndex.map { case (statement, offset) =>
+        val started = System.nanoTime()
+        var preparation: Option[SaveOverwriteGuard.OverwritePreparation] = None
+        try {
+          nativeSqlSafetyGuard.validate(statement)
+          preparation = saveOverwriteGuard.prepare(statement.save)
+          val dataFrame = execute(statement)
+          preparation.foreach(_.commit())
+          val schema = dataFrame.schema.fields.map { field =>
+            FieldInfo(field.name, field.dataType.simpleString, field.nullable)
+          }
+          val collected = dataFrame.limit(limit + 1).collect().toSeq
+          val visibleRows = collected.take(limit).map(rowToStrings)
           StatementResult(
             index = offset + 1,
             source = statement.source,
             sql = statement.sql,
-            success = false,
-            schema = Nil,
-            rows = Nil,
-            rowCount = 0,
-            truncated = false,
+            success = true,
+            schema = schema,
+            rows = visibleRows,
+            rowCount = visibleRows.size,
+            truncated = collected.size > limit,
             durationMs = elapsedMs(started),
-            error = Some(errorMessage(e)))
+            error = None)
+        } catch {
+          case e: Exception =>
+            preparation.foreach(_.rollback())
+            logger.error(
+              s"Statement ${offset + 1} failed, sql=${summarizeSql(statement.sql)}, reason=${errorMessage(e)}",
+              e)
+            StatementResult(
+              index = offset + 1,
+              source = statement.source,
+              sql = statement.sql,
+              success = false,
+              schema = Nil,
+              rows = Nil,
+              rowCount = 0,
+              truncated = false,
+              durationMs = elapsedMs(started),
+              error = Some(errorMessage(e)))
+        }
       }
-    }
 
-    RunResult(results.forall(_.success), results)
+      RunResult(results.forall(_.success), results)
+    }
   }
 
   override def close(): Unit = {
     spark.stop()
+  }
+
+  private def execute(statement: CompiledStatement): DataFrame = {
+    statement.load match {
+      case Some(metadata) if metadata.targetType == LoadTargetType.Mysql =>
+        executeMysqlLoad(metadata)
+      case _ =>
+        statement.save match {
+          case Some(metadata) if metadata.targetType == SaveTargetType.Mysql =>
+            executeMysqlSave(metadata)
+          case _ =>
+            spark.sql(statement.sql)
+        }
+    }
+  }
+
+  private def executeMysqlLoad(metadata: LoadStatementMetadata): DataFrame = {
+    spark.read
+      .format("jdbc")
+      .options(metadata.options)
+      .load()
+      .createOrReplaceTempView(metadata.table)
+    actionResult("LOAD MYSQL", metadata.path, metadata.table)
+  }
+
+  private def executeMysqlSave(metadata: SaveStatementMetadata): DataFrame = {
+    val mode = metadata.mode.toLowerCase match {
+      case "append" => SaveMode.Append
+      case "overwrite" => SaveMode.Overwrite
+      case other => throw new CompileException(s"SAVE mode '$other' is not supported for mysql source")
+    }
+    val started = System.nanoTime()
+    logger.info(
+      s"MySQL Save: start, mode=${metadata.mode}, source=${metadata.table}, target=${metadata.path}")
+    spark.table(metadata.table)
+      .write
+      .format("jdbc")
+      .options(metadata.targetOptions)
+      .mode(mode)
+      .save()
+    logger.info(
+      s"MySQL Save: success, mode=${metadata.mode}, source=${metadata.table}, target=${metadata.path}, costMs=${elapsedMs(started)}")
+    actionResult("SAVE MYSQL", metadata.path, metadata.table)
+  }
+
+  private def actionResult(action: String, target: String, table: String): DataFrame = {
+    import spark.implicits._
+    Seq((action, target, table)).toDF("action", "target", "table")
+  }
+
+  private def withDriverClassLoader[T](body: => T): T = {
+    driverClassLoader match {
+      case Some(classLoader) =>
+        val thread = Thread.currentThread()
+        val previous = thread.getContextClassLoader
+        thread.setContextClassLoader(classLoader)
+        try {
+          body
+        } finally {
+          thread.setContextClassLoader(previous)
+        }
+      case None =>
+        body
+    }
   }
 
   private def rowToStrings(row: Row): Seq[String] = {
@@ -85,6 +157,11 @@ final class SparkOneRuntime(
 
   private def errorMessage(error: Throwable): String = {
     Option(error.getMessage).filter(_.nonEmpty).getOrElse(error.getClass.getName)
+  }
+
+  private def summarizeSql(sql: String): String = {
+    val normalized = sql.replaceAll("\\s+", " ").trim
+    if (normalized.length <= 240) normalized else normalized.take(237) + "..."
   }
 }
 
@@ -245,7 +322,7 @@ object SparkOneRuntime {
     configureSparkProperty(builder, "spark.jars.repositories")
     configureSparkProperty(builder, "spark.kerberos.principal")
     configureSparkProperty(builder, "spark.kerberos.keytab")
-    configureDriverClasspathFromSparkJars()
+    val driverClassLoader = configureDriverClasspathFromSparkJars()
 
     if (enabled("sparkone.hive.enabled", "SPARKONE_HIVE_ENABLED")) {
       builder.enableHiveSupport()
@@ -254,7 +331,7 @@ object SparkOneRuntime {
     val spark = builder.getOrCreate()
     refreshUserGroupInformation(spark.sparkContext.hadoopConfiguration)
 
-    new SparkOneRuntime(spark)
+    new SparkOneRuntime(spark, driverClassLoader = driverClassLoader)
   }
 
   private def configureSparkProperty(builder: SparkSession.Builder, propertyName: String): Unit = {
@@ -278,7 +355,7 @@ object SparkOneRuntime {
     master.toLowerCase.startsWith("local")
   }
 
-  private def configureDriverClasspathFromSparkJars(): Unit = {
+  private def configureDriverClasspathFromSparkJars(): Option[ClassLoader] = {
     val jars = optionalValue("spark.jars", "SPARK_JARS")
       .toSeq
       .flatMap(splitCommaSeparated)
@@ -286,9 +363,12 @@ object SparkOneRuntime {
 
     if (jars.nonEmpty) {
       val parent = Thread.currentThread().getContextClassLoader
-      val urls = jars.map(_.toURI.toURL).toArray
-      Thread.currentThread().setContextClassLoader(new URLClassLoader(urls, parent))
+      val classLoader = new URLClassLoader(jars.map(_.toURI.toURL).toArray, parent)
+      Thread.currentThread().setContextClassLoader(classLoader)
       logger.info(s"Added local Spark jars to driver classloader: ${jars.map(_.getAbsolutePath).mkString(", ")}")
+      Some(classLoader)
+    } else {
+      None
     }
   }
 

@@ -14,9 +14,11 @@ final class SaveOverwriteGuard(spark: SparkSession) {
 
   private val logger = LoggerFactory.getLogger(getClass)
   private val OverwriteProtectedPathsKey = "sparkone.save.overwrite.protected.paths"
+  private val AllowMysqlOverwriteKey = "sparkone.save.mysql.overwrite.enabled"
 
   def prepare(save: Option[SaveStatementMetadata]): Option[OverwritePreparation] = {
     save.filter(_.mode.equalsIgnoreCase("overwrite")).flatMap { metadata =>
+      validateMysqlOverwriteAllowed(metadata)
       val policy = effectivePolicy(metadata)
       policy.value match {
         case OverwritePolicy.Deny =>
@@ -33,8 +35,20 @@ final class SaveOverwriteGuard(spark: SparkSession) {
           metadata.targetType match {
             case SaveTargetType.File => prepareBackup(metadata, policy)
             case SaveTargetType.Catalog => prepareCatalogOverwrite(metadata, policy)
+            case SaveTargetType.Mysql => prepareCatalogOverwrite(metadata, policy)
           }
       }
+    }
+  }
+
+  private def validateMysqlOverwriteAllowed(metadata: SaveStatementMetadata): Unit = {
+    if (metadata.targetType == SaveTargetType.Mysql && !enabledGlobal(AllowMysqlOverwriteKey)) {
+      logger.warn(
+        s"Safe Save: MySQL overwrite blocked, table=${metadata.table}, target=${metadata.path}, " +
+          s"allowMysqlOverwrite=false")
+      throw new CompileException(
+        s"SAVE overwrite for MySQL is disabled by SparkOne policy for table: ${metadata.path}. " +
+          "Set [save] allowMysqlOverwrite = true in TOML, then use option sparkoneOverwrite=\"allow\" for this statement.")
     }
   }
 
@@ -78,6 +92,11 @@ final class SaveOverwriteGuard(spark: SparkSession) {
           case None => ResolvedSetting(defaultValue, "default", defaultValue)
         }
     }
+  }
+
+  private def enabledGlobal(key: String): Boolean = {
+    sys.props.get(key)
+      .exists(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
   }
 
   private def prepareBackup(

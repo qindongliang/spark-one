@@ -36,7 +36,8 @@ Shade jar：
 
 数据源依赖：
 
-- Spark core 内置的 `csv/json/parquet/orc/text/jdbc/libsvm` 等 provider 可直接走 Spark SQL。
+- Spark core 内置的 `csv/json/parquet/orc/text/libsvm` 等 provider 可直接走 Spark SQL。
+- Spark 底层 JDBC 由 `load/save mysql` 的 runtime adapter 使用；SparkOne DSL 不暴露 `load/save jdbc`。
 - `excel` 不是 Spark core 内置，不默认打进 SparkOne 主包。
 - provider 别名不要写死在前端或 runtime，统一放在 `DataSourceResolver`。
 - 外部 provider 通过 `spark.jars.packages`、`spark.jars` 或 Kyuubi engine classpath 管理。

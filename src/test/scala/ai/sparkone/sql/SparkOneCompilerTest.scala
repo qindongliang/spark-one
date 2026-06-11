@@ -30,18 +30,28 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def supportsLoadOptionsWithAndAndSpacedEquals(): Unit = {
-    val sql = compiler.compile(
-      """load jdbc.`mysql1.user`
-        |options url = "jdbc:mysql://host/db"
-        |and dbtable='user'
-        |as users;
-        |""".stripMargin).head.sql
+  def compilesMysqlLoadFromTomlDatasourceWithoutRenderingCredentials(): Unit = {
+    withSystemProperties(Map(
+      "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
+      "sparkone.datasource.mysql.analytics.user" -> "reader",
+      "sparkone.datasource.mysql.analytics.password" -> "secret",
+      "sparkone.datasource.mysql.analytics.option.fetchsize" -> "1000")) {
+      val statement = compiler.compile(
+        """load mysql.`analytics.users`
+          |options numPartitions = "4"
+          |as users;
+          |""".stripMargin).head
 
-    assertEquals(
-      "CREATE OR REPLACE TEMPORARY VIEW users USING jdbc OPTIONS " +
-        "(path 'mysql1.user', url 'jdbc:mysql://host/db', dbtable 'user')",
-      sql)
+      assertEquals("SELECT 'LOAD MYSQL' AS sparkone_action, 'users AS users' AS sparkone_target", statement.sql)
+      assertFalse(statement.sql.contains("secret"))
+      assertEquals(Some(LoadTargetType.Mysql), statement.load.map(_.targetType))
+      assertEquals(Some("users"), statement.load.map(_.path))
+      assertEquals(Some("jdbc:mysql://host:3306/app"), statement.load.flatMap(_.options.get("url")))
+      assertEquals(Some("secret"), statement.load.flatMap(_.options.get("password")))
+      assertEquals(Some("users"), statement.load.flatMap(_.options.get("dbtable")))
+      assertEquals(Some("1000"), statement.load.flatMap(_.options.get("fetchsize")))
+      assertEquals(Some("4"), statement.load.flatMap(_.options.get("numPartitions")))
+    }
   }
 
   @Test
@@ -323,6 +333,48 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesMysqlSaveAsRuntimeAdapter(): Unit = {
+    withSystemProperties(Map(
+      "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
+      "sparkone.datasource.mysql.analytics.user" -> "writer",
+      "sparkone.datasource.mysql.analytics.password" -> "secret")) {
+      val statement = compiler.compile(
+        """save append users as mysql.`analytics.user_stats`
+          |options batchsize="500";
+          |""".stripMargin).head
+
+      assertEquals("SELECT 'SAVE MYSQL' AS sparkone_action, 'users TO user_stats' AS sparkone_target", statement.sql)
+      assertFalse(statement.sql.contains("secret"))
+      assertEquals(Some("append"), statement.save.map(_.mode))
+      assertEquals(Some(SaveTargetType.Mysql), statement.save.map(_.targetType))
+      assertEquals(Some("user_stats"), statement.save.map(_.path))
+      assertEquals(Some("jdbc:mysql://host:3306/app"), statement.save.flatMap(_.targetOptions.get("url")))
+      assertEquals(Some("secret"), statement.save.flatMap(_.targetOptions.get("password")))
+      assertEquals(Some("user_stats"), statement.save.flatMap(_.targetOptions.get("dbtable")))
+      assertEquals(Some("500"), statement.save.flatMap(_.targetOptions.get("batchsize")))
+    }
+  }
+
+  @Test
+  def rejectsJdbcDslInFavorOfMysqlDatasource(): Unit = {
+    try {
+      compiler.compile("load jdbc.`analytics.users` as users;")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("LOAD jdbc"))
+    }
+
+    try {
+      compiler.compile("save append users as jdbc.`analytics.users`;")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("SAVE jdbc"))
+    }
+  }
+
+  @Test
   def compilesSaveOverwriteToHiveTableWithControlOptions(): Unit = {
     val statement = compiler.compile(
       """save overwrite users as hive.`default.users`
@@ -385,6 +437,19 @@ final class SparkOneCompilerTest {
     } catch {
       case e: CompileException =>
         assertTrue(e.getMessage.contains("Spark SQL parser rejected statement"))
+    }
+  }
+
+  private def withSystemProperties(values: Map[String, String])(body: => Unit): Unit = {
+    val previous = values.keys.map(key => key -> sys.props.get(key)).toMap
+    values.foreach { case (key, value) => sys.props.put(key, value) }
+    try {
+      body
+    } finally {
+      previous.foreach {
+        case (key, Some(value)) => sys.props.put(key, value)
+        case (key, None) => sys.props.remove(key)
+      }
     }
   }
 }
