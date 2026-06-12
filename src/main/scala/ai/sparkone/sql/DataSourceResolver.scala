@@ -9,19 +9,30 @@ final class DataSourceResolver(
   }
   private val normalizedCatalogFormats = catalogFormats.map(_.toLowerCase)
 
-  def resolveLoad(format: String, path: String, options: Seq[(String, String)]): ResolvedLoadSource = {
+  def resolveLoad(
+      format: String,
+      path: String,
+      options: Seq[(String, String)],
+      filter: Option[String] = None): ResolvedLoadSource = {
     val normalized = format.toLowerCase
     if (normalized == "jdbc") {
       throw new CompileException("SparkOne does not support LOAD jdbc. Use LOAD mysql with HOCON datasource config.")
     } else if (normalized == "mysql") {
       val target = mysqlTarget(path, "LOAD")
-      MysqlLoadSource(target.dbtable, mysqlOptions(target.connection, target.dbtable, options))
+      val dbtable = filter.map(renderMysqlFilteredDbtable(target.dbtable, _)).getOrElse(target.dbtable)
+      MysqlLoadSource(dbtable, mysqlOptions(target.connection, dbtable, options))
     } else if (normalizedCatalogFormats.contains(normalized)) {
+      if (filter.nonEmpty) {
+        throw new CompileException(s"LOAD source '$format' does not support WHERE filter in the MVP compiler")
+      }
       if (options.nonEmpty) {
         throw new CompileException(s"LOAD source '$format' does not support Spark SQL OPTIONS in the MVP compiler")
       }
       CatalogTableSource(SparkOneSqlRender.renderMultipartIdentifier(path, "LOAD catalog table"))
     } else {
+      if (filter.nonEmpty) {
+        throw new CompileException(s"LOAD source '$format' does not support WHERE filter in the MVP compiler")
+      }
       ProviderLoadSource(resolveProvider(format), ("path" -> path) +: options)
     }
   }
@@ -58,7 +69,7 @@ final class DataSourceResolver(
       connection: String,
       dbtable: String,
       statementOptions: Seq[(String, String)]): Seq[(String, String)] = {
-    val forbidden = Set("url", "driver", "user", "password", "dbtable")
+    val forbidden = Set("url", "driver", "user", "password", "dbtable", "query")
     statementOptions.find { case (key, _) => forbidden.contains(key.toLowerCase) }.foreach { case (key, _) =>
       throw new CompileException(s"MySQL connection option '$key' must be configured in HOCON, not SQL OPTIONS")
     }
@@ -66,6 +77,10 @@ final class DataSourceResolver(
     val base = mysqlConnectionOptions(connection)
     val merged = base ++ statementOptions.map { case (key, value) => key -> value } :+ ("dbtable" -> dbtable)
     merged
+  }
+
+  private def renderMysqlFilteredDbtable(dbtable: String, filter: String): String = {
+    s"(select * from $dbtable where $filter) as sparkone_mysql_load"
   }
 
   private def mysqlConnectionOptions(connection: String): Seq[(String, String)] = {

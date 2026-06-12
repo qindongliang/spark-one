@@ -54,7 +54,8 @@ final class SparkOneCompiler(
     val (format, path) = parseSource(load.source(), "LOAD")
     val table = SparkOneSqlRender.requireIdentifier(load.table.getText, "LOAD target table")
     val options = parseOptions(load.optionClause())
-    dataSourceResolver.resolveLoad(format, path, options) match {
+    val filter = parseLoadFilter(load.whereClause())
+    dataSourceResolver.resolveLoad(format, path, options, filter) match {
       case ProviderLoadSource(provider, providerOptions) =>
         CompileResult(SparkOneSqlRender.renderCreateTempViewUsing(table, provider, providerOptions))
       case CatalogTableSource(identifier) =>
@@ -132,6 +133,19 @@ final class SparkOneCompiler(
     }
   }
 
+  private def parseLoadFilter(whereClause: SparkOneDslParser.WhereClauseContext): Option[String] = {
+    Option(whereClause).map { clause =>
+      val filter = stripQuoted(clause.condition.getText).trim
+      if (filter.isEmpty) {
+        throw new CompileException("LOAD WHERE filter must not be empty")
+      }
+      if (filter.contains(";")) {
+        throw new CompileException("LOAD WHERE filter must not contain semicolons")
+      }
+      filter
+    }
+  }
+
   private def parsePartitionColumns(partitionClause: SparkOneDslParser.PartitionClauseContext): Seq[String] = {
     Option(partitionClause).toSeq.flatMap { clause =>
       clause.identifier().asScala.map { identifier =>
@@ -168,7 +182,7 @@ private object SparkOneCompiler {
   private val DslSource = """[A-Za-z_][A-Za-z0-9_]*\s*\.\s*`(?:``|[^`])*`"""
 
   private val LegacyLoadWherePattern =
-    ("""(?is)(?:^|;)\s*load\s+""" + DslSource + """\s+where\b""").r
+    ("""(?is)(?:^|;)\s*load\s+""" + DslSource + """\s+where\s+[A-Za-z_][A-Za-z0-9_]*\s*=""").r
 
   private val LegacySaveWherePattern =
     ("""(?is)(?:^|;)\s*save\s+(?:(?:overwrite|append|errorifexists|ignore)\s+)?""" +

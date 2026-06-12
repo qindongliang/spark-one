@@ -12,7 +12,7 @@ statement
     ;
 
 loadStatement
-    : LOAD source optionClause? AS table=identifier
+    : LOAD source whereClause? optionClause? AS table=identifier
     ;
 
 saveStatement
@@ -29,6 +29,10 @@ source
 
 optionClause
     : OPTIONS option (AND option)*
+    ;
+
+whereClause
+    : WHERE condition=quotedValue
     ;
 
 partitionClause
