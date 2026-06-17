@@ -33,6 +33,7 @@ libsvm
 - `save append t as doris.\`db.target\`` 编译成 `INSERT INTO TABLE doris.db.target SELECT * FROM t`，要求目标表已存在。
 - `save overwrite t as doris.\`db.target\`` 编译成 `INSERT OVERWRITE TABLE doris.db.target SELECT * FROM t`，要求目标表已存在，默认被 `save.allowDorisOverwrite = false` 拦截。确需覆盖时，必须先在 HOCON 打开 `save.allowDorisOverwrite = true`，再在单条语句里显式写 `options sparkoneOverwrite="allow"`；SparkOne 不对 Doris 表做备份。
 - `save doris` 不支持 SQL 里的 Doris 连接 options，也不支持 `partitionBy`；连接和写入参数应放在 Spark Doris Catalog 配置中。
+- `save doris` 不改变 Doris 表模型语义：`DUPLICATE KEY` 会保留所有写入行，`AGGREGATE KEY` 会按 Key 聚合 Value 列，`UNIQUE KEY` 会按 Key UPSERT。重复 append 的最终查询效果由目标表 DDL 决定。
 - Hive/MySQL/Doris 的 `save append/overwrite` 都不会自动创建目标表。目标表、分区、索引、Doris key/distribution 等应由明确 DDL 先创建和治理。
 - Doris 聚合、写入优先使用 Spark 标准 SQL，例如 `select city, count(*) from doris.db.users group by city`、`insert into doris.db.target select ...`。
 

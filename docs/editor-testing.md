@@ -504,6 +504,124 @@ order by city;
 
 预期可以看到 `beijing/shanghai/hangzhou` 的聚合结果。重复执行 append 会重复追加数据，这是 Doris 目标表和 Spark Doris Catalog append 写入的正常语义。
 
+### Doris 表模型对 save append 结果的影响
+
+SparkOne 的 `save append ... as doris` 只负责向目标表提交 `INSERT INTO TABLE doris.db.table SELECT ...`。最终查询效果由 Doris 目标表模型决定：
+
+- `DUPLICATE KEY`：保留所有写入行，不去重、不聚合。
+- `AGGREGATE KEY`：按 Key 列聚合 Value 列，适合固定汇总指标。
+- `UNIQUE KEY`：按 Key 列 UPSERT，同 Key 新数据覆盖旧数据。
+
+可以用同一份 `doris_city_result` 写入三种 Doris 目标表观察差异。
+
+准备 Duplicate Key 目标表：
+
+```sql
+DROP TABLE IF EXISTS app.sparkone_doris_city_duplicate;
+CREATE TABLE app.sparkone_doris_city_duplicate (
+  city VARCHAR(64) NOT NULL,
+  row_count BIGINT NOT NULL,
+  total_cnt BIGINT NOT NULL
+)
+DUPLICATE KEY(city)
+DISTRIBUTED BY HASH(city) BUCKETS 1
+PROPERTIES (
+  "replication_num" = "1"
+);
+```
+
+准备 Aggregate Key 目标表：
+
+```sql
+DROP TABLE IF EXISTS app.sparkone_doris_city_aggregate;
+CREATE TABLE app.sparkone_doris_city_aggregate (
+  city VARCHAR(64) NOT NULL,
+  row_count BIGINT SUM NOT NULL,
+  total_cnt BIGINT SUM NOT NULL
+)
+AGGREGATE KEY(city)
+DISTRIBUTED BY HASH(city) BUCKETS 1
+PROPERTIES (
+  "replication_num" = "1"
+);
+```
+
+准备 Unique Key 目标表：
+
+```sql
+DROP TABLE IF EXISTS app.sparkone_doris_city_unique;
+CREATE TABLE app.sparkone_doris_city_unique (
+  city VARCHAR(64) NOT NULL,
+  row_count BIGINT NOT NULL,
+  total_cnt BIGINT NOT NULL
+)
+UNIQUE KEY(city)
+DISTRIBUTED BY HASH(city) BUCKETS 1
+PROPERTIES (
+  "replication_num" = "1"
+);
+```
+
+在 SparkOne 编辑器里生成同一份待写入结果：
+
+```sql
+load doris.`app.sparkone_doris_seed` as doris_seed;
+
+view doris_city_result as
+select
+  city,
+  count(*) as row_count,
+  sum(cnt) as total_cnt
+from doris_seed
+group by city;
+```
+
+分别写入三张表。为了观察差异，可以把下面三条 `save append` 重复执行两次：
+
+```sql
+save append doris_city_result
+as doris.`app.sparkone_doris_city_duplicate`;
+
+save append doris_city_result
+as doris.`app.sparkone_doris_city_aggregate`;
+
+save append doris_city_result
+as doris.`app.sparkone_doris_city_unique`;
+```
+
+查看 Duplicate Key 表：
+
+```sql
+select city, count(*) as physical_rows, sum(row_count) as sum_row_count, sum(total_cnt) as sum_total_cnt
+from doris.app.sparkone_doris_city_duplicate
+group by city
+order by city;
+```
+
+预期：重复 append 两次后，每个 `city` 会有两条物理行；例如 `beijing` 的 `physical_rows=2`、`sum_row_count=4`、`sum_total_cnt=80`。
+
+查看 Aggregate Key 表：
+
+```sql
+select city, row_count, total_cnt
+from doris.app.sparkone_doris_city_aggregate
+order by city;
+```
+
+预期：重复 append 两次后，同 Key 指标会按 `SUM` 聚合；例如 `beijing` 的 `row_count=4`、`total_cnt=80`。
+
+查看 Unique Key 表：
+
+```sql
+select city, row_count, total_cnt
+from doris.app.sparkone_doris_city_unique
+order by city;
+```
+
+预期：重复 append 两次后，同 Key 只保留最新一行；如果两次写入的数据相同，`beijing` 仍是 `row_count=2`、`total_cnt=40`。
+
+`save overwrite ... as doris` 会先走 Doris Catalog 的覆盖写语义，再由目标表模型处理本次写入数据。也就是说，SparkOne 不改变 Doris 表模型；是否保留明细、聚合指标或按 Key upsert，始终由目标表 DDL 决定。
+
 测试 `save overwrite` 覆盖 Doris：
 
 Doris overwrite 默认被启动级安全开关拦截。确认要测试覆盖写时，先在 `conf/sparkone.conf` 的 `save` 中打开并重启：
