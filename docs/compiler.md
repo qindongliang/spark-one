@@ -7,6 +7,7 @@ SparkOne compiler 的原则是：只解析 SparkOne 自己的薄 DSL，不解析
 ```sql
 load parquet.`/tmp/users` as users;
 load hive.`default.users` as hive_users;
+load hive.`default.users` where "dt = date '2026-06-17'" as hive_users_0617;
 load excel.`/tmp/users.xlsx` options header="true" as users_excel;
 load mysql.`analytics.users` as users_mysql;
 load doris.`app.users` as users_doris;
@@ -22,6 +23,7 @@ save append city_stats as mysql.`analytics.city_stats`;
 ```sql
 CREATE OR REPLACE TEMPORARY VIEW users USING parquet OPTIONS (path '/tmp/users');
 CREATE OR REPLACE TEMPORARY VIEW hive_users AS SELECT * FROM default.users;
+CREATE OR REPLACE TEMPORARY VIEW hive_users_0617 AS SELECT * FROM default.users WHERE dt = date '2026-06-17';
 CREATE OR REPLACE TEMPORARY VIEW users_excel USING excel OPTIONS (path '/tmp/users.xlsx', header 'true');
 SELECT 'LOAD MYSQL' AS sparkone_action, 'users AS users_mysql' AS sparkone_target;
 CREATE OR REPLACE TEMPORARY VIEW users_doris AS SELECT * FROM doris.app.users;
@@ -48,7 +50,7 @@ group by city;
 - `SparkSqlValidator` 使用 `org.apache.spark.sql.execution.SparkSqlParser` 校验生成 SQL。
 - 不要使用 `CatalystSqlParser` 作为最终校验器；它会拒绝部分 Spark SQL execution 层语法。
 - 数据源映射集中在 `DataSourceResolver`，不要把 provider 别名和特殊 source 判断散落在 compiler 主流程。
-- `load hive` 是 catalog 表读取语义，编译成 `CREATE ... AS SELECT * FROM db.table`。
+- `load hive` 是 catalog 表读取语义，编译成 `CREATE ... AS SELECT * FROM db.table`；追加 `where "..."` 时编译成 `SELECT * FROM db.table WHERE ...`。
 - `save ... as hive` 是 catalog 表写入语义，编译成 `INSERT INTO/OVERWRITE TABLE db.table SELECT * FROM source`。
 - `save ... partitionBy col1, col2` 只用于 catalog 表写入，编译成 Spark SQL 动态分区 `PARTITION (col1, col2)`。
 - `load/save mysql` 是薄 runtime adapter：连接信息从 HOCON 读取，编译展示安全占位 SQL，执行时使用 Spark JDBC reader/writer。

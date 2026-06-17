@@ -279,6 +279,27 @@ CREATE OR REPLACE TEMPORARY VIEW some_table AS
 SELECT * FROM default.some_table;
 ```
 
+Hive 也支持在 `load` 语法糖里追加过滤：
+
+```sql
+load hive.`default.some_table`
+where "dt = date '2026-06-17'"
+as some_table_0617;
+
+select *
+from some_table_0617
+limit 20;
+```
+
+编译结果应是标准 Spark SQL：
+
+```sql
+CREATE OR REPLACE TEMPORARY VIEW some_table_0617 AS
+SELECT * FROM default.some_table WHERE dt = date '2026-06-17';
+```
+
+预期：只返回满足条件的数据。是否触发 Hive 分区裁剪或 Parquet/ORC 谓词下推由 Spark/Hive 自身优化能力决定。
+
 Doris：
 
 先在 `conf/sparkone.conf` 配置 Spark Doris Catalog。SparkOne 本地运行时会把它转成 `spark.sql.catalog.doris.*`；接 Kyuubi 时，把同样的 Spark 配置放到 Kyuubi/Spark engine：
@@ -629,7 +650,7 @@ from paid_order_amounts;
 
 过滤写法建议：
 
-- `load mysql ... where "..."` 只支持 MySQL 特殊 source；文件类 provider 和 Hive catalog 暂不支持这个扩展。
+- `load mysql ... where "..."` 只支持 MySQL 特殊 source；Hive/Doris catalog 也支持 `load ... where "..."`，文件类 provider 暂不支持这个扩展。
 - `where` 后必须是引号包住的一段 MySQL 条件表达式，不写 `where` 关键字本身，例如 `where "status = 'PAID'"`。
 - `partitionColumn/lowerBound/upperBound/numPartitions` 只负责并行切分；业务过滤写在 `where "..."` 里。
 - 尽量写简单谓词，例如 `=`、`between`、`>=`、`<`、`in (...)`，并使用 MySQL 表上已有索引列，例如 `id`、`biz_date`、`status`。

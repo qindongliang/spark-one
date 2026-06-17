@@ -214,6 +214,20 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesHiveLoadWhereAsCatalogTableSelectFilter(): Unit = {
+    val sql = compiler.compile(
+      """load hive.`default.users`
+        |where "dt = date '2026-06-17' and status = 'active'"
+        |as active_users;
+        |""".stripMargin).head.sql
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW active_users AS " +
+        "SELECT * FROM default.users WHERE dt = date '2026-06-17' and status = 'active'",
+      sql)
+  }
+
+  @Test
   def rejectsHiveLoadOptionsUntilCatalogOptionsHaveASparkSqlMapping(): Unit = {
     try {
       compiler.compile("load hive.`default.users` options storage='delta' as users;")

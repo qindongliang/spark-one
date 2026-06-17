@@ -29,13 +29,12 @@ final class DataSourceResolver(
       val tableExpression = filter.map(condition => s"$identifier WHERE $condition").getOrElse(identifier)
       CatalogTableSource(tableExpression)
     } else if (normalizedCatalogFormats.contains(normalized)) {
-      if (filter.nonEmpty) {
-        throw new CompileException(s"LOAD source '$format' does not support WHERE filter in the MVP compiler")
-      }
       if (options.nonEmpty) {
         throw new CompileException(s"LOAD source '$format' does not support Spark SQL OPTIONS in the MVP compiler")
       }
-      CatalogTableSource(SparkOneSqlRender.renderMultipartIdentifier(path, "LOAD catalog table"))
+      val identifier = SparkOneSqlRender.renderMultipartIdentifier(path, "LOAD catalog table")
+      val tableExpression = filter.map(condition => s"$identifier WHERE $condition").getOrElse(identifier)
+      CatalogTableSource(tableExpression)
     } else {
       if (filter.nonEmpty) {
         throw new CompileException(s"LOAD source '$format' does not support WHERE filter in the MVP compiler")
