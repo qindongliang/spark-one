@@ -310,13 +310,11 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def stripsSparkOneSaveControlOptionsFromProviderOptions(): Unit = {
+  def stripsSparkOneOverwriteConfirmationFromProviderOptions(): Unit = {
     val statement = compiler.compile(
       """save overwrite users as csv.`/tmp/users_csv`
         |options header="true"
-        |and sparkoneoverwrite="allow"
-        |and sparkoneoverwritebackup="trash"
-        |and sparkoneoverwritebackuppath="/tmp/sparkone_back";
+        |and sparkoneoverwrite="allow";
         |""".stripMargin).head
 
     assertEquals(
@@ -324,8 +322,20 @@ final class SparkOneCompilerTest {
         "(header 'true') SELECT * FROM users",
       statement.sql)
     assertEquals(Some("allow"), statement.save.flatMap(_.options.get("sparkoneoverwrite")))
-    assertEquals(Some("trash"), statement.save.flatMap(_.options.get("sparkoneoverwritebackup")))
-    assertEquals(Some("/tmp/sparkone_back"), statement.save.flatMap(_.options.get("sparkoneoverwritebackuppath")))
+  }
+
+  @Test
+  def rejectsSparkOneSaveConfigOptionsInStatement(): Unit = {
+    try {
+      compiler.compile(
+        """save overwrite users as csv.`/tmp/users_csv`
+          |options sparkoneOverwriteBackup="trash";
+          |""".stripMargin)
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("HOCON save"))
+    }
   }
 
   @Test
@@ -548,6 +558,51 @@ final class SparkOneCompilerTest {
     assertEquals("INSERT OVERWRITE TABLE default.users SELECT * FROM users", statement.sql)
     assertEquals(Some("allow"), statement.save.flatMap(_.options.get("sparkoneoverwrite")))
     assertEquals(Some(SaveTargetType.Catalog), statement.save.map(_.targetType))
+  }
+
+  @Test
+  def compilesSaveAppendToDorisCatalogTable(): Unit = {
+    val statement = compiler.compile("save append users as doris.`dataagent.user_stats`;").head
+
+    assertEquals("INSERT INTO TABLE doris.dataagent.user_stats SELECT * FROM users", statement.sql)
+    assertEquals(Some("append"), statement.save.map(_.mode))
+    assertEquals(Some("doris.dataagent.user_stats"), statement.save.map(_.path))
+    assertEquals(Some(SaveTargetType.DorisCatalog), statement.save.map(_.targetType))
+  }
+
+  @Test
+  def compilesSaveOverwriteToDorisCatalogTableWithControlOptions(): Unit = {
+    val statement = compiler.compile(
+      """save overwrite users as doris.`dataagent.user_stats`
+        |options sparkoneOverwrite="allow";
+        |""".stripMargin).head
+
+    assertEquals("INSERT OVERWRITE TABLE doris.dataagent.user_stats SELECT * FROM users", statement.sql)
+    assertEquals(Some("allow"), statement.save.flatMap(_.options.get("sparkoneoverwrite")))
+    assertEquals(Some(SaveTargetType.DorisCatalog), statement.save.map(_.targetType))
+  }
+
+  @Test
+  def rejectsProviderOptionsForDorisSaveBecauseCatalogIsConfiguredOutsideSql(): Unit = {
+    try {
+      compiler.compile("save append users as doris.`dataagent.user_stats` options fenodes='leaked';")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("SAVE doris does not support SQL OPTIONS"))
+    }
+  }
+
+  @Test
+  def rejectsPartitionByForDorisSave(): Unit = {
+    try {
+      compiler.compile("save append users as doris.`dataagent.user_stats` partitionBy dt;")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("partitionBy"))
+        assertTrue(e.getMessage.contains("doris"))
+    }
   }
 
   @Test

@@ -10,48 +10,106 @@ import scala.collection.JavaConverters._
 
 final class SaveOverwriteGuardTest {
   private val ProtectedPathsKey = "sparkone.save.overwrite.protected.paths"
+  private val OverwritePolicyKey = "sparkone.save.overwrite.policy"
+  private val OverwriteBackupKey = "sparkone.save.overwrite.backup"
+  private val OverwriteBackupPathKey = "sparkone.save.overwrite.backup.path"
   private val AllowMysqlOverwriteKey = "sparkone.save.mysql.overwrite.enabled"
+  private val AllowDorisOverwriteKey = "sparkone.save.doris.overwrite.enabled"
   private val AllowNativeInsertOverwriteKey = "sparkone.save.native.insertOverwrite.enabled"
   private val AllowNativeDropTableKey = "sparkone.save.native.dropTable.enabled"
 
   @Test
-  def sessionOverwritePolicyAllowsSaveAndKeepsBackup(): Unit = {
+  def startupOverwritePolicyAllowsSaveAndKeepsBackup(): Unit = {
     val root = Files.createTempDirectory("sparkone-save-guard-")
     val target = root.resolve("result")
     val backupRoot = root.resolve("configured-backup-root")
     Files.createDirectories(target)
     Files.write(target.resolve("old.txt"), "old".getBytes("UTF-8"))
 
+    withSystemProperties(Map(
+      OverwritePolicyKey -> "allow",
+      OverwriteBackupKey -> "rename",
+      OverwriteBackupPathKey -> backupRoot.toUri.toString)) {
+      val spark = localSpark(root)
+      try {
+        val runtime = new SparkOneRuntime(spark)
+        val result = runtime.run(
+          s"""view result_view as select 1 as id;
+             |
+             |save overwrite result_view as parquet.`${target.toUri}`;
+             |""".stripMargin)
+
+        assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+        assertTrue(Files.exists(target))
+
+        assertTrue(Files.isDirectory(backupRoot))
+        val backupStream = Files.list(backupRoot)
+        val backups =
+          try {
+            backupStream.iterator().asScala.toSeq
+          } finally {
+            backupStream.close()
+          }
+        assertEquals(1, backups.size)
+        assertTrue(Files.exists(backups.head.resolve("old.txt")))
+      } finally {
+        spark.stop()
+      }
+    }
+
+    deleteRecursively(root)
+  }
+
+  @Test
+  def sessionOverwritePolicyCannotAllowSave(): Unit = {
+    val root = Files.createTempDirectory("sparkone-save-guard-session-policy-")
+    val target = root.resolve("result")
+    Files.createDirectories(target)
+
     val spark = localSpark(root)
     try {
       val runtime = new SparkOneRuntime(spark)
       val result = runtime.run(
         s"""set sparkone.save.overwrite.policy=allow;
-           |set sparkone.save.overwrite.backup=rename;
-           |set sparkone.save.overwrite.backup.path=${backupRoot.toUri};
            |
            |view result_view as select 1 as id;
            |
            |save overwrite result_view as parquet.`${target.toUri}`;
            |""".stripMargin)
 
-      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
-      assertTrue(Files.exists(target))
-
-      assertTrue(Files.isDirectory(backupRoot))
-      val backupStream = Files.list(backupRoot)
-      val backups =
-        try {
-          backupStream.iterator().asScala.toSeq
-        } finally {
-          backupStream.close()
-        }
-      assertEquals(1, backups.size)
-      assertTrue(Files.exists(backups.head.resolve("old.txt")))
+      assertFalse(result.success)
+      assertTrue(result.statements.flatMap(_.error).mkString("\n").contains("requires explicit confirmation"))
     } finally {
       spark.stop()
       deleteRecursively(root)
     }
+  }
+
+  @Test
+  def statementOverwriteConfirmationCannotOverrideStartupDenyPolicy(): Unit = {
+    val root = Files.createTempDirectory("sparkone-save-guard-deny-policy-")
+    val target = root.resolve("result")
+    Files.createDirectories(target)
+
+    withSystemProperty(OverwritePolicyKey, "deny") {
+      val spark = localSpark(root)
+      try {
+        val runtime = new SparkOneRuntime(spark)
+        val result = runtime.run(
+          s"""view result_view as select 1 as id;
+             |
+             |save overwrite result_view as parquet.`${target.toUri}`
+             |options sparkoneOverwrite="allow";
+             |""".stripMargin)
+
+        assertFalse(result.success)
+        assertTrue(result.statements.flatMap(_.error).mkString("\n").contains("denied by SparkOne policy"))
+      } finally {
+        spark.stop()
+      }
+    }
+
+    deleteRecursively(root)
   }
 
   @Test
@@ -62,18 +120,18 @@ final class SaveOverwriteGuardTest {
     Files.createDirectories(target)
     Files.write(target.resolve("old.txt"), "old".getBytes("UTF-8"))
 
-    withSystemProperty(ProtectedPathsKey, protectedRoot.toUri.toString) {
+    withSystemProperties(Map(
+      ProtectedPathsKey -> protectedRoot.toUri.toString,
+      OverwritePolicyKey -> "allow",
+      OverwriteBackupKey -> "none")) {
       val spark = localSpark(root)
       try {
         val runtime = new SparkOneRuntime(spark)
         val result = runtime.run(
-          s"""set sparkone.save.overwrite.policy=allow;
-             |
-             |view result_view as select 1 as id;
+          s"""view result_view as select 1 as id;
              |
              |save overwrite result_view as parquet.`${target.toUri}`
-             |options sparkoneOverwrite="allow"
-             |and sparkoneOverwriteBackup="none";
+             |options sparkoneOverwrite="allow";
              |""".stripMargin)
 
         assertFalse(result.success)
@@ -97,18 +155,18 @@ final class SaveOverwriteGuardTest {
     Files.createDirectories(target)
     Files.write(target.resolve("old.txt"), "old".getBytes("UTF-8"))
 
-    withSystemProperty(ProtectedPathsKey, protectedRoot.toUri.toString) {
+    withSystemProperties(Map(
+      ProtectedPathsKey -> protectedRoot.toUri.toString,
+      OverwritePolicyKey -> "allow",
+      OverwriteBackupKey -> "none")) {
       val spark = localSpark(root)
       try {
         val runtime = new SparkOneRuntime(spark)
         val result = runtime.run(
-          s"""set sparkone.save.overwrite.policy=allow;
-             |
-             |view result_view as select 1 as id;
+          s"""view result_view as select 1 as id;
              |
              |save overwrite result_view as parquet.`${target.toUri}`
-             |options sparkoneOverwrite="allow"
-             |and sparkoneOverwriteBackup="none";
+             |options sparkoneOverwrite="allow";
              |""".stripMargin)
 
         assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
@@ -284,6 +342,74 @@ final class SaveOverwriteGuardTest {
   }
 
   @Test
+  def dorisOverwriteIsBlockedByDefaultEvenWhenStatementAllowsOverwrite(): Unit = {
+    val root = Files.createTempDirectory("sparkone-doris-overwrite-block-")
+    val spark = localSpark(root)
+    try {
+      val guard = new SaveOverwriteGuard(spark)
+
+      try {
+        guard.prepare(Some(dorisOverwriteMetadata(options = Map("sparkoneoverwrite" -> "allow"))))
+        fail("Expected CompileException")
+      } catch {
+        case e: ai.sparkone.sql.CompileException =>
+          assertTrue(e.getMessage.contains("Doris"))
+          assertTrue(e.getMessage.contains("allowDorisOverwrite"))
+      }
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def dorisOverwriteCannotBeAllowedBySessionSetOnly(): Unit = {
+    val root = Files.createTempDirectory("sparkone-doris-overwrite-session-block-")
+    val spark = localSpark(root)
+    try {
+      spark.conf.set(AllowDorisOverwriteKey, "true")
+      val guard = new SaveOverwriteGuard(spark)
+
+      try {
+        guard.prepare(Some(dorisOverwriteMetadata(options = Map("sparkoneoverwrite" -> "allow"))))
+        fail("Expected CompileException")
+      } catch {
+        case e: ai.sparkone.sql.CompileException =>
+          assertTrue(e.getMessage.contains("Doris"))
+          assertTrue(e.getMessage.contains("allowDorisOverwrite"))
+      }
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def dorisOverwriteRequiresStatementConfirmationAfterStartupConfigurationAllowsIt(): Unit = {
+    val root = Files.createTempDirectory("sparkone-doris-overwrite-allow-")
+    withSystemProperty(AllowDorisOverwriteKey, "true") {
+      val spark = localSpark(root)
+      try {
+        val guard = new SaveOverwriteGuard(spark)
+
+        try {
+          guard.prepare(Some(dorisOverwriteMetadata()))
+          fail("Expected CompileException")
+        } catch {
+          case e: ai.sparkone.sql.CompileException =>
+            assertTrue(e.getMessage.contains("requires explicit confirmation"))
+        }
+
+        assertTrue(guard.prepare(Some(dorisOverwriteMetadata(options = Map("sparkoneoverwrite" -> "allow")))).nonEmpty)
+      } finally {
+        spark.stop()
+      }
+    }
+
+    deleteRecursively(root)
+  }
+
+  @Test
   def wildcardProtectedPathRejectsConfiguredDepthAndAllowsDeeperPath(): Unit = {
     val root = Files.createTempDirectory("sparkone-save-guard-wildcard-")
     val firstLevel = root.resolve("public")
@@ -327,27 +453,29 @@ final class SaveOverwriteGuardTest {
     Files.createDirectories(target)
     Files.write(target.resolve("old.txt"), "old".getBytes("UTF-8"))
 
-    val spark = localSpark(root)
-    try {
-      val runtime = new SparkOneRuntime(spark)
-      val result = runtime.run(
-        s"""set sparkone.save.overwrite.policy=allow;
-           |set sparkone.save.overwrite.backup=trash;
-           |
-           |view result_view as select 1 as id;
-           |
-           |save overwrite result_view as parquet.`${target.toUri}`;
-           |""".stripMargin)
+    withSystemProperties(Map(
+      OverwritePolicyKey -> "allow",
+      OverwriteBackupKey -> "trash")) {
+      val spark = localSpark(root)
+      try {
+        val runtime = new SparkOneRuntime(spark)
+        val result = runtime.run(
+          s"""view result_view as select 1 as id;
+             |
+             |save overwrite result_view as parquet.`${target.toUri}`;
+             |""".stripMargin)
 
-      assertFalse(result.success)
-      val error = result.statements.flatMap(_.error).mkString("\n")
-      assertTrue(error, error.contains("does not support"))
-      assertTrue(error, error.contains("trash"))
-      assertTrue(Files.exists(target.resolve("old.txt")))
-    } finally {
-      spark.stop()
-      deleteRecursively(root)
+        assertFalse(result.success)
+        val error = result.statements.flatMap(_.error).mkString("\n")
+        assertTrue(error, error.contains("does not support"))
+        assertTrue(error, error.contains("trash"))
+        assertTrue(Files.exists(target.resolve("old.txt")))
+      } finally {
+        spark.stop()
+      }
     }
+
+    deleteRecursively(root)
   }
 
   @Test
@@ -367,6 +495,28 @@ final class SaveOverwriteGuardTest {
 
       assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
       assertEquals("1", result.statements.last.rows.head.head)
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def hiveSaveAppendRequiresExistingTargetTable(): Unit = {
+    val root = Files.createTempDirectory("sparkone-hive-save-append-missing-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """view result_view as select 1 as id;
+          |
+          |save append result_view as hive.`default.sparkone_hive_missing_append_target`;
+          |""".stripMargin)
+
+      assertFalse(result.success)
+      val error = result.statements.flatMap(_.error).mkString("\n")
+      assertTrue(error, error.contains("SAVE target table does not exist"))
+      assertFalse(spark.catalog.tableExists("default.sparkone_hive_missing_append_target"))
     } finally {
       spark.stop()
       deleteRecursively(root)
@@ -408,6 +558,29 @@ final class SaveOverwriteGuardTest {
     }
   }
 
+  @Test
+  def hiveSaveOverwriteRequiresExistingTargetTable(): Unit = {
+    val root = Files.createTempDirectory("sparkone-hive-save-overwrite-missing-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """view result_view as select 1 as id;
+          |
+          |save overwrite result_view as hive.`default.sparkone_hive_missing_overwrite_target`
+          |options sparkoneOverwrite="allow";
+          |""".stripMargin)
+
+      assertFalse(result.success)
+      val error = result.statements.flatMap(_.error).mkString("\n")
+      assertTrue(error, error.contains("SAVE target table does not exist"))
+      assertFalse(spark.catalog.tableExists("default.sparkone_hive_missing_overwrite_target"))
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
   private def localSpark(root: Path): SparkSession = {
     SparkSession.builder()
       .appName("SparkOne SaveOverwriteGuardTest")
@@ -420,15 +593,16 @@ final class SaveOverwriteGuardTest {
   }
 
   private def runOverwrite(runtime: SparkOneRuntime, target: Path) = {
-    runtime.run(
-      s"""set sparkone.save.overwrite.policy=allow;
-         |
-         |view result_view as select 1 as id;
+    withSystemProperties(Map(
+      OverwritePolicyKey -> "allow",
+      OverwriteBackupKey -> "none")) {
+      runtime.run(
+        s"""view result_view as select 1 as id;
          |
          |save overwrite result_view as parquet.`${target.toUri}`
-         |options sparkoneOverwrite="allow"
-         |and sparkoneOverwriteBackup="none";
+         |options sparkoneOverwrite="allow";
          |""".stripMargin)
+    }
   }
 
   private def mysqlOverwriteMetadata(options: Map[String, String] = Map.empty): SaveStatementMetadata = {
@@ -442,15 +616,29 @@ final class SaveOverwriteGuardTest {
       targetOptions = Map("url" -> "jdbc:mysql://host/db", "dbtable" -> "target_table"))
   }
 
-  private def withSystemProperty(key: String, value: String)(body: => Unit): Unit = {
-    val previous = sys.props.get(key)
-    sys.props.put(key, value)
+  private def dorisOverwriteMetadata(options: Map[String, String] = Map.empty): SaveStatementMetadata = {
+    SaveStatementMetadata(
+      mode = "overwrite",
+      table = "source_view",
+      format = "doris",
+      path = "doris.dataagent.target_table",
+      options = options,
+      targetType = SaveTargetType.DorisCatalog)
+  }
+
+  private def withSystemProperty[T](key: String, value: String)(body: => T): T = {
+    withSystemProperties(Map(key -> value))(body)
+  }
+
+  private def withSystemProperties[T](values: Map[String, String])(body: => T): T = {
+    val previous = values.keys.map(key => key -> sys.props.get(key)).toMap
+    values.foreach { case (key, value) => sys.props.put(key, value) }
     try {
       body
     } finally {
-      previous match {
-        case Some(oldValue) => sys.props.put(key, oldValue)
-        case None => sys.props.remove(key)
+      previous.foreach {
+        case (key, Some(oldValue)) => sys.props.put(key, oldValue)
+        case (key, None) => sys.props.remove(key)
       }
     }
   }

@@ -16,6 +16,8 @@ view city_stats as select city, count(*) as cnt from users group by city;
 save overwrite users as parquet.`/tmp/users_out`;
 save append city_stats as hive.`default.city_stats` partitionBy dt;
 save append city_stats as mysql.`analytics.city_stats`;
+save append city_stats as doris.`app.city_stats`;
+save overwrite city_stats as doris.`app.city_stats` options sparkoneOverwrite="allow";
 ```
 
 编译结果示例：
@@ -32,6 +34,8 @@ CREATE OR REPLACE TEMPORARY VIEW city_stats AS select city, count(*) as cnt from
 INSERT OVERWRITE DIRECTORY '/tmp/users_out' USING parquet SELECT * FROM users;
 INSERT INTO TABLE default.city_stats PARTITION (dt) SELECT * FROM city_stats;
 SELECT 'SAVE MYSQL' AS sparkone_action, 'city_stats TO city_stats' AS sparkone_target;
+INSERT INTO TABLE doris.app.city_stats SELECT * FROM city_stats;
+INSERT OVERWRITE TABLE doris.app.city_stats SELECT * FROM city_stats;
 ```
 
 普通 Spark SQL 原样透传：
@@ -55,6 +59,9 @@ group by city;
 - `save ... partitionBy col1, col2` 只用于 catalog 表写入，编译成 Spark SQL 动态分区 `PARTITION (col1, col2)`。
 - `load/save mysql` 是薄 runtime adapter：连接信息从 HOCON 读取，编译展示安全占位 SQL，执行时使用 Spark JDBC reader/writer。
 - `load doris` 是 Spark Doris Catalog 语法糖：`load doris.\`db.table\` as t` 编译成 `CREATE ... AS SELECT * FROM doris.db.table`；追加 `where "..."` 时编译成 `SELECT * FROM doris.db.table WHERE ...`。
+- `save ... as doris` 是 Spark Doris Catalog 表写入语义，编译成 `INSERT INTO/OVERWRITE TABLE doris.db.table SELECT * FROM source`。
+- `save overwrite ... as doris` 默认还需要启动级 `save.allowDorisOverwrite = true` 和单条 `options sparkoneOverwrite="allow"` 双重确认；`partitionBy` 不用于 Doris Catalog 写入。
+- `save append/overwrite` 写 Hive、MySQL、Doris 时都要求目标表已存在；SparkOne 不自动建表，建表和表结构变更使用 Spark SQL、Doris DDL 或 MySQL DDL 明确完成。
 - Doris 推荐直接使用标准 Spark SQL：`show namespaces in doris`、`select * from doris.db.table`；裸写 `show databases` 和 `db.table` 仍表示默认 Hive catalog。
 - 不支持 `load/save jdbc`，避免账号密码和连接串散落在 SQL 里。
 - `excel` 是外部 Spark DataSource provider，编译成 `USING excel`，由依赖注册 provider 短名。

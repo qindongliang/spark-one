@@ -350,6 +350,7 @@ private[server] object SparkOneHoconConfig {
         .filter(_.nonEmpty)
         .map("sparkone.save.overwrite.protected.paths" -> _),
       boolean(config, "save.allowMysqlOverwrite").map(value => "sparkone.save.mysql.overwrite.enabled" -> value.toString),
+      boolean(config, "save.allowDorisOverwrite").map(value => "sparkone.save.doris.overwrite.enabled" -> value.toString),
       boolean(config, "save.allowNativeInsertOverwrite").map(value => "sparkone.save.native.insertOverwrite.enabled" -> value.toString),
       boolean(config, "save.allowNativeDropTable").map(value => "sparkone.save.native.dropTable.enabled" -> value.toString)).flatten.toMap
   }

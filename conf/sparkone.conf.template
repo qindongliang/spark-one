@@ -48,6 +48,9 @@ save {
   # 默认禁止 MySQL overwrite。该行为可能 truncate 或 drop/recreate 目标表，只有明确接受风险时再打开。
   # 打开后，单条 save overwrite mysql 仍然需要 options sparkoneOverwrite="allow"。
   allowMysqlOverwrite = false
+  # 默认禁止 Doris overwrite。Doris Catalog 的 INSERT OVERWRITE 是表级覆盖风险，只有明确接受风险时再打开。
+  # 打开后，单条 save overwrite doris 仍然需要 options sparkoneOverwrite="allow"。
+  allowDorisOverwrite = false
   # 默认禁止原生 Spark SQL 的 INSERT OVERWRITE，避免绕过 SparkOne Safe Save。
   # 历史脚本确实需要兼容时，再显式改为 true。
   allowNativeInsertOverwrite = false

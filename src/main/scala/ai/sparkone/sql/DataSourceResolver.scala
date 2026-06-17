@@ -50,8 +50,15 @@ final class DataSourceResolver(
     } else if (normalized == "mysql") {
       val target = mysqlTarget(path, "SAVE")
       MysqlSaveSource(target.dbtable, mysqlOptions(target.connection, target.dbtable, options))
+    } else if (normalized == "doris") {
+      if (options.nonEmpty) {
+        throw new CompileException("SAVE doris does not support SQL OPTIONS. Configure Spark Doris Catalog in HOCON catalogs.doris.")
+      }
+      val identifier = SparkOneSqlRender.renderMultipartIdentifier(s"doris.$path", "SAVE doris table")
+      CatalogSaveSource(identifier, SaveTargetType.DorisCatalog, supportsPartitionBy = false)
     } else if (normalizedCatalogFormats.contains(normalized)) {
-      CatalogSaveSource(format)
+      val identifier = SparkOneSqlRender.renderMultipartIdentifier(path, "SAVE catalog table")
+      CatalogSaveSource(identifier, SaveTargetType.Catalog, supportsPartitionBy = true)
     } else {
       ProviderSaveSource(resolveProvider(format))
     }
@@ -134,7 +141,8 @@ final case class MysqlLoadSource(dbtable: String, options: Seq[(String, String)]
 
 sealed trait ResolvedSaveSource
 final case class ProviderSaveSource(provider: String) extends ResolvedSaveSource
-final case class CatalogSaveSource(format: String) extends ResolvedSaveSource
+final case class CatalogSaveSource(identifier: String, targetType: SaveTargetType, supportsPartitionBy: Boolean)
+  extends ResolvedSaveSource
 final case class MysqlSaveSource(dbtable: String, options: Seq[(String, String)]) extends ResolvedSaveSource
 
 private final case class MysqlTarget(connection: String, dbtable: String)

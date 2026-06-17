@@ -74,6 +74,13 @@ final class SparkOneCompiler(
     val options = parseOptions(save.optionClause())
     val partitionColumns = parsePartitionColumns(save.partitionClause())
     val (runtimeOptions, providerOptions) = SaveControlOptions.partition(options)
+    val forbiddenStatementControls = runtimeOptions.collect {
+      case (key, _) if !key.equalsIgnoreCase(SaveControlOptions.Overwrite) => key
+    }
+    if (forbiddenStatementControls.nonEmpty) {
+      throw new CompileException(
+        s"SparkOne save option '${forbiddenStatementControls.head}' must be configured in HOCON save.*, not SQL OPTIONS")
+    }
     val runtimeOptionMap = runtimeOptions.map { case (key, value) => key.toLowerCase -> value }.toMap
 
     dataSourceResolver.resolveSave(format, path, providerOptions) match {
@@ -87,17 +94,19 @@ final class SparkOneCompiler(
         CompileResult(
           SparkOneSqlRender.renderInsertOverwriteDirectory(path, provider, providerOptions, table),
           Some(SaveStatementMetadata(mode, table, format, path, runtimeOptionMap)))
-      case CatalogSaveSource(_) =>
+      case CatalogSaveSource(targetTable, targetType, supportsPartitionBy) =>
         if (mode != "overwrite" && mode != "append") {
           throw new CompileException(s"SAVE mode '$mode' is not supported for catalog source '$format'")
         }
         if (providerOptions.nonEmpty) {
           throw new CompileException(s"SAVE to catalog source '$format' does not support provider OPTIONS yet")
         }
-        val targetTable = SparkOneSqlRender.renderMultipartIdentifier(path, "SAVE catalog table")
+        if (partitionColumns.nonEmpty && !supportsPartitionBy) {
+          throw new CompileException(s"SAVE partitionBy is not supported for $format source")
+        }
         CompileResult(
           SparkOneSqlRender.renderInsertTable(mode, targetTable, table, partitionColumns),
-          Some(SaveStatementMetadata(mode, table, format, targetTable, runtimeOptionMap, SaveTargetType.Catalog)))
+          Some(SaveStatementMetadata(mode, table, format, targetTable, runtimeOptionMap, targetType)))
       case MysqlSaveSource(dbtable, jdbcOptions) =>
         if (mode != "overwrite" && mode != "append") {
           throw new CompileException(s"SAVE mode '$mode' is not supported for mysql source")

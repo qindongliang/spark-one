@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory
 
 import java.io.File
 import java.net.URLClassLoader
+import scala.util.control.NonFatal
 
 final class SparkOneRuntime(
     spark: SparkSession,
@@ -34,6 +35,7 @@ final class SparkOneRuntime(
         try {
           nativeSqlSafetyGuard.validate(statement)
           preparation = saveOverwriteGuard.prepare(statement.save)
+          validateSaveTargetExists(statement.save)
           val dataFrame = execute(statement)
           preparation.foreach(_.commit())
           val schema = dataFrame.schema.fields.map { field =>
@@ -121,6 +123,43 @@ final class SparkOneRuntime(
     logger.info(
       s"MySQL Save: success, mode=${metadata.mode}, source=${metadata.table}, target=${metadata.path}, costMs=${elapsedMs(started)}")
     actionResult("SAVE MYSQL", metadata.path, metadata.table)
+  }
+
+  private def validateSaveTargetExists(save: Option[SaveStatementMetadata]): Unit = {
+    save.foreach { metadata =>
+      metadata.targetType match {
+        case SaveTargetType.Catalog | SaveTargetType.DorisCatalog =>
+          if (!spark.catalog.tableExists(metadata.path)) {
+            throw new CompileException(
+              s"SAVE target table does not exist: ${metadata.path}. " +
+                s"Create the target table explicitly before SAVE ${metadata.mode}.")
+          }
+        case SaveTargetType.Mysql =>
+          validateMysqlTargetExists(metadata)
+        case SaveTargetType.File =>
+      }
+    }
+  }
+
+  private def validateMysqlTargetExists(metadata: SaveStatementMetadata): Unit = {
+    try {
+      spark.read
+        .format("jdbc")
+        .options(metadata.targetOptions)
+        .load()
+        .limit(0)
+        .collect()
+    } catch {
+      case NonFatal(e) =>
+        logger.warn(
+          s"MySQL Save: target table existence check failed, " +
+            s"mode=${metadata.mode}, source=${metadata.table}, target=${metadata.path}, reason=${errorMessage(e)}",
+          e)
+        throw new CompileException(
+          s"SAVE target table does not exist or cannot be resolved: ${metadata.path}. " +
+            s"Create the target table explicitly before SAVE ${metadata.mode}.",
+          e)
+    }
   }
 
   private def actionResult(action: String, target: String, table: String): DataFrame = {

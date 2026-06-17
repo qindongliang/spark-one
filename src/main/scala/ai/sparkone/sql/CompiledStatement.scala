@@ -34,5 +34,6 @@ sealed trait SaveTargetType
 object SaveTargetType {
   case object File extends SaveTargetType
   case object Catalog extends SaveTargetType
+  case object DorisCatalog extends SaveTargetType
   case object Mysql extends SaveTargetType
 }

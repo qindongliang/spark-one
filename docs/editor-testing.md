@@ -319,6 +319,11 @@ catalogs.doris {
 jars {
   packages = "org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
 }
+
+save {
+  # 只有测试 Doris 覆盖写时才打开；append 不需要。
+  allowDorisOverwrite = false
+}
 ```
 
 验证 Hive 仍是默认 catalog：
@@ -366,6 +371,16 @@ INSERT INTO app.sparkone_doris_seed VALUES
   (2, 'shanghai', 20, '2026-06-01'),
   (3, 'beijing', 30, '2026-06-02'),
   (4, 'hangzhou', 40, '2026-06-02');
+```
+
+如果在 SparkOne 编辑器里通过 Spark Doris Catalog 插入种子数据，目标表要写成三段 catalog 表名，并且 `DATE` 列建议使用 Spark SQL 的 date literal，避免 Spark 把字符串写入 `DATE` 列时报类型不兼容：
+
+```sql
+INSERT INTO doris.app.sparkone_doris_seed VALUES
+  (1, 'beijing', 10, DATE '2026-06-01'),
+  (2, 'shanghai', 20, DATE '2026-06-01'),
+  (3, 'beijing', 30, DATE '2026-06-02'),
+  (4, 'hangzhou', 40, DATE '2026-06-02');
 ```
 
 在 SparkOne 编辑器里读取 Doris 表：
@@ -447,6 +462,85 @@ as doris_seed;
 ```
 
 预期：编译失败，提示 `LOAD doris does not support SQL OPTIONS`。
+
+测试 `save append` 写入 Doris：
+
+先用 Doris/MySQL 协议客户端准备目标表：
+
+```sql
+DROP TABLE IF EXISTS app.sparkone_doris_city_result;
+CREATE TABLE app.sparkone_doris_city_result (
+  city VARCHAR(64) NOT NULL,
+  row_count BIGINT NOT NULL,
+  total_cnt BIGINT NOT NULL
+)
+DUPLICATE KEY(city)
+DISTRIBUTED BY HASH(city) BUCKETS 1
+PROPERTIES (
+  "replication_num" = "1"
+);
+```
+
+然后在 SparkOne 编辑器里执行：
+
+```sql
+load doris.`app.sparkone_doris_seed` as doris_seed;
+
+view doris_city_result as
+select
+  city,
+  count(*) as row_count,
+  sum(cnt) as total_cnt
+from doris_seed
+group by city;
+
+save append doris_city_result
+as doris.`app.sparkone_doris_city_result`;
+
+select *
+from doris.app.sparkone_doris_city_result
+order by city;
+```
+
+预期可以看到 `beijing/shanghai/hangzhou` 的聚合结果。重复执行 append 会重复追加数据，这是 Doris 目标表和 Spark Doris Catalog append 写入的正常语义。
+
+测试 `save overwrite` 覆盖 Doris：
+
+Doris overwrite 默认被启动级安全开关拦截。确认要测试覆盖写时，先在 `conf/sparkone.conf` 的 `save` 中打开并重启：
+
+```hocon
+save {
+  allowDorisOverwrite = true
+}
+```
+
+然后在编辑器里执行：
+
+```sql
+view doris_overwrite_result as
+select
+  "overwrite_city" as city,
+  cast(1 as bigint) as row_count,
+  cast(999 as bigint) as total_cnt;
+
+save overwrite doris_overwrite_result
+as doris.`app.sparkone_doris_city_result`
+options sparkoneOverwrite="allow";
+
+select *
+from doris.app.sparkone_doris_city_result
+order by city;
+```
+
+预期 `sparkone_doris_city_result` 中只剩 `overwrite_city` 这一行。`save overwrite ... as doris` 会编译成 `INSERT OVERWRITE TABLE doris.app.sparkone_doris_city_result SELECT ...`；SparkOne 不对 Doris 表做备份或回滚，提交语义由 Spark Doris Connector / Doris 负责。
+
+说明：
+
+- `doris.\`app.sparkone_doris_city_result\`` 中 `app` 是 Doris database，`sparkone_doris_city_result` 是 Doris 表名；SparkOne 会补成 Spark Catalog 表名 `doris.app.sparkone_doris_city_result`。
+- `save append/overwrite ... as doris` 都要求目标表已存在；SparkOne 不会自动创建 Doris 表。表结构、key、distribution、分区等用 Doris DDL 先建好。
+- `save doris` 不支持在 SQL 里写 `fenodes/user/password` 等连接 options，这些统一放在 `catalogs.doris` 或 Kyuubi/Spark engine 配置。
+- `save doris` 不支持 `partitionBy`，Doris 的分布、分区和表结构应由 Doris DDL 管理。
+- `save overwrite ... as doris` 需要先用 HOCON 打开 `save.allowDorisOverwrite = true`，再用单条 SQL 的 `sparkoneOverwrite="allow"` 显式确认；`allowNativeInsertOverwrite` 不能替代这个开关。
 
 MySQL：
 
@@ -794,6 +888,7 @@ select * from mysql_overwritten_result order by city;
 
 - SparkOne DSL 不支持 `load/save jdbc`；MySQL 统一使用 `load/save mysql`。
 - `mysql.\`analytics.sparkone_mysql_seed\`` 中 `analytics` 是 HOCON 连接名，`sparkone_mysql_seed` 是 MySQL 表名。
+- `save append/overwrite ... as mysql` 都要求目标表已存在；SparkOne 不会自动创建 MySQL 表。表结构、主键、索引等用 MySQL DDL 先建好。
 - SQL 里的 `options` 只能补充 `fetchsize`、`batchsize`、`truncate` 等非连接参数，不能覆盖 `url/user/password/driver/dbtable`。
 - `save overwrite ... as mysql` 需要先用 HOCON 打开 `save.allowMysqlOverwrite = true`，再用单条 SQL 的 `sparkoneOverwrite="allow"` 显式确认；SparkOne 不会对 MySQL 表做备份。
 - `load` 只是注册临时视图，不负责限制结果行数；需要抽样查看时，在后续 `select * from mysql_seed limit 10` 中限制。
@@ -809,6 +904,7 @@ save {
   overwritePolicy = "requireExplicit"
   overwriteBackup = "rename"
   overwriteBackupPath = "/tmp/sparkone_back"
+  allowDorisOverwrite = false
   allowNativeInsertOverwrite = false
   allowNativeDropTable = false
   # 可选：全局保护危险 overwrite 边界路径，命中后不能被 SQL 覆盖。
@@ -915,15 +1011,22 @@ options header="true"
 and sparkoneOverwrite="allow";
 ```
 
-单条语句可覆盖全局备份策略：
+备份策略只能在 `conf/sparkone.conf` 的 `save` 中配置，不能用单条 SQL 或 `SET` 覆盖。例如要改成 Hadoop Trash：
+
+```hocon
+save {
+  overwriteBackup = "trash"
+}
+```
+
+然后执行覆盖写时仍只写确认信号：
 
 ```sql
 save overwrite city_stats as json.`/tmp/city_stats_json`
-options sparkoneOverwrite="allow"
-and sparkoneOverwriteBackup="trash";
+options sparkoneOverwrite="allow";
 ```
 
-`sparkoneOverwriteBackup` 支持：
+`overwriteBackup` 支持：
 
 - `rename`：默认值，先重命名备份，写失败时尝试恢复。
 - `trash`：写入前移动到 Hadoop Trash，不做自动恢复。
@@ -1050,6 +1153,7 @@ order by dt, city;
 说明：
 
 - `save ... as hive` 会编译成 Spark 原生 `INSERT INTO/OVERWRITE TABLE`。
+- `save append/overwrite ... as hive` 都要求目标表已存在；SparkOne 不会自动创建 Hive 表，建表格式、分区定义和表结构用 Spark 原生 `CREATE TABLE` 明确声明。
 - `partitionBy` 对应 Spark SQL 的动态分区 `PARTITION (...)`，分区列需要出现在源视图字段中。
 - Hive 表 overwrite 不做文件目录 `rename/trash` 备份；它只复用 Safe Save 的显式确认策略。
 - `options` 当前只建议放 SparkOne 控制参数，例如 `sparkoneOverwrite="allow"`；建表格式、分区定义和表结构使用 Spark 原生 `CREATE TABLE` 明确声明。

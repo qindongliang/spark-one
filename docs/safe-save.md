@@ -2,25 +2,30 @@
 
 SparkOne 对 `save overwrite` 默认做保护，避免路径写错或表写错时直接覆盖已有数据。
 
-SparkOne DSL 编译出来的文件类 `save overwrite ... as provider.\`path\`` 会走 Safe Save 备份与保护流程。`save overwrite ... as hive.\`db.table\`` 会走 catalog 表覆盖确认流程，但不会做文件目录备份。
+SparkOne DSL 编译出来的文件类 `save overwrite ... as provider.\`path\`` 会走 Safe Save 备份与保护流程。`save overwrite ... as hive.\`db.table\`` 和 `save overwrite ... as doris.\`db.table\`` 会走 catalog 表覆盖确认流程，但不会做文件目录备份。
 
 用户直接写 Spark 原生 `INSERT OVERWRITE ...` 不携带 SparkOne save metadata，默认会被拦截，避免绕过 Safe Save。
 
-## 配置优先级
+## 配置来源
 
-优先级从高到低：
+`save { ... }` 下的策略参数只从启动 HOCON 或启动属性读取，不允许被页面里的 `SET sparkone.save...` 或单条 SQL `options` 覆盖。
 
-1. 单条 `save` 语句里的控制参数。
-2. 当前 SparkSession 的 `SET sparkone.save...`。
-3. HOCON 或启动参数里的全局默认值。
-
-例外：`overwriteProtectedPaths` 是全局硬拦截配置，只从启动级配置读取，不允许被单条 `save` 参数或页面里的 `SET` 覆盖。
-
-控制参数不会传给底层 Spark provider：
+唯一保留的单条 SQL 信号是：
 
 - `sparkoneOverwrite`
-- `sparkoneOverwriteBackup`
-- `sparkoneOverwriteBackupPath`
+
+它只在 `overwritePolicy = "requireExplicit"` 时表示“本条 overwrite 已确认”，不会改变 HOCON 中的覆盖策略，也不能绕过 `overwritePolicy = "deny"`、`allowMysqlOverwrite = false`、`allowDorisOverwrite = false` 或 `overwriteProtectedPaths`。
+
+下面这些参数必须写在 HOCON `save` 中，不允许写在 SQL 里：
+
+- `overwritePolicy`
+- `overwriteBackup`
+- `overwriteBackupPath`
+- `overwriteProtectedPaths`
+- `allowMysqlOverwrite`
+- `allowDorisOverwrite`
+- `allowNativeInsertOverwrite`
+- `allowNativeDropTable`
 
 ## 后端日志观察
 
@@ -36,8 +41,7 @@ Safe Save 的后端日志统一使用 `Safe Save:` 前缀，默认 `server.logLe
 
 策略来源说明：
 
-- `statement`：来自单条 `save` 的 `sparkoneOverwrite` 或 `sparkoneOverwriteBackup`。
-- `session`：来自当前 SparkSession 的 `SET sparkone.save...`。
+- `statement-confirmation`：来自单条 `save` 的 `sparkoneOverwrite="allow"`，只表示显式确认。
 - `global`：来自 HOCON 或启动参数。
 - `default`：没有配置时使用 SparkOne 默认值。
 
@@ -57,14 +61,17 @@ Safe Save 不是严格的分布式事务，它提供的是覆盖写前的保护�
 
 因此可以把 Safe Save 理解为“先备份成功，再执行覆盖写；失败时尽力回滚”，而不是数据库意义上的原子提交。
 
-Hive/catalog 表和 MySQL save：
+Hive/catalog 表、Doris 和 MySQL save：
 
-1. `save overwrite ... as hive.\`db.table\`` 默认同样要求显式 `sparkoneOverwrite="allow"`。
-2. `save overwrite ... as mysql.\`connection.table\`` 默认被 `save.allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 HOCON 打开 `save.allowMysqlOverwrite = true`，然后仍要在单条语句里显式 `sparkoneOverwrite="allow"`。
-3. Hive 通过确认后编译成 Spark 原生 `INSERT OVERWRITE TABLE db.table SELECT ...`；MySQL 通过 Spark JDBC writer 执行。
-4. SparkOne 不对 Hive/MySQL 表做文件目录 `rename/trash` 备份，也不承诺回滚；具体提交和失败语义由 Spark/Hive catalog 或 MySQL 负责。
-5. 如果要建表、改表结构或指定存储格式，使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE` 或数据库 DDL，不要放进 SparkOne `save` 的 provider options。
-6. Spark JDBC 的 MySQL overwrite 不是稳定等价于“先 truncate 再 insert”；即使写了 `truncate="true"`，也可能受 schema、dialect 和 Spark 行为影响，所以 SparkOne 默认拦截。
+1. `save append/overwrite` 写 Hive、Doris、MySQL 都要求目标表已存在；SparkOne 不自动创建表。
+2. `save overwrite ... as hive.\`db.table\`` 默认同样要求显式 `sparkoneOverwrite="allow"`。
+3. `save overwrite ... as mysql.\`connection.table\`` 默认被 `save.allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 HOCON 打开 `save.allowMysqlOverwrite = true`，然后仍要在单条语句里显式 `sparkoneOverwrite="allow"`。
+4. `save overwrite ... as doris.\`db.table\`` 默认被 `save.allowDorisOverwrite = false` 拦截。确需覆盖时，必须先在 HOCON 打开 `save.allowDorisOverwrite = true`，然后仍要在单条语句里显式 `sparkoneOverwrite="allow"`。
+5. Hive 通过确认后编译成 Spark 原生 `INSERT OVERWRITE TABLE db.table SELECT ...`；Doris 编译成 Spark Doris Catalog SQL `INSERT OVERWRITE TABLE doris.db.table SELECT ...`；MySQL 通过 Spark JDBC writer 执行。
+6. SparkOne 不对 Hive/Doris/MySQL 表做文件目录 `rename/trash` 备份，也不承诺回滚；具体提交和失败语义由 Spark/Hive catalog、Spark Doris Connector 或 MySQL 负责。
+7. `allowNativeInsertOverwrite` 只控制用户直接写的原生 `INSERT OVERWRITE`，不能替代 `allowDorisOverwrite`；SparkOne DSL 的 `save overwrite ... as doris` 携带 save metadata，会进入 Doris 专属覆盖写策略。
+8. 如果要建表、改表结构、指定存储格式、管理 MySQL 索引或 Doris key/distribution，使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE` 或数据库 DDL，不要放进 SparkOne `save` 的 provider options。
+9. Spark JDBC 的 MySQL overwrite 不是稳定等价于“先 truncate 再 insert”；即使写了 `truncate="true"`，也可能受 schema、dialect 和 Spark 行为影响，所以 SparkOne 默认拦截。
 
 ## HOCON 全局开关
 
@@ -76,6 +83,7 @@ save {
   overwriteBackup = "rename"
   overwriteBackupPath = "/tmp/sparkone_back"
   allowMysqlOverwrite = false
+  allowDorisOverwrite = false
   allowNativeInsertOverwrite = false
   allowNativeDropTable = false
 }
@@ -97,7 +105,7 @@ save {
 
 - `requireExplicit`：默认值，每条 `save overwrite` 都要显式确认。
 - `allow`：全局允许覆盖。
-- `deny`：全局拒绝覆盖；单条 SQL 仍可用 `sparkoneOverwrite="allow"` 高优先级覆盖。
+- `deny`：全局拒绝覆盖；单条 SQL 的 `sparkoneOverwrite="allow"` 不能绕过。
 
 `overwriteBackup`：
 
@@ -133,6 +141,13 @@ save {
 - 打开为 `true` 后，MySQL overwrite 仍然需要现有 Safe Save 显式确认，例如 `options sparkoneOverwrite="allow"`。
 - 打开后，具体是 truncate 还是 drop/recreate 由 Spark JDBC、MySQL dialect、目标表结构和写入 schema 决定；SparkOne 不做 MySQL 表备份或回滚。
 
+`allowDorisOverwrite`：
+
+- 默认值是 `false`，表示禁止 `save overwrite ... as doris.\`db.table\``。
+- 这个配置只从启动 HOCON / 启动属性读取，不允许被页面里的 `SET` 或单条 SQL 参数覆盖。
+- 打开为 `true` 后，Doris overwrite 仍然需要现有 Safe Save 显式确认，例如 `options sparkoneOverwrite="allow"`。
+- 打开后，SparkOne 会提交 Spark Doris Catalog 的 `INSERT OVERWRITE TABLE doris.db.table SELECT ...`；覆盖、提交和失败语义由 Spark Doris Connector / Doris 负责，SparkOne 不做 Doris 表备份或回滚。
+
 `overwriteProtectedPaths`：
 
 - 用于全局保护危险的 `save overwrite` 边界路径。
@@ -143,7 +158,7 @@ save {
 - 配置 `/tmp` 后，会拦截 `/tmp` 本身，但允许 `/tmp/sparkone_test` 这类更具体目录。
 - 支持整段通配符 `*`：`/*` 保护所有一级目录，`/*/*` 保护所有一级和二级目录，`/public/*/user` 保护 `/public` 下任意租户的 `user` 边界目录。
 - 多条规则之间是“任意命中即拒绝”。这里的命中指当前 overwrite 目标等于某条保护边界，或者是某条保护边界的上级目录。
-- 只校验文件类 `save overwrite` 的目标路径，不校验 Hive/catalog 或 MySQL 表名，也不校验 `overwriteBackupPath`。如果生产环境也不希望备份写到 `/tmp`，需要同时把 `overwriteBackupPath` 改到安全目录。
+- 只校验文件类 `save overwrite` 的目标路径，不校验 Hive/catalog、Doris 或 MySQL 表名，也不校验 `overwriteBackupPath`。如果生产环境也不希望备份写到 `/tmp`，需要同时把 `overwriteBackupPath` 改到安全目录。
 - 这个配置是启动级硬拦截，不允许被 `options sparkoneOverwrite="allow"` 或 `set sparkone.save...` 覆盖。
 
 规则语义速查：
@@ -153,7 +168,7 @@ save {
 - `/*/*`：保护所有一级和二级目录，比如 `/public`、`/public/odep`，允许 `/public/odep/userA`。
 - 多条规则是“任意命中即拒绝”，没有 allow 规则覆盖，避免规则冲突变复杂。
 
-注意：`trash` 只支持非本地文件系统。`file://` 本地路径使用 `sparkoneOverwriteBackup="trash"` 会被 SparkOne 拦截并报错；本地路径建议用 `rename`。
+注意：`trash` 只支持非本地文件系统。`file://` 本地路径在 HOCON 中配置 `overwriteBackup = "trash"` 会被 SparkOne 拦截并报错；本地路径建议用 `rename`。
 
 下面的功能测试案例默认使用 `/tmp/...` 作为临时路径；按 `overwriteProtectedPaths` 语义，配置 `/tmp` 只会拦截覆盖 `/tmp` 本身，不影响 `/tmp/sparkone_xxx` 测试目录。
 
@@ -353,57 +368,65 @@ file:///tmp/sparkone_back/sparkone_safe_save_backup_yyyyMMddHHmmss
 
 如果后续 Spark 写入失败，SparkOne 会尝试把这个备份恢复回原路径。
 
-单条语句也可以覆盖备份根目录：
+如果要调整备份根目录，修改 `conf/sparkone.conf` 并重启服务：
 
-```sql
-save overwrite safe_save_backup_v2
-as parquet.`file:///tmp/sparkone_safe_save_backup`
-options sparkoneOverwrite="allow"
-and sparkoneOverwriteBackup="rename"
-and sparkoneOverwriteBackupPath="file:///tmp/my_sparkone_backups";
+```hocon
+save {
+  overwriteBackup = "rename"
+  overwriteBackupPath = "file:///tmp/my_sparkone_backups"
+}
 ```
 
-## 案例 4：会话级临时放开
+## 案例 4：SET 不能临时放开 save 策略
 
-在页面里执行 `SET` 后，当前 SparkSession 内后续语句会使用这个策略。服务重启后会话配置消失。
+页面里执行 `SET sparkone.save...` 不会改变 `save { ... }` 策略；下面这个案例仍然会失败，因为覆盖写策略只从启动 HOCON / 启动属性读取。
 
 ```sql
 set sparkone.save.overwrite.policy=allow;
-set sparkone.save.overwrite.backup=rename;
 
-view safe_save_session_allow as
+view safe_save_session_block as
 select * from values
   (1, 'session')
-as safe_save_session_allow(id, scope);
+as safe_save_session_block(id, scope);
 
-save overwrite safe_save_session_allow
-as parquet.`file:///tmp/sparkone_safe_save_session_allow`;
+save overwrite safe_save_session_block
+as parquet.`file:///tmp/sparkone_safe_save_session_block`;
 ```
 
-这个案例不需要在 `save` 语句里再写 `sparkoneOverwrite="allow"`，因为会话级策略已经放开。
+预期：执行失败，提示需要添加 `sparkoneOverwrite="allow"` 或在 HOCON 中调整 `overwritePolicy`。
 
-## 案例 5：单条语句覆盖会话策略
+## 案例 5：单条确认不能绕过全局 deny
 
-单条 `save` 参数优先级最高。即使会话已经 `allow`，当前语句仍可显式拒绝。
+如果 HOCON 中配置了 `overwritePolicy = "deny"`，单条 SQL 的 `sparkoneOverwrite="allow"` 也不能覆盖它：
+
+```hocon
+save {
+  overwritePolicy = "deny"
+}
+```
 
 ```sql
-set sparkone.save.overwrite.policy=allow;
-
-view safe_save_statement_deny as
+view safe_save_global_deny as
 select * from values
   (1, 'deny')
-as safe_save_statement_deny(id, flag);
+as safe_save_global_deny(id, flag);
 
-save overwrite safe_save_statement_deny
-as parquet.`file:///tmp/sparkone_safe_save_statement_deny`
-options sparkoneOverwrite="deny";
+save overwrite safe_save_global_deny
+as parquet.`file:///tmp/sparkone_safe_save_global_deny`
+options sparkoneOverwrite="allow";
 ```
 
-预期：执行失败，说明单条语句参数覆盖了会话策略。
+预期：执行失败，提示 overwrite 被 SparkOne policy 拒绝。
 
 ## 案例 6：使用 Hadoop Trash
 
 如果希望已有目录进入 Hadoop Trash，而不是保留在 `overwriteBackupPath`，可以设置 `trash`。
+
+```hocon
+save {
+  overwriteBackup = "trash"
+}
+```
 
 ```sql
 view safe_save_trash as
@@ -413,24 +436,28 @@ as safe_save_trash(id, backup_mode);
 
 save overwrite safe_save_trash
 as parquet.`hdfs:///tmp/sparkone_safe_save_trash`
-options sparkoneOverwrite="allow"
-and sparkoneOverwriteBackup="trash";
+options sparkoneOverwrite="allow";
 ```
 
 注意：能否恢复取决于 Hadoop Trash 配置和保留时间。
 
 如果路径是 `file:///tmp/...`，不要使用 `trash`，SparkOne 会给出明确错误提示。写本地文件时使用：
 
-```sql
-save overwrite safe_save_trash
-as parquet.`file:///tmp/sparkone_safe_save_local`
-options sparkoneOverwrite="allow"
-and sparkoneOverwriteBackup="rename";
+```hocon
+save {
+  overwriteBackup = "rename"
+}
 ```
 
 ## 案例 7：不备份直接覆盖
 
 `none` 会回到更接近 Spark 原生 overwrite 的行为，只保留显式确认这一层保护。
+
+```hocon
+save {
+  overwriteBackup = "none"
+}
+```
 
 ```sql
 view safe_save_no_backup as
@@ -440,8 +467,7 @@ as safe_save_no_backup(id, backup_mode);
 
 save overwrite safe_save_no_backup
 as parquet.`file:///tmp/sparkone_safe_save_no_backup`
-options sparkoneOverwrite="allow"
-and sparkoneOverwriteBackup="none";
+options sparkoneOverwrite="allow";
 ```
 
 这个模式适合临时本地测试，不建议在 HDFS 生产路径使用。

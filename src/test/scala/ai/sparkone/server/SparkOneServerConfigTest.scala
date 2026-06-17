@@ -120,12 +120,31 @@ final class SparkOneServerConfigTest {
   }
 
   @Test
+  def loadsDorisOverwriteSafetySwitchFromHocon(): Unit = {
+    val file = Files.createTempFile("sparkone-save-doris-overwrite-", ".conf")
+    Files.write(file,
+      """save {
+        |  allowDorisOverwrite = true
+        |}
+        |""".stripMargin.getBytes("UTF-8"))
+
+    try {
+      val properties = ServerConfigFile.load(file.toString)
+
+      assertEquals("true", properties("sparkone.save.doris.overwrite.enabled"))
+    } finally {
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
   def loadsCommittedHoconTemplate(): Unit = {
     val properties = ServerConfigFile.load("conf/sparkone.conf.template")
 
     assertEquals("127.0.0.1", properties("sparkone.host"))
     assertEquals("local[*]", properties("spark.master"))
     assertEquals("false", properties("sparkone.save.mysql.overwrite.enabled"))
+    assertEquals("false", properties("sparkone.save.doris.overwrite.enabled"))
     assertEquals("jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",
       properties("sparkone.datasource.mysql.analytics.url"))
     assertEquals("1000", properties("sparkone.datasource.mysql.analytics.option.fetchsize"))

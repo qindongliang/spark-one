@@ -15,10 +15,12 @@ final class SaveOverwriteGuard(spark: SparkSession) {
   private val logger = LoggerFactory.getLogger(getClass)
   private val OverwriteProtectedPathsKey = "sparkone.save.overwrite.protected.paths"
   private val AllowMysqlOverwriteKey = "sparkone.save.mysql.overwrite.enabled"
+  private val AllowDorisOverwriteKey = "sparkone.save.doris.overwrite.enabled"
 
   def prepare(save: Option[SaveStatementMetadata]): Option[OverwritePreparation] = {
     save.filter(_.mode.equalsIgnoreCase("overwrite")).flatMap { metadata =>
       validateMysqlOverwriteAllowed(metadata)
+      validateDorisOverwriteAllowed(metadata)
       val policy = effectivePolicy(metadata)
       policy.value match {
         case OverwritePolicy.Deny =>
@@ -35,6 +37,7 @@ final class SaveOverwriteGuard(spark: SparkSession) {
           metadata.targetType match {
             case SaveTargetType.File => prepareBackup(metadata, policy)
             case SaveTargetType.Catalog => prepareCatalogOverwrite(metadata, policy)
+            case SaveTargetType.DorisCatalog => prepareCatalogOverwrite(metadata, policy)
             case SaveTargetType.Mysql => prepareCatalogOverwrite(metadata, policy)
           }
       }
@@ -52,29 +55,34 @@ final class SaveOverwriteGuard(spark: SparkSession) {
     }
   }
 
+  private def validateDorisOverwriteAllowed(metadata: SaveStatementMetadata): Unit = {
+    if (metadata.targetType == SaveTargetType.DorisCatalog && !enabledGlobal(AllowDorisOverwriteKey)) {
+      logger.warn(
+        s"Safe Save: Doris overwrite blocked, table=${metadata.table}, target=${metadata.path}, " +
+          s"allowDorisOverwrite=false")
+      throw new CompileException(
+        s"SAVE overwrite for Doris is disabled by SparkOne policy for table: ${metadata.path}. " +
+          "Set save.allowDorisOverwrite = true in HOCON, then use option sparkoneOverwrite=\"allow\" for this statement.")
+    }
+  }
+
   private def effectivePolicy(metadata: SaveStatementMetadata): ResolvedSetting[OverwritePolicy] = {
-    controlOption(metadata, SaveControlOptions.Overwrite) match {
-      case Some(value) => ResolvedSetting(OverwritePolicy.parse(value), "statement", value)
-      case None =>
-        val config = configValue("sparkone.save.overwrite.policy", "requireExplicit")
-        ResolvedSetting(OverwritePolicy.parse(config.value), config.source, config.raw)
+    val config = configValue("sparkone.save.overwrite.policy", "requireExplicit")
+    val configured = ResolvedSetting(OverwritePolicy.parse(config.value), config.source, config.raw)
+    configured.value match {
+      case OverwritePolicy.RequireExplicit if hasStatementOverwriteConfirmation(metadata) =>
+        ResolvedSetting(OverwritePolicy.Allow, "statement-confirmation", SaveControlOptions.Overwrite)
+      case _ => configured
     }
   }
 
   private def effectiveBackup(metadata: SaveStatementMetadata): ResolvedSetting[OverwriteBackup] = {
-    controlOption(metadata, SaveControlOptions.OverwriteBackup) match {
-      case Some(value) => ResolvedSetting(OverwriteBackup.parse(value), "statement", value)
-      case None =>
-        val config = configValue("sparkone.save.overwrite.backup", "rename")
-        ResolvedSetting(OverwriteBackup.parse(config.value), config.source, config.raw)
-    }
+    val config = configValue("sparkone.save.overwrite.backup", "rename")
+    ResolvedSetting(OverwriteBackup.parse(config.value), config.source, config.raw)
   }
 
   private def effectiveBackupPath(metadata: SaveStatementMetadata): ResolvedSetting[String] = {
-    controlOption(metadata, SaveControlOptions.OverwriteBackupPath) match {
-      case Some(value) => ResolvedSetting(value, "statement", value)
-      case None => configValue("sparkone.save.overwrite.backup.path", "/tmp/sparkone_back")
-    }
+    configValue("sparkone.save.overwrite.backup.path", "/tmp/sparkone_back")
   }
 
   private def controlOption(metadata: SaveStatementMetadata, key: String): Option[String] = {
@@ -83,14 +91,15 @@ final class SaveOverwriteGuard(spark: SparkSession) {
     }
   }
 
+  private def hasStatementOverwriteConfirmation(metadata: SaveStatementMetadata): Boolean = {
+    controlOption(metadata, SaveControlOptions.Overwrite)
+      .exists(value => Set("1", "true", "yes", "on", "allow").contains(value.trim.toLowerCase))
+  }
+
   private def configValue(key: String, defaultValue: String): ResolvedSetting[String] = {
-    spark.conf.getOption(key) match {
-      case Some(value) => ResolvedSetting(value, "session", value)
-      case None =>
-        sys.props.get(key) match {
-          case Some(value) => ResolvedSetting(value, "global", value)
-          case None => ResolvedSetting(defaultValue, "default", defaultValue)
-        }
+    sys.props.get(key) match {
+      case Some(value) => ResolvedSetting(value, "global", value)
+      case None => ResolvedSetting(defaultValue, "default", defaultValue)
     }
   }
 
@@ -146,8 +155,8 @@ final class SaveOverwriteGuard(spark: SparkSession) {
             s"Safe Save: Hadoop Trash backup is not supported for local file overwrite, " +
               s"rawPath=${metadata.path}, writeTarget=$qualifiedTarget, fs=${fs.getUri}")
           throw new CompileException(
-            s"""Safe Save does not support sparkoneOverwriteBackup="trash" for local file path: ${metadata.path}. """ +
-              "Use sparkoneOverwriteBackup=\"rename\" for local backup, or use an HDFS path if you need Hadoop Trash.")
+            s"""Safe Save does not support save.overwriteBackup = "trash" for local file path: ${metadata.path}. """ +
+              "Use save.overwriteBackup = \"rename\" for local backup, or use an HDFS path if you need Hadoop Trash.")
         }
         val trash = new Trash(fs, fs.getConf)
         val trashDir = trash.getCurrentTrashDir(target)
