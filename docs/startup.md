@@ -195,8 +195,21 @@ datasources.mysql {
   }
 }
 
+catalogs {
+  doris {
+    fenodes = "fe-1:8030,fe-2:8030"
+    queryPort = 9030
+    user = "root"
+    password = "change-me"
+
+    options {
+      doris.request.retries = 3
+    }
+  }
+}
+
 jars {
-  packages = "com.mysql:mysql-connector-j:8.4.0"
+  packages = "com.mysql:mysql-connector-j:8.4.0,org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
 }
 ```
 

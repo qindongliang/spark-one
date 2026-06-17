@@ -70,6 +70,38 @@ final class SparkOneServerConfigTest {
   }
 
   @Test
+  def loadsDorisCatalogFromHocon(): Unit = {
+    val file = Files.createTempFile("sparkone-doris-catalog-", ".conf")
+    Files.write(file,
+      """catalogs.doris {
+        |  fenodes = "fe-1:8030,fe-2:8030"
+        |  queryPort = 9030
+        |  user = "reader"
+        |  password = "secret"
+        |
+        |  options {
+        |    doris.request.retries = 5
+        |    doris.read.mode = "arrow"
+        |  }
+        |}
+        |""".stripMargin.getBytes("UTF-8"))
+
+    try {
+      val properties = ServerConfigFile.load(file.toString)
+
+      assertEquals("org.apache.doris.spark.catalog.DorisTableCatalog", properties("spark.sql.catalog.doris"))
+      assertEquals("fe-1:8030,fe-2:8030", properties("spark.sql.catalog.doris.doris.fenodes"))
+      assertEquals("9030", properties("spark.sql.catalog.doris.doris.query.port"))
+      assertEquals("reader", properties("spark.sql.catalog.doris.doris.user"))
+      assertEquals("secret", properties("spark.sql.catalog.doris.doris.password"))
+      assertEquals("5", properties("spark.sql.catalog.doris.doris.request.retries"))
+      assertEquals("arrow", properties("spark.sql.catalog.doris.doris.read.mode"))
+    } finally {
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
   def loadsMysqlOverwriteSafetySwitchFromHocon(): Unit = {
     val file = Files.createTempFile("sparkone-save-mysql-overwrite-", ".conf")
     Files.write(file,

@@ -318,6 +318,7 @@ private[server] object SparkOneHoconConfig {
       kerberosProperties(config),
       saveProperties(config),
       jarsProperties(config),
+      catalogProperties(config),
       dataSourceProperties(config),
       passthroughProperties(config)).flatten.toMap
   }
@@ -380,9 +381,8 @@ private[server] object SparkOneHoconConfig {
   }
 
   private def dataSourceProperties(config: Config): Map[String, String] = {
-    if (!config.hasPath("datasources.mysql")) {
-      Map.empty
-    } else {
+    if (!config.hasPath("datasources.mysql")) Map.empty[String, String]
+    else {
       config.getConfig("datasources.mysql").root().keySet().asScala.flatMap { name =>
         val datasource = config.getConfig(s"datasources.mysql.$name")
         mysqlProperties(name, datasource)
@@ -399,6 +399,27 @@ private[server] object SparkOneHoconConfig {
       string(config, "password").map(s"$prefix.password" -> _)).flatten ++
       stringMap(config, "options").map { case (key, value) =>
         s"$prefix.option.$key" -> value
+      }).toMap
+  }
+
+  private def catalogProperties(config: Config): Map[String, String] = {
+    val doris =
+      if (!config.hasPath("catalogs.doris")) Map.empty[String, String]
+      else dorisCatalogProperties(config.getConfig("catalogs.doris"))
+
+    doris
+  }
+
+  private def dorisCatalogProperties(config: Config): Map[String, String] = {
+    val prefix = "spark.sql.catalog.doris"
+    (Seq(
+      string(config, "class").orElse(Some("org.apache.doris.spark.catalog.DorisTableCatalog")).map(prefix -> _),
+      string(config, "fenodes").map(s"$prefix.doris.fenodes" -> _),
+      string(config, "queryPort").map(s"$prefix.doris.query.port" -> _),
+      string(config, "user").map(s"$prefix.doris.user" -> _),
+      string(config, "password").map(s"$prefix.doris.password" -> _)).flatten ++
+      stringMap(config, "options").map { case (key, value) =>
+        s"$prefix.$key" -> value
       }).toMap
   }
 

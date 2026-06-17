@@ -322,6 +322,8 @@ object SparkOneRuntime {
     configureSparkProperty(builder, "spark.jars.repositories")
     configureSparkProperty(builder, "spark.kerberos.principal")
     configureSparkProperty(builder, "spark.kerberos.keytab")
+    configureSparkProperty(builder, "spark.sql.defaultCatalog")
+    configureSparkPropertiesWithPrefix(builder, "spark.sql.catalog.")
     val driverClassLoader = configureDriverClasspathFromSparkJars()
 
     if (enabled("sparkone.hive.enabled", "SPARKONE_HIVE_ENABLED")) {
@@ -339,6 +341,13 @@ object SparkOneRuntime {
       .map(_.trim)
       .filter(_.nonEmpty)
       .foreach(value => builder.config(propertyName, value))
+  }
+
+  private def configureSparkPropertiesWithPrefix(builder: SparkSession.Builder, prefix: String): Unit = {
+    sys.props.toSeq
+      .filter { case (key, value) => key.startsWith(prefix) && value.trim.nonEmpty }
+      .sortBy(_._1)
+      .foreach { case (key, value) => builder.config(key, value.trim) }
   }
 
   private def configureDriverNetwork(builder: SparkSession.Builder, master: String): Unit = {

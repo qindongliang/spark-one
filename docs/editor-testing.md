@@ -279,6 +279,154 @@ CREATE OR REPLACE TEMPORARY VIEW some_table AS
 SELECT * FROM default.some_table;
 ```
 
+Doris：
+
+先在 `conf/sparkone.conf` 配置 Spark Doris Catalog。SparkOne 本地运行时会把它转成 `spark.sql.catalog.doris.*`；接 Kyuubi 时，把同样的 Spark 配置放到 Kyuubi/Spark engine：
+
+```hocon
+catalogs.doris {
+  fenodes = "fe-1:8030,fe-2:8030"
+  queryPort = 9030
+  user = "root"
+  password = "******"
+
+  options {
+    doris.request.retries = 3
+  }
+}
+
+jars {
+  packages = "org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
+}
+```
+
+验证 Hive 仍是默认 catalog：
+
+```sql
+show databases;
+```
+
+查看 Doris 库列表，两种写法都可以：
+
+```sql
+show namespaces in doris;
+```
+
+```sql
+show databases in doris;
+```
+
+查看某个 Doris 库下的表列表：
+
+```sql
+show tables in doris.dataagent;
+```
+
+Doris 测试表可以先用 Doris/MySQL 协议客户端准备。下面的 `replication_num` 按本地单副本测试环境写，生产集群按实际副本数调整：
+
+```sql
+CREATE DATABASE IF NOT EXISTS app;
+
+DROP TABLE IF EXISTS app.sparkone_doris_seed;
+CREATE TABLE app.sparkone_doris_seed (
+  id BIGINT NOT NULL,
+  city VARCHAR(64) NOT NULL,
+  cnt BIGINT NOT NULL,
+  biz_date DATE NOT NULL
+)
+DUPLICATE KEY(id)
+DISTRIBUTED BY HASH(id) BUCKETS 1
+PROPERTIES (
+  "replication_num" = "1"
+);
+
+INSERT INTO app.sparkone_doris_seed VALUES
+  (1, 'beijing', 10, '2026-06-01'),
+  (2, 'shanghai', 20, '2026-06-01'),
+  (3, 'beijing', 30, '2026-06-02'),
+  (4, 'hangzhou', 40, '2026-06-02');
+```
+
+在 SparkOne 编辑器里读取 Doris 表：
+
+```sql
+select *
+from doris.app.sparkone_doris_seed
+order by id;
+```
+
+预期：返回 4 行，`city/cnt/biz_date` 与上面插入的数据一致。过滤直接写 Spark SQL：
+
+```sql
+select id, city, cnt
+from doris.app.sparkone_doris_seed
+where biz_date = date '2026-06-02'
+order by id;
+```
+
+预期：返回 `id=3` 和 `id=4` 两行。过滤下推由 Spark Doris Catalog / Connector 的 DataSource V2 能力决定。
+
+`load doris` 只是临时视图语法糖：
+
+```sql
+load doris.`app.sparkone_doris_seed` as doris_seed;
+
+select *
+from doris_seed
+order by id;
+```
+
+编译结果应是标准 Spark SQL：
+
+```sql
+CREATE OR REPLACE TEMPORARY VIEW doris_seed AS SELECT * FROM doris.app.sparkone_doris_seed
+```
+
+`load doris` 也可以追加 `where "..."`，编译结果仍是标准 Spark SQL，过滤是否源端下推由 Spark Doris Catalog / Connector 决定：
+
+```sql
+load doris.`app.sparkone_doris_seed`
+where "biz_date = date '2026-06-02'"
+as doris_seed_0602;
+
+select id, city, cnt
+from doris_seed_0602
+order by id;
+```
+
+预期：返回 `id=3` 和 `id=4` 两行。编译结果应包含：
+
+```sql
+CREATE OR REPLACE TEMPORARY VIEW doris_seed_0602 AS SELECT * FROM doris.app.sparkone_doris_seed WHERE biz_date = date '2026-06-02'
+```
+
+用 Doris 临时视图继续做 SQL 分析：
+
+```sql
+load doris.`app.sparkone_doris_seed` as doris_seed;
+
+view doris_city_stats as
+select city, count(*) as row_count, sum(cnt) as total_cnt
+from doris_seed
+group by city;
+
+select *
+from doris_city_stats
+order by city;
+```
+
+预期：`beijing` 的 `row_count=2`、`total_cnt=40`，`hangzhou` 和 `shanghai` 各 1 行。
+
+`load doris` 不支持在 DSL 里写连接 options；连接能力回到 Spark catalog 配置：
+
+```sql
+load doris.`app.sparkone_doris_seed`
+options password="bad"
+as doris_seed;
+```
+
+预期：编译失败，提示 `LOAD doris does not support SQL OPTIONS`。
+
 MySQL：
 
 先在 `conf/sparkone.conf` 配置连接，SQL 里只引用连接名：

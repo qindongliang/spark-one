@@ -21,6 +21,13 @@ final class DataSourceResolver(
       val target = mysqlTarget(path, "LOAD")
       val dbtable = filter.map(renderMysqlFilteredDbtable(target.dbtable, _)).getOrElse(target.dbtable)
       MysqlLoadSource(dbtable, mysqlOptions(target.connection, dbtable, options))
+    } else if (normalized == "doris") {
+      if (options.nonEmpty) {
+        throw new CompileException("LOAD doris does not support SQL OPTIONS. Configure Spark Doris Catalog in HOCON catalogs.doris.")
+      }
+      val identifier = SparkOneSqlRender.renderMultipartIdentifier(s"doris.$path", "LOAD doris table")
+      val tableExpression = filter.map(condition => s"$identifier WHERE $condition").getOrElse(identifier)
+      CatalogTableSource(tableExpression)
     } else if (normalizedCatalogFormats.contains(normalized)) {
       if (filter.nonEmpty) {
         throw new CompileException(s"LOAD source '$format' does not support WHERE filter in the MVP compiler")

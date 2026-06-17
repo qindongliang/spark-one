@@ -55,6 +55,49 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesDorisLoadAsCatalogTableSelect(): Unit = {
+    val statement = compiler.compile(
+      """load doris.`app.users`
+        |as doris_users;
+        |""".stripMargin).head
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW doris_users AS SELECT * FROM doris.app.users",
+      statement.sql)
+    assertEquals(None, statement.load)
+  }
+
+  @Test
+  def rejectsDorisLoadOptionsBecauseCatalogIsConfiguredOutsideSql(): Unit = {
+    try {
+      compiler.compile(
+        """load doris.`app.users`
+          |options password="leaked"
+          |as doris_users;
+          |""".stripMargin)
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("LOAD doris does not support SQL OPTIONS"))
+    }
+  }
+
+  @Test
+  def compilesDorisLoadWhereAsCatalogTableSelectFilter(): Unit = {
+    val statement = compiler.compile(
+      """load doris.`app.orders`
+        |where "biz_date = '2026-06-10' and status = 'PAID'"
+        |as doris_orders_paid;
+        |""".stripMargin).head
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW doris_orders_paid AS " +
+        "SELECT * FROM doris.app.orders WHERE biz_date = '2026-06-10' and status = 'PAID'",
+      statement.sql)
+    assertEquals(None, statement.load)
+  }
+
+  @Test
   def compilesMysqlLoadWhereAsDbtableSubqueryForPartitionedRead(): Unit = {
     withSystemProperties(Map(
       "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",

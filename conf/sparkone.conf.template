@@ -83,11 +83,29 @@ datasources.mysql {
   }
 }
 
+catalogs {
+  doris {
+    # Spark Doris Catalog 固定注册为 catalog 名 doris。
+    # SQL 主路径：show namespaces in doris; select * from doris.db.table;
+    fenodes = "127.0.0.1:8030"
+    queryPort = 9030
+    user = "root"
+    password = "change-me"
+
+    # 这里放 Spark Doris Catalog 参数，例如 doris.request.retries、doris.read.mode 等。
+    options {
+      doris.request.retries = 3
+    }
+  }
+}
+
 jars {
   # 等价于 spark-submit --packages / spark.jars.packages。
   # packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
   # MySQL 连接器也可以用 packages 引入，例如：
   # packages = "com.mysql:mysql-connector-j:8.4.0"
+  # Doris 4.x / Spark 3.5 可引入：
+  # packages = "org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
   # 等价于 spark-submit --jars / spark.jars，用于依赖类 JAR。
   # jars = "/path/to/provider.jar,/path/to/another-provider.jar"
   # 等价于 spark-submit --files / spark.files，用于普通文件，不用于依赖类 JAR。

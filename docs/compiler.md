@@ -9,6 +9,8 @@ load parquet.`/tmp/users` as users;
 load hive.`default.users` as hive_users;
 load excel.`/tmp/users.xlsx` options header="true" as users_excel;
 load mysql.`analytics.users` as users_mysql;
+load doris.`app.users` as users_doris;
+load doris.`app.orders` where "biz_date = '2026-06-17'" as doris_orders;
 view city_stats as select city, count(*) as cnt from users group by city;
 save overwrite users as parquet.`/tmp/users_out`;
 save append city_stats as hive.`default.city_stats` partitionBy dt;
@@ -22,6 +24,8 @@ CREATE OR REPLACE TEMPORARY VIEW users USING parquet OPTIONS (path '/tmp/users')
 CREATE OR REPLACE TEMPORARY VIEW hive_users AS SELECT * FROM default.users;
 CREATE OR REPLACE TEMPORARY VIEW users_excel USING excel OPTIONS (path '/tmp/users.xlsx', header 'true');
 SELECT 'LOAD MYSQL' AS sparkone_action, 'users AS users_mysql' AS sparkone_target;
+CREATE OR REPLACE TEMPORARY VIEW users_doris AS SELECT * FROM doris.app.users;
+CREATE OR REPLACE TEMPORARY VIEW doris_orders AS SELECT * FROM doris.app.orders WHERE biz_date = '2026-06-17';
 CREATE OR REPLACE TEMPORARY VIEW city_stats AS select city, count(*) as cnt from users group by city;
 INSERT OVERWRITE DIRECTORY '/tmp/users_out' USING parquet SELECT * FROM users;
 INSERT INTO TABLE default.city_stats PARTITION (dt) SELECT * FROM city_stats;
@@ -48,6 +52,8 @@ group by city;
 - `save ... as hive` 是 catalog 表写入语义，编译成 `INSERT INTO/OVERWRITE TABLE db.table SELECT * FROM source`。
 - `save ... partitionBy col1, col2` 只用于 catalog 表写入，编译成 Spark SQL 动态分区 `PARTITION (col1, col2)`。
 - `load/save mysql` 是薄 runtime adapter：连接信息从 HOCON 读取，编译展示安全占位 SQL，执行时使用 Spark JDBC reader/writer。
+- `load doris` 是 Spark Doris Catalog 语法糖：`load doris.\`db.table\` as t` 编译成 `CREATE ... AS SELECT * FROM doris.db.table`；追加 `where "..."` 时编译成 `SELECT * FROM doris.db.table WHERE ...`。
+- Doris 推荐直接使用标准 Spark SQL：`show namespaces in doris`、`select * from doris.db.table`；裸写 `show databases` 和 `db.table` 仍表示默认 Hive catalog。
 - 不支持 `load/save jdbc`，避免账号密码和连接串散落在 SQL 里。
 - `excel` 是外部 Spark DataSource provider，编译成 `USING excel`，由依赖注册 provider 短名。
 

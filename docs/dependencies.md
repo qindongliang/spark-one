@@ -38,6 +38,7 @@ Shade jar：
 
 - Spark core 内置的 `csv/json/parquet/orc/text/libsvm` 等 provider 可直接走 Spark SQL。
 - Spark 底层 JDBC 由 `load/save mysql` 的 runtime adapter 使用；SparkOne DSL 不暴露 `load/save jdbc`。
+- Doris 4.x 读写由 Spark Doris Catalog / Connector 提供，Spark 3.5 可通过运行环境引入 `org.apache.doris:spark-doris-connector-spark-3.5:25.2.0`；SparkOne 主包不默认内置该 connector。
 - `excel` 不是 Spark core 内置，不默认打进 SparkOne 主包。
 - provider 别名不要写死在前端或 runtime，统一放在 `DataSourceResolver`。
 - 外部 provider 通过 `spark.jars.packages`、`spark.jars` 或 Kyuubi engine classpath 管理。
