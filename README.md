@@ -73,7 +73,7 @@ Compile only:
 ```bash
 curl -s http://127.0.0.1:7070/api/compile \
   -H 'Content-Type: application/json' \
-  -d '{"script":"select 1 as id;","limit":20}'
+  -d '{"script":"select 1 as id;","limit":10}'
 ```
 
 Run SQL:
@@ -81,7 +81,7 @@ Run SQL:
 ```bash
 curl -s http://127.0.0.1:7070/api/run \
   -H 'Content-Type: application/json' \
-  -d '{"script":"select 1 as id;","limit":20}'
+  -d '{"script":"select 1 as id;","limit":10}'
 ```
 
 ## Local References

@@ -138,11 +138,30 @@ final class SparkOneServerConfigTest {
   }
 
   @Test
+  def loadsPreviewConfigFromHocon(): Unit = {
+    val file = Files.createTempFile("sparkone-preview-", ".conf")
+    Files.write(file,
+      """preview {
+        |  maxRows = 25
+        |}
+        |""".stripMargin.getBytes("UTF-8"))
+
+    try {
+      val properties = ServerConfigFile.load(file.toString)
+
+      assertEquals("25", properties("sparkone.preview.maxRows"))
+    } finally {
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
   def loadsCommittedHoconTemplate(): Unit = {
     val properties = ServerConfigFile.load("conf/sparkone.conf.template")
 
     assertEquals("127.0.0.1", properties("sparkone.host"))
     assertEquals("local[*]", properties("spark.master"))
+    assertEquals("10", properties("sparkone.preview.maxRows"))
     assertEquals("false", properties("sparkone.save.mysql.overwrite.enabled"))
     assertEquals("false", properties("sparkone.save.doris.overwrite.enabled"))
     assertEquals("jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",

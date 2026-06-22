@@ -57,9 +57,13 @@ final class SparkOneCompiler(
     val filter = parseLoadFilter(load.whereClause())
     dataSourceResolver.resolveLoad(format, path, options, filter) match {
       case ProviderLoadSource(provider, providerOptions) =>
-        CompileResult(SparkOneSqlRender.renderCreateTempViewUsing(table, provider, providerOptions))
+        CompileResult(
+          SparkOneSqlRender.renderCreateTempViewUsing(table, provider, providerOptions),
+          load = Some(LoadStatementMetadata(table, format, path, providerOptions.toMap)))
       case CatalogTableSource(identifier) =>
-        CompileResult(SparkOneSqlRender.renderCreateTempViewAsSelect(table, identifier))
+        CompileResult(
+          SparkOneSqlRender.renderCreateTempViewAsSelect(table, identifier),
+          load = Some(LoadStatementMetadata(table, format, identifier, Map.empty)))
       case MysqlLoadSource(dbtable, jdbcOptions) =>
         CompileResult(
           SparkOneSqlRender.renderSparkOneAction("LOAD MYSQL", s"$dbtable AS $table"),

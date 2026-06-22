@@ -121,15 +121,20 @@ API：
 ```json
 {
   "script": "select 1 as id;",
-  "limit": 200
+  "limit": 10
 }
 ```
+
+结果预览：
+
+- `preview.maxRows`：每条 statement 默认最多预览多少行，默认 `10`。服务端会把请求里的 `limit` clamp 到 `1..preview.maxRows`，页面输入不能放大这个上限。
+- `load ... as t` 执行后默认返回临时视图 `t` 的 schema，不自动 collect 数据；需要预览数据时调用 `/api/preview`，请求体为 `{"table":"t","limit":10}`。
 
 当前限制：
 
 - 只适合作为本地测试服务。
 - 没有多租户、权限、任务队列、session 池。
-- 结果最多限制到 1000 行以内，服务端会 clamp。
+- 结果行数由 `preview.maxRows` 控制，默认 10 行；不要在共享环境里把它调得过大。
 
 后续接 Kyuubi：
 

@@ -26,10 +26,13 @@ final class SparkOneRuntime(
     compiler.compile(script).map(_.sql)
   }
 
-  def run(script: String, limit: Int = 200): RunResult = runLock.synchronized {
+  def run(
+      script: String,
+      limit: Int = PreviewConfig.current.maxRows): RunResult = runLock.synchronized {
     withDriverClassLoader {
+      val previewLimit = PreviewConfig.current.clampRows(Some(limit))
       val compiled = compiler.compile(script)
-      val results = compiled.zipWithIndex.map { case (statement, offset) =>
+      val results: Seq[StatementResult] = compiled.zipWithIndex.map { case (statement, offset) =>
         val started = System.nanoTime()
         var preparation: Option[SaveOverwriteGuard.OverwritePreparation] = None
         try {
@@ -38,20 +41,21 @@ final class SparkOneRuntime(
           validateSaveTargetExists(statement.save)
           val dataFrame = execute(statement)
           preparation.foreach(_.commit())
-          val schema = dataFrame.schema.fields.map { field =>
-            FieldInfo(field.name, field.dataType.simpleString, field.nullable)
-          }
-          val collected = dataFrame.limit(limit + 1).collect().toSeq
-          val visibleRows = collected.take(limit).map(rowToStrings)
+          val shouldCollectRows = statement.load.isEmpty
+          val collected =
+            if (shouldCollectRows) dataFrame.limit(previewLimit + 1).collect().toSeq
+            else Seq.empty[Row]
+          val visibleRows = collected.take(previewLimit).map(rowToStrings)
           StatementResult(
             index = offset + 1,
             source = statement.source,
             sql = statement.sql,
             success = true,
-            schema = schema,
+            schema = schemaInfo(dataFrame),
             rows = visibleRows,
             rowCount = visibleRows.size,
-            truncated = collected.size > limit,
+            truncated = shouldCollectRows && collected.size > previewLimit,
+            previewTable = statement.load.map(_.table),
             durationMs = elapsedMs(started),
             error = None)
         } catch {
@@ -69,12 +73,41 @@ final class SparkOneRuntime(
               rows = Nil,
               rowCount = 0,
               truncated = false,
+              previewTable = None,
               durationMs = elapsedMs(started),
               error = Some(errorMessage(e)))
         }
       }
 
-      RunResult(results.forall(_.success), results)
+      val success = results.forall(_.success)
+      val visibleResults =
+        if (success && compiled.nonEmpty && compiled.forall(_.load.nonEmpty)) results.takeRight(1)
+        else results
+      RunResult(success, visibleResults)
+    }
+  }
+
+  def previewTable(
+      table: String,
+      limit: Int = PreviewConfig.current.maxRows): StatementResult = runLock.synchronized {
+    withDriverClassLoader {
+      val started = System.nanoTime()
+      val previewLimit = PreviewConfig.current.clampRows(Some(limit))
+      val dataFrame = spark.table(table)
+      val collected = dataFrame.limit(previewLimit + 1).collect().toSeq
+      val visibleRows = collected.take(previewLimit).map(rowToStrings)
+      StatementResult(
+        index = 1,
+        source = table,
+        sql = s"TABLE $table",
+        success = true,
+        schema = schemaInfo(dataFrame),
+        rows = visibleRows,
+        rowCount = visibleRows.size,
+        truncated = collected.size > previewLimit,
+        previewTable = Some(table),
+        durationMs = elapsedMs(started),
+        error = None)
     }
   }
 
@@ -84,8 +117,8 @@ final class SparkOneRuntime(
 
   private def execute(statement: CompiledStatement): DataFrame = {
     statement.load match {
-      case Some(metadata) if metadata.targetType == LoadTargetType.Mysql =>
-        executeMysqlLoad(metadata)
+      case Some(metadata) =>
+        executeLoad(statement, metadata)
       case _ =>
         statement.save match {
           case Some(metadata) if metadata.targetType == SaveTargetType.Mysql =>
@@ -96,13 +129,23 @@ final class SparkOneRuntime(
     }
   }
 
+  private def executeLoad(statement: CompiledStatement, metadata: LoadStatementMetadata): DataFrame = {
+    metadata.targetType match {
+      case LoadTargetType.Mysql =>
+        executeMysqlLoad(metadata)
+      case _ =>
+        spark.sql(statement.sql)
+        spark.table(metadata.table)
+    }
+  }
+
   private def executeMysqlLoad(metadata: LoadStatementMetadata): DataFrame = {
     spark.read
       .format("jdbc")
       .options(metadata.options)
       .load()
       .createOrReplaceTempView(metadata.table)
-    actionResult("LOAD MYSQL", metadata.path, metadata.table)
+    spark.table(metadata.table)
   }
 
   private def executeMysqlSave(metadata: SaveStatementMetadata): DataFrame = {
@@ -187,6 +230,12 @@ final class SparkOneRuntime(
     row.toSeq.map {
       case null => null
       case value => value.toString
+    }
+  }
+
+  private def schemaInfo(dataFrame: DataFrame): Seq[FieldInfo] = {
+    dataFrame.schema.fields.map { field =>
+      FieldInfo(field.name, field.dataType.simpleString, field.nullable)
     }
   }
 

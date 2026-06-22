@@ -6,7 +6,7 @@ const summary = document.getElementById('summary');
 const compileButton = document.getElementById('compile');
 const runButton = document.getElementById('run');
 const editor = createEditor(script);
-const appConfig = { showCompiledSql: false };
+const appConfig = { showCompiledSql: false, previewMaxRows: 10 };
 
 loadConfig();
 
@@ -18,8 +18,15 @@ async function loadConfig() {
     const res = await fetch('/api/config');
     const data = await res.json();
     appConfig.showCompiledSql = Boolean(data.showCompiledSql);
+    compileButton.hidden = !appConfig.showCompiledSql;
+    appConfig.previewMaxRows = normalizePositiveInteger(data.previewMaxRows, 10);
+    limit.max = String(appConfig.previewMaxRows);
+    if (!limit.value || Number(limit.value) > appConfig.previewMaxRows) {
+      limit.value = String(appConfig.previewMaxRows);
+    }
   } catch (err) {
     appConfig.showCompiledSql = false;
+    compileButton.hidden = true;
   }
 }
 
@@ -30,7 +37,10 @@ async function submit(path) {
     const res = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ script: scope.script, limit: Number(limit.value || 200) })
+      body: JSON.stringify({
+        script: scope.script,
+        limit: Number(limit.value || appConfig.previewMaxRows)
+      })
     });
     const data = await res.json();
     render(data, path, scope);
@@ -39,6 +49,11 @@ async function submit(path) {
   } finally {
     setBusy(false);
   }
+}
+
+function normalizePositiveInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
 function createEditor(textarea) {
@@ -120,7 +135,7 @@ function render(data, path, scope) {
     if (showCompiledSql) parts.push(compiledSqlBlock(statement.sql + ';'));
     if (statement.error) parts.push(errorBlock(statement.error));
     if (statement.schema && statement.schema.length) {
-      parts.push(table(statement.schema, statement.rows || []));
+      parts.push(resultTabs(statement));
     }
     if (!parts.length) parts.push(emptyBlock('Statement executed with no result rows.'));
     output.appendChild(section(`Statement ${statement.index} · ${statement.durationMs} ms`, parts));
@@ -174,7 +189,96 @@ function errorBlock(text) {
   return node;
 }
 
-function table(schema, rows) {
+function resultTabs(statement) {
+  const schema = statement.schema || [];
+  const rows = statement.rows || [];
+  const node = document.createElement('div');
+  const tabs = document.createElement('div');
+  tabs.className = 'tabs';
+  const schemaButton = tabButton('Schema', true);
+  const previewButton = tabButton('Preview', false);
+  const schemaPane = schemaTable(schema);
+  const previewPane = previewContent(statement);
+  previewPane.hidden = true;
+
+  schemaButton.addEventListener('click', () => showTab(schemaButton, schemaPane, previewButton, previewPane));
+  previewButton.addEventListener('click', () => {
+    showTab(previewButton, previewPane, schemaButton, schemaPane);
+    if (statement.previewTable && !previewPane.dataset.loaded && !previewPane.dataset.loading) {
+      loadPreview(statement.previewTable, previewPane);
+    }
+  });
+  tabs.appendChild(schemaButton);
+  tabs.appendChild(previewButton);
+  node.appendChild(tabs);
+  node.appendChild(schemaPane);
+  node.appendChild(previewPane);
+  return node;
+}
+
+function previewContent(statement) {
+  const rows = statement.rows || [];
+  if (rows.length) return dataTable(statement.schema || [], rows);
+  if (!statement.previewTable) return emptyBlock('No preview rows.');
+
+  return emptyBlock('Click Preview to load rows.');
+}
+
+async function loadPreview(table, pane) {
+  pane.dataset.loading = 'true';
+  pane.textContent = 'Loading preview...';
+  statusText.textContent = 'Working';
+  try {
+    const res = await fetch('/api/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table,
+        limit: Number(limit.value || appConfig.previewMaxRows)
+      })
+    });
+    const data = await res.json();
+    pane.innerHTML = '';
+    if (!data.success) {
+      pane.appendChild(errorBlock(data.error || 'Preview failed.'));
+      return;
+    }
+    const statement = data.statement || {};
+    const rows = statement.rows || [];
+    pane.appendChild(rows.length ? dataTable(statement.schema || [], rows) : emptyBlock('No preview rows.'));
+    pane.dataset.loaded = 'true';
+  } catch (err) {
+    pane.innerHTML = '';
+    pane.appendChild(errorBlock(String(err)));
+  } finally {
+    delete pane.dataset.loading;
+    statusText.textContent = 'Ready';
+  }
+}
+
+function tabButton(text, active) {
+  const button = document.createElement('button');
+  button.className = active ? 'tab active' : 'tab';
+  button.textContent = text;
+  return button;
+}
+
+function showTab(activeButton, activePane, otherButton, otherPane) {
+  activeButton.classList.add('active');
+  otherButton.classList.remove('active');
+  activePane.hidden = false;
+  otherPane.hidden = true;
+}
+
+function schemaTable(schema) {
+  return simpleTable(['name', 'type', 'nullable'], schema.map(field => [
+    field.name,
+    field.dataType,
+    String(field.nullable)
+  ]));
+}
+
+function dataTable(schema, rows) {
   const node = document.createElement('table');
   const head = document.createElement('thead');
   const headRow = document.createElement('tr');
@@ -200,5 +304,31 @@ function table(schema, rows) {
   });
   node.appendChild(body);
 
+  return node;
+}
+
+function simpleTable(headers, rows) {
+  const node = document.createElement('table');
+  const head = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  headers.forEach(header => {
+    const th = document.createElement('th');
+    th.textContent = header;
+    headRow.appendChild(th);
+  });
+  head.appendChild(headRow);
+  node.appendChild(head);
+
+  const body = document.createElement('tbody');
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    row.forEach(value => {
+      const td = document.createElement('td');
+      td.textContent = value === null ? 'NULL' : value;
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  });
+  node.appendChild(body);
   return node;
 }

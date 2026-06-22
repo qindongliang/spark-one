@@ -8,6 +8,11 @@ server {
   showCompiledSql = false
 }
 
+preview {
+  # 每条 statement 默认最多预览 10 行；页面 Rows 只能调小或等于该值，不能放大。
+  maxRows = 10
+}
+
 spark {
   master = "local[*]"
   # local 模式会自动使用 127.0.0.1。

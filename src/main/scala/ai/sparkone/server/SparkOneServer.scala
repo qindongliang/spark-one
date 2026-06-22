@@ -1,6 +1,6 @@
 package ai.sparkone.server
 
-import ai.sparkone.runtime.SparkOneRuntime
+import ai.sparkone.runtime.{PreviewConfig, SparkOneRuntime}
 import ai.sparkone.sql.{SparkOneCompiler, SparkSqlValidator}
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
@@ -21,6 +21,7 @@ object SparkOneServer {
   private lazy val logger = LoggerFactory.getLogger(getClass)
   private val mapper = new ObjectMapper().registerModule(DefaultScalaModule)
   private val compiler = new SparkOneCompiler(new SparkSqlValidator)
+  private val SimpleIdentifier = "^[A-Za-z_][A-Za-z0-9_]*$".r
   @volatile private var runtimeRef: SparkOneRuntime = _
 
   def main(args: Array[String]): Unit = {
@@ -53,6 +54,7 @@ object SparkOneServer {
     app.get("/api/config", (ctx: Context) => handleConfig(ctx))
     app.post("/api/compile", (ctx: Context) => handleCompile(ctx))
     app.post("/api/run", (ctx: Context) => handleRun(ctx))
+    app.post("/api/preview", (ctx: Context) => handlePreview(ctx))
 
     sys.addShutdownHook {
       Option(runtimeRef).foreach(_.close())
@@ -97,8 +99,25 @@ object SparkOneServer {
     }
   }
 
-  private def uiConfig: Map[String, Boolean] = {
-    Map("showCompiledSql" -> showCompiledSql)
+  private def handlePreview(ctx: Context): Unit = {
+    try {
+      val request = readPreviewRequest(ctx)
+      val result = runtime.previewTable(request.table, request.limit)
+      json(ctx, Map(
+        "success" -> true,
+        "statement" -> result))
+    } catch {
+      case e: Throwable =>
+        logger.warn("Failed to preview table", e)
+        json(ctx.status(400), Map("success" -> false, "error" -> errorMessage(e)))
+    }
+  }
+
+  private def uiConfig: Map[String, Any] = {
+    val preview = PreviewConfig.current
+    Map(
+      "showCompiledSql" -> showCompiledSql,
+      "previewMaxRows" -> preview.maxRows)
   }
 
   private def showCompiledSql: Boolean = {
@@ -119,8 +138,25 @@ object SparkOneServer {
   private def readSqlRequest(ctx: Context): SqlRequest = {
     val node = mapper.readTree(ctx.body())
     val script = Option(node.get("script")).map(_.asText()).getOrElse("")
-    val limit = Option(node.get("limit")).map(_.asInt(200)).getOrElse(200).max(1).min(1000)
+    val preview = PreviewConfig.current
+    val requestedLimit = Option(node.get("limit"))
+      .filterNot(_.isNull)
+      .map(_.asInt(preview.maxRows))
+    val limit = preview.clampRows(requestedLimit)
     SqlRequest(script, limit)
+  }
+
+  private def readPreviewRequest(ctx: Context): PreviewRequest = {
+    val node = mapper.readTree(ctx.body())
+    val table = Option(node.get("table")).map(_.asText()).getOrElse("").trim
+    if (SimpleIdentifier.findFirstIn(table).isEmpty) {
+      throw new IllegalArgumentException(s"Preview table must be a simple identifier: $table")
+    }
+    val preview = PreviewConfig.current
+    val requestedLimit = Option(node.get("limit"))
+      .filterNot(_.isNull)
+      .map(_.asInt(preview.maxRows))
+    PreviewRequest(table, preview.clampRows(requestedLimit))
   }
 
   private def json(ctx: Context, value: Any): Unit = {
@@ -147,6 +183,8 @@ object SparkOneServer {
 }
 
 final case class SqlRequest(script: String, limit: Int)
+
+final case class PreviewRequest(table: String, limit: Int)
 
 private final case class ServerOptions(port: Option[Int], properties: Map[String, String])
 
@@ -312,6 +350,7 @@ private[server] object SparkOneHoconConfig {
   def toProperties(config: Config): Map[String, String] = {
     Seq(
       serverProperties(config),
+      previewProperties(config),
       sparkProperties(config),
       hadoopProperties(config),
       hiveProperties(config),
@@ -329,6 +368,11 @@ private[server] object SparkOneHoconConfig {
       int(config, "server.port").map(value => "sparkone.port" -> value.toString),
       string(config, "server.logLevel").map("sparkone.logLevel" -> _),
       boolean(config, "server.showCompiledSql").map(value => "sparkone.ui.showCompiledSql" -> value.toString)).flatten.toMap
+  }
+
+  private def previewProperties(config: Config): Map[String, String] = {
+    Seq(
+      int(config, "preview.maxRows").map(value => PreviewConfig.MaxRowsKey -> value.toString)).flatten.toMap
   }
 
   private def sparkProperties(config: Config): Map[String, String] = {

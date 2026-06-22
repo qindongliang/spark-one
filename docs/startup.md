@@ -236,6 +236,19 @@ kinit -kt /Users/qindongliang/bigdata/odep.keytab odep@HADOOP.COM
 
 更多 HDFS/Hive 说明见 [hadoop-hive.md](hadoop-hive.md)。
 
+## Preview
+
+页面和 `/api/run` 默认只做小结果预览：
+
+```hocon
+preview {
+  maxRows = 10
+}
+```
+
+- `maxRows` 是每条 statement 的服务端预览行数上限；页面 `Rows` 和 API 请求里的 `limit` 只能调小，不能超过它。
+- `load ... as t` 执行后默认只展示 schema；页面点该结果的 Preview tab，或调用 `/api/preview`，才会预览刚注册的临时视图 `t`。
+
 ## Save Overwrite Safety
 
 文件类 `save overwrite` 默认要求语句显式确认：
@@ -287,5 +300,5 @@ select 1 as id;
 ```bash
 curl -s http://127.0.0.1:7070/api/run \
   -H 'Content-Type: application/json' \
-  -d '{"script":"select 1 as id;","limit":20}'
+  -d '{"script":"select 1 as id;","limit":10}'
 ```

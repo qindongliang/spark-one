@@ -11,12 +11,13 @@ http://127.0.0.1:7070
 ## 页面区域
 
 - 左侧编辑器：输入一段 SQL 脚本，可以包含多条语句，用分号 `;` 分隔。
-- `Compile`：只编译，不执行。适合检查 `load/save` 这类 SparkOne DSL 被转成了什么 Spark SQL。
+- `Compile`：只编译，不执行。只有 `server.showCompiledSql = true` 时才显示，适合检查 `load/save` 这类 SparkOne DSL 被转成了什么 Spark SQL。
 - `Run`：编译后按顺序执行每条 SQL，后面的语句可以使用前面创建的临时视图。
+- `Preview`：在结果区的 Preview tab 里显示；对 `load ... as t`，先 `Run` 注册临时视图并展示 schema，再点该结果里的 `Preview` tab 显式拉取 `t` 的预览数据。
 - 选中执行：如果编辑器里有选中的 SQL，`Compile` 和 `Run` 只处理选中部分；没有选区时处理整篇脚本。
 - `Run` 默认隐藏每条 statement 的编译后 SQL；如果需要调试转译结果，在 `conf/sparkone.conf` 里配置 `server.showCompiledSql = true`。
-- `Rows`：控制每条查询最多展示多少行，服务端会限制在 `1` 到 `1000`。
-- 右侧结果区：展示每条语句的编译后 SQL、耗时、schema 和结果数据；失败语句会显示错误信息。
+- `Rows`：控制每条 statement 最多预览多少行；默认上限是 `preview.maxRows = 10`，页面输入只能小于或等于该 HOCON 上限。
+- 右侧结果区：展示每条语句的编译后 SQL、耗时、schema 和预览数据；schema 和预览数据通过 tab 切换，失败语句会显示错误信息。
 
 ## 基础冒烟测试
 
@@ -1009,7 +1010,7 @@ select * from mysql_overwritten_result order by city;
 - `save append/overwrite ... as mysql` 都要求目标表已存在；SparkOne 不会自动创建 MySQL 表。表结构、主键、索引等用 MySQL DDL 先建好。
 - SQL 里的 `options` 只能补充 `fetchsize`、`batchsize`、`truncate` 等非连接参数，不能覆盖 `url/user/password/driver/dbtable`。
 - `save overwrite ... as mysql` 需要先用 HOCON 打开 `save.allowMysqlOverwrite = true`，再用单条 SQL 的 `sparkoneOverwrite="allow"` 显式确认；SparkOne 不会对 MySQL 表做备份。
-- `load` 只是注册临时视图，不负责限制结果行数；需要抽样查看时，在后续 `select * from mysql_seed limit 10` 中限制。
+- `load` 会注册临时视图；普通 `Run` 默认只展示 schema，不自动拉取数据。需要看样例数据时，在该结果的 Preview tab 里点 `Preview`，预览行数受 `preview.maxRows` 和页面 `Rows` 共同限制。需要更精确抽样时，仍建议在后续 `select * from mysql_seed limit 10` 中显式限制。
 
 ## 使用 SparkOne Save DSL
 
@@ -1344,9 +1345,9 @@ spark {
 ## Compile 和 Run 的使用建议
 
 - 写普通 Spark SQL 时，通常直接点 `Run`。
-- 写 `load/save` 时，先点 `Compile` 确认转译出来的 Spark SQL 符合预期，再点 `Run`。
+- 写 `load/save` 时，如已打开 `server.showCompiledSql = true`，可先点 `Compile` 确认转译出来的 Spark SQL 符合预期，再点 `Run`。
 - 多条语句调试时，先把前置建表/建视图语句和最后查询语句放在同一次脚本里。
-- 查询大表时先加 `limit`，并把页面右上角 `Rows` 控制在较小值。
+- 查询大表时先加 `limit`，并保持 `preview.maxRows` 和结果区 `Rows` 在较小值；默认是 10 行。
 - 保存数据前先用 `select count(*)` 或抽样查询确认临时视图内容。
 
 ## 常见问题

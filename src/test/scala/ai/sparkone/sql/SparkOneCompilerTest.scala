@@ -64,7 +64,10 @@ final class SparkOneCompilerTest {
     assertEquals(
       "CREATE OR REPLACE TEMPORARY VIEW doris_users AS SELECT * FROM doris.app.users",
       statement.sql)
-    assertEquals(None, statement.load)
+    assertEquals(Some("doris_users"), statement.load.map(_.table))
+    assertEquals(Some("doris"), statement.load.map(_.format))
+    assertEquals(Some("doris.app.users"), statement.load.map(_.path))
+    assertEquals(Some(LoadTargetType.Provider), statement.load.map(_.targetType))
   }
 
   @Test
@@ -94,7 +97,10 @@ final class SparkOneCompilerTest {
       "CREATE OR REPLACE TEMPORARY VIEW doris_orders_paid AS " +
         "SELECT * FROM doris.app.orders WHERE biz_date = '2026-06-10' and status = 'PAID'",
       statement.sql)
-    assertEquals(None, statement.load)
+    assertEquals(Some("doris_orders_paid"), statement.load.map(_.table))
+    assertEquals(
+      Some("doris.app.orders WHERE biz_date = '2026-06-10' and status = 'PAID'"),
+      statement.load.map(_.path))
   }
 
   @Test
@@ -206,25 +212,32 @@ final class SparkOneCompilerTest {
 
   @Test
   def compilesHiveLoadAsCatalogTableSelect(): Unit = {
-    val sql = compiler.compile("load hive.`default.users` as users;").head.sql
+    val statement = compiler.compile("load hive.`default.users` as users;").head
 
     assertEquals(
       "CREATE OR REPLACE TEMPORARY VIEW users AS SELECT * FROM default.users",
-      sql)
+      statement.sql)
+    assertEquals(Some("users"), statement.load.map(_.table))
+    assertEquals(Some("hive"), statement.load.map(_.format))
+    assertEquals(Some("default.users"), statement.load.map(_.path))
   }
 
   @Test
   def compilesHiveLoadWhereAsCatalogTableSelectFilter(): Unit = {
-    val sql = compiler.compile(
+    val statement = compiler.compile(
       """load hive.`default.users`
         |where "dt = date '2026-06-17' and status = 'active'"
         |as active_users;
-        |""".stripMargin).head.sql
+        |""".stripMargin).head
 
     assertEquals(
       "CREATE OR REPLACE TEMPORARY VIEW active_users AS " +
         "SELECT * FROM default.users WHERE dt = date '2026-06-17' and status = 'active'",
-      sql)
+      statement.sql)
+    assertEquals(Some("active_users"), statement.load.map(_.table))
+    assertEquals(
+      Some("default.users WHERE dt = date '2026-06-17' and status = 'active'"),
+      statement.load.map(_.path))
   }
 
   @Test
@@ -262,17 +275,20 @@ final class SparkOneCompilerTest {
 
   @Test
   def compilesExcelLoadWithProviderAlias(): Unit = {
-    val sql = compiler.compile(
+    val statement = compiler.compile(
       """load excel.`/tmp/users.xlsx`
         |options header="true"
         |and dataAddress="'Sheet1'!A1"
         |as users;
-        |""".stripMargin).head.sql
+        |""".stripMargin).head
 
     assertEquals(
       "CREATE OR REPLACE TEMPORARY VIEW users USING excel OPTIONS " +
         "(path '/tmp/users.xlsx', header 'true', dataAddress '''Sheet1''!A1')",
-      sql)
+      statement.sql)
+    assertEquals(Some("users"), statement.load.map(_.table))
+    assertEquals(Some("/tmp/users.xlsx"), statement.load.map(_.path))
+    assertEquals(Some("true"), statement.load.flatMap(_.options.get("header")))
   }
 
   @Test

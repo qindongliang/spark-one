@@ -11,6 +11,7 @@ final case class StatementResult(
     rows: Seq[Seq[String]],
     rowCount: Int,
     truncated: Boolean,
+    previewTable: Option[String],
     durationMs: Long,
     error: Option[String])
 
