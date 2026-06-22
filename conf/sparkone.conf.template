@@ -92,6 +92,23 @@ datasources.mysql {
 }
 
 catalogs {
+  mysql {
+    # Spark JDBC Catalog 固定注册为 catalog 名 mysql。
+    # SQL 主路径：show namespaces in mysql; show tables in mysql.app; select * from mysql.app.table;
+    # Spark JDBC Catalog 会把 mysql.app 中的 app 作为 JDBC schemaPattern 传给 DatabaseMetaData。
+    # MySQL Connector/J 默认把 database 视为 catalog；这里必须设置 databaseTerm=SCHEMA，
+    # 才能让 show tables in mysql.app 按 MySQL database 正确过滤。
+    # 这是原生 catalog 浏览/查询能力；load/save mysql 仍走上面的 datasources.mysql adapter。
+    url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+    driver = "com.mysql.cj.jdbc.Driver"
+    user = "root"
+    password = "change-me"
+
+    options {
+      fetchsize = 1000
+    }
+  }
+
   doris {
     # Spark Doris Catalog 固定注册为 catalog 名 doris。
     # SQL 主路径：show namespaces in doris; select * from doris.db.table;

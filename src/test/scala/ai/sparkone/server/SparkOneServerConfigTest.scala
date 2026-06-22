@@ -32,6 +32,7 @@ final class SparkOneServerConfigTest {
       assertEquals("secret", properties("sparkone.datasource.mysql.analytics.password"))
       assertEquals("1000", properties("sparkone.datasource.mysql.analytics.option.fetchsize"))
       assertEquals("convertToNull", properties("sparkone.datasource.mysql.analytics.option.zeroDateTimeBehavior"))
+      assertFalse(properties.contains("spark.sql.catalog.mysql"))
     } finally {
       Files.deleteIfExists(file)
     }
@@ -64,6 +65,42 @@ final class SparkOneServerConfigTest {
       assertEquals("reader", properties("sparkone.datasource.mysql.reporting.user"))
       assertEquals("2000", properties("sparkone.datasource.mysql.reporting.option.fetchsize"))
       assertEquals("1000", properties("sparkone.datasource.mysql.reporting.option.batchsize"))
+      assertFalse(properties.contains("spark.sql.catalog.mysql"))
+    } finally {
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
+  def loadsMysqlCatalogFromHocon(): Unit = {
+    val file = Files.createTempFile("sparkone-mysql-catalog-", ".conf")
+    Files.write(file,
+      """catalogs.mysql {
+        |  url = "jdbc:mysql://host:3306/?databaseTerm=SCHEMA"
+        |  driver = "com.mysql.cj.jdbc.Driver"
+        |  user = "reader"
+        |  password = "secret"
+        |
+        |  options {
+        |    dbtable = "unsafe_table"
+        |    query = "select * from unsafe_table"
+        |    fetchsize = 1000
+        |  }
+        |}
+        |""".stripMargin.getBytes("UTF-8"))
+
+    try {
+      val properties = ServerConfigFile.load(file.toString)
+
+      assertEquals("org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog",
+        properties("spark.sql.catalog.mysql"))
+      assertEquals("jdbc:mysql://host:3306/?databaseTerm=SCHEMA", properties("spark.sql.catalog.mysql.url"))
+      assertEquals("com.mysql.cj.jdbc.Driver", properties("spark.sql.catalog.mysql.driver"))
+      assertEquals("reader", properties("spark.sql.catalog.mysql.user"))
+      assertEquals("secret", properties("spark.sql.catalog.mysql.password"))
+      assertEquals("1000", properties("spark.sql.catalog.mysql.fetchsize"))
+      assertFalse(properties.contains("spark.sql.catalog.mysql.dbtable"))
+      assertFalse(properties.contains("spark.sql.catalog.mysql.query"))
     } finally {
       Files.deleteIfExists(file)
     }
@@ -167,5 +204,9 @@ final class SparkOneServerConfigTest {
     assertEquals("jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",
       properties("sparkone.datasource.mysql.analytics.url"))
     assertEquals("1000", properties("sparkone.datasource.mysql.analytics.option.fetchsize"))
+    assertEquals("org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog",
+      properties("spark.sql.catalog.mysql"))
+    assertEquals("jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",
+      properties("spark.sql.catalog.mysql.url"))
   }
 }

@@ -24,6 +24,8 @@ libsvm
 - `partitionBy` 仅用于 catalog 表写入：`save append t as hive.\`db.table\` partitionBy dt` 编译成动态分区插入。
 - SparkOne 不复刻 MLSQL 的 `storage="hive"` / 数据湖替换逻辑；如果要创建表、指定存储格式或改表结构，优先使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE`。
 - `mysql` 是关系库特殊 source：`load mysql.\`analytics.users\` as users` 从 HOCON 的 `datasources.mysql.analytics` 读取连接，再用 Spark JDBC reader 注册临时视图。
+- `catalogs.mysql` 是显式 Spark JDBC Catalog 配置：可用 `show namespaces in mysql` 查看 MySQL database，用 `show tables in mysql.app` 查看表，用 `select * from mysql.app.users` 做原生查询。MySQL JDBC URL 需要带 `databaseTerm=SCHEMA`，让 Spark 传入的 JDBC schemaPattern 对应 MySQL database。
+- MySQL catalog 只用于原生 SQL 浏览/查询；`datasources.mysql` 和 `catalogs.mysql` 不互相隐式复用。`load/save mysql` 仍走 SparkOne adapter，因此 SQL 侧仍不能覆盖 `url/user/password/driver/dbtable/query`，`load mysql ... where "..."` 的 JDBC 子查询和 `save overwrite` 安全策略也保持不变。
 - `save append t as mysql.\`analytics.target_table\`` 用 Spark JDBC writer 追加写入 MySQL，要求目标表已存在。
 - `save overwrite t as mysql.\`analytics.target_table\`` 默认被 `save.allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 HOCON 打开 `save.allowMysqlOverwrite = true`，再在单条语句里显式写 `options sparkoneOverwrite="allow"`；SparkOne 不对 MySQL 表做备份。
 - `doris` 是 Spark Doris Catalog 名：`select * from doris.db.users` 直接走 Spark 原生 catalog 解析。
@@ -56,6 +58,22 @@ datasources.mysql {
   reporting.url = "jdbc:mysql://127.0.0.1:3306/reporting"
 }
 ```
+
+MySQL 原生 catalog 单独配置在 `catalogs.mysql`，不要和 adapter 配置揉在一起：
+
+```hocon
+catalogs.mysql {
+  url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA"
+  user = "reader"
+  password = ${?SPARKONE_MYSQL_CATALOG_PASSWORD}
+
+  options {
+    fetchsize = 1000
+  }
+}
+```
+
+这里的 `databaseTerm=SCHEMA` 只用于 Spark 原生 JDBC Catalog。原因是 Spark 执行 `show tables in mysql.app` 时，会把 `app` 作为 JDBC `DatabaseMetaData.getTables` 的 `schemaPattern` 参数传给驱动；而 MySQL Connector/J 默认把 MySQL database 解释为 JDBC catalog，不解释为 schema。加上该参数后，MySQL database 会按 JDBC schema 暴露，`show tables in mysql.app` 才会过滤到 `app` 这个库。
 
 Doris 按 Spark Catalog 配置。SparkOne 本地运行时会把下面的 HOCON 转成 `spark.sql.catalog.doris.*`；接 Kyuubi 时，把同样的 Spark 配置放到 Kyuubi/Spark engine 即可：
 

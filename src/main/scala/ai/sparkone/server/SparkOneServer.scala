@@ -451,8 +451,25 @@ private[server] object SparkOneHoconConfig {
     val doris =
       if (!config.hasPath("catalogs.doris")) Map.empty[String, String]
       else dorisCatalogProperties(config.getConfig("catalogs.doris"))
+    val mysql =
+      if (!config.hasPath("catalogs.mysql")) Map.empty[String, String]
+      else mysqlCatalogProperties(config.getConfig("catalogs.mysql"))
 
-    doris
+    doris ++ mysql
+  }
+
+  private def mysqlCatalogProperties(config: Config): Map[String, String] = {
+    val prefix = "spark.sql.catalog.mysql"
+    (Seq(
+      string(config, "class").orElse(Some("org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog")).map(prefix -> _),
+      string(config, "url").map(s"$prefix.url" -> _),
+      string(config, "driver").map(s"$prefix.driver" -> _),
+      string(config, "user").map(s"$prefix.user" -> _),
+      string(config, "password").map(s"$prefix.password" -> _)).flatten ++
+      stringMap(config, "options").collect {
+        case (key, value) if !Set("dbtable", "query").contains(key.toLowerCase) =>
+          s"$prefix.$key" -> value
+      }).toMap
   }
 
   private def dorisCatalogProperties(config: Config): Map[String, String] = {

@@ -677,6 +677,17 @@ datasources.mysql.analytics {
     batchsize = 1000
   }
 }
+
+catalogs.mysql {
+  url = "jdbc:mysql://192.168.1.179:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+  driver = "com.mysql.cj.jdbc.Driver"
+  user = "root"
+  password = "******"
+
+  options {
+    fetchsize = 1000
+  }
+}
 ```
 
 运行时还需要 MySQL JDBC driver 在 classpath 中，可以在 HOCON 里选择 `packages` 或本地 JAR：
@@ -751,6 +762,18 @@ load mysql.`analytics.sparkone_mysql_seed` as mysql_seed;
 
 select * from mysql_seed order by id;
 ```
+
+查看 MySQL catalog：
+
+```sql
+show namespaces in mysql;
+show tables in mysql.Dworks;
+select * from mysql.Dworks.sparkone_mysql_seed limit 10;
+```
+
+说明：`mysql` 由 HOCON 的 `catalogs.mysql` 显式注册。它适合浏览和原生查询；`load/save mysql` 仍走 `datasources.mysql.*` adapter，用于隐藏连接信息、控制 `dbtable/query` 和执行 save 安全策略。
+
+`catalogs.mysql.url` 需要带 `databaseTerm=SCHEMA`。Spark 原生 JDBC Catalog 会把 `mysql.Dworks` 中的 `Dworks` 当 JDBC `schemaPattern` 查询元数据；MySQL Connector/J 默认把 MySQL database 当 JDBC catalog。加上该参数后，`show tables in mysql.Dworks` 才会按 `Dworks` 这个库过滤。
 
 `load mysql` 会在运行时用 Spark JDBC reader 注册临时视图。`Compile` 只展示安全占位 SQL，不展示 HOCON 里的账号密码：
 

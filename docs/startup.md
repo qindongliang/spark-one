@@ -197,6 +197,17 @@ datasources.mysql {
 }
 
 catalogs {
+  mysql {
+    url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+    driver = "com.mysql.cj.jdbc.Driver"
+    user = "root"
+    password = "change-me"
+
+    options {
+      fetchsize = 1000
+    }
+  }
+
   doris {
     fenodes = "fe-1:8030,fe-2:8030"
     queryPort = 9030
@@ -213,6 +224,18 @@ jars {
   packages = "com.mysql:mysql-connector-j:8.4.0,org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
 }
 ```
+
+MySQL catalog 单独配置在 `catalogs.mysql`，不会从 `datasources.mysql.analytics` 隐式生成：
+
+```sql
+show namespaces in mysql;
+show tables in mysql.app;
+select * from mysql.app.some_table limit 10;
+```
+
+这个 catalog 适合浏览和原生查询；`load/save mysql` 仍走 `datasources.mysql.*` adapter，用于隐藏连接信息、控制 `dbtable/query` 和执行 save 安全策略。
+
+注意 MySQL catalog 的 JDBC URL 需要带 `databaseTerm=SCHEMA`。Spark JDBC Catalog 会把 `show tables in mysql.app` 里的 `app` 作为 JDBC `schemaPattern` 查询元数据；MySQL Connector/J 默认把 database 当作 JDBC catalog，导致 schemaPattern 过滤不到预期库。设置后，MySQL database 会按 schema 暴露，`show namespaces/tables` 的层级才和 Spark catalog 语法一致。
 
 也可以不使用 HOCON，直接传程序参数：
 
