@@ -7,11 +7,15 @@ const compileButton = document.getElementById('compile');
 const runButton = document.getElementById('run');
 const editor = createEditor(script);
 const appConfig = { showCompiledSql: false, previewMaxRows: 10 };
+let limitTouched = false;
 
 loadConfig();
 
 compileButton.addEventListener('click', () => submit('/api/compile'));
 runButton.addEventListener('click', () => submit('/api/run'));
+limit.addEventListener('input', () => {
+  limitTouched = true;
+});
 
 async function loadConfig() {
   try {
@@ -21,7 +25,7 @@ async function loadConfig() {
     compileButton.hidden = !appConfig.showCompiledSql;
     appConfig.previewMaxRows = normalizePositiveInteger(data.previewMaxRows, 10);
     limit.max = String(appConfig.previewMaxRows);
-    if (!limit.value || Number(limit.value) > appConfig.previewMaxRows) {
+    if (!limitTouched || !limit.value || Number(limit.value) > appConfig.previewMaxRows) {
       limit.value = String(appConfig.previewMaxRows);
     }
   } catch (err) {
