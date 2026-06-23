@@ -39,6 +39,7 @@ final class SparkOneCompiler(
       CompileResult(compileView(script, statement.viewStatement()))
     } else {
       val sql = originalText(script, statement).trim
+      rejectMalformedSparkOneDsl(sql)
       CompileResult(sql)
     }
   }
@@ -47,6 +48,19 @@ final class SparkOneCompiler(
     if (SparkOneCompiler.LegacyLoadWherePattern.findFirstIn(sql).nonEmpty ||
         SparkOneCompiler.LegacySaveWherePattern.findFirstIn(sql).nonEmpty) {
       throw new CompileException("SparkOne DSL options must use OPTIONS, not WHERE.")
+    }
+  }
+
+  private def rejectMalformedSparkOneDsl(sql: String): Unit = {
+    sql match {
+      case SparkOneCompiler.LoadWithoutAsPattern(format, rawPath, rest)
+          if SparkOneCompiler.ContainsAsPattern.findFirstIn(rest).isEmpty =>
+        val path = rawPath.replace("``", "`")
+        val alias = SparkOneCompiler.suggestAlias(path)
+        throw new CompileException(
+          s"SparkOne LOAD requires a target temp view: load $format.`$path` as $alias. " +
+            s"Add `as $alias` to the statement.")
+      case _ =>
     }
   }
 
@@ -193,6 +207,9 @@ private final case class CompileResult(
 
 private object SparkOneCompiler {
   private val DslSource = """[A-Za-z_][A-Za-z0-9_]*\s*\.\s*`(?:``|[^`])*`"""
+  private val LoadWithoutAsPattern =
+    """(?is)^\s*load\s+([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*`((?:``|[^`])*)`(.*)$""".r
+  private val ContainsAsPattern = """(?is)\bas\b""".r
 
   private val LegacyLoadWherePattern =
     ("""(?is)(?:^|;)\s*load\s+""" + DslSource + """\s+where\s+[A-Za-z_][A-Za-z0-9_]*\s*=""").r
@@ -200,6 +217,17 @@ private object SparkOneCompiler {
   private val LegacySaveWherePattern =
     ("""(?is)(?:^|;)\s*save\s+(?:(?:overwrite|append|errorifexists|ignore)\s+)?""" +
       """[A-Za-z_][A-Za-z0-9_]*\s+as\s+""" + DslSource + """\s+where\b""").r
+
+  private def suggestAlias(path: String): String = {
+    val candidate = path.split("\\.").lastOption.getOrElse("loaded_table")
+      .replaceAll("[^A-Za-z0-9_]", "_")
+      .replaceAll("_+", "_")
+      .stripPrefix("_")
+      .stripSuffix("_")
+    val normalized = if (candidate.nonEmpty) candidate else "loaded_table"
+    if (normalized.headOption.exists(_.isDigit)) s"t_$normalized" else normalized
+  }
+
 }
 
 object SaveControlOptions {

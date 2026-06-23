@@ -55,6 +55,22 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def givesHelpfulMessageForMysqlLoadMissingTargetAlias(): Unit = {
+    val validatingCompiler = new SparkOneCompiler(new SparkSqlValidator)
+
+    try {
+      validatingCompiler.compile("load mysql.`Dworks.sparkone_city_result`;")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage, e.getMessage.contains("SparkOne LOAD requires a target temp view"))
+        assertTrue(e.getMessage, e.getMessage.contains("load mysql.`Dworks.sparkone_city_result` as sparkone_city_result"))
+        assertTrue(e.getMessage, e.getMessage.contains("Add `as sparkone_city_result`"))
+        assertFalse(e.getMessage, e.getMessage.contains("select * from mysql"))
+    }
+  }
+
+  @Test
   def compilesDorisLoadAsCatalogTableSelect(): Unit = {
     val statement = compiler.compile(
       """load doris.`app.users`
