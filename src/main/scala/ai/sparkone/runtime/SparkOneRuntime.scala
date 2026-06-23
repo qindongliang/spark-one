@@ -259,6 +259,17 @@ private final class NativeSqlSafetyGuard {
   private val logger = LoggerFactory.getLogger(getClass)
 
   def validate(statement: ai.sparkone.sql.CompiledStatement): Unit = {
+    if (statement.save.isEmpty && containsMysqlCatalogInsertOverwrite(statement.sql) &&
+        (!isNativeInsertOverwriteEnabled || !isMysqlOverwriteEnabled)) {
+      logger.warn(
+        s"Safe Save: native MySQL catalog INSERT OVERWRITE blocked, " +
+          s"allowNativeInsertOverwrite=${isNativeInsertOverwriteEnabled}, " +
+          s"allowMysqlOverwrite=${isMysqlOverwriteEnabled}, sql=${summarizeSql(statement.sql)}")
+      throw new CompileException(
+        "Native Spark SQL INSERT OVERWRITE for MySQL catalog is disabled by SparkOne Safe Save policy. " +
+          "Set both save.allowNativeInsertOverwrite = true and save.allowMysqlOverwrite = true in HOCON " +
+          "only when the deployment explicitly allows MySQL catalog overwrite.")
+    }
     if (statement.save.isEmpty && containsInsertOverwrite(statement.sql) && !isNativeInsertOverwriteEnabled) {
       logger.warn(
         s"Safe Save: native INSERT OVERWRITE blocked, " +
@@ -267,6 +278,14 @@ private final class NativeSqlSafetyGuard {
         "Native Spark SQL INSERT OVERWRITE is disabled by SparkOne Safe Save policy. " +
           "Use SparkOne DSL `save overwrite ...` so overwrite protection can run, " +
           "or set save.allowNativeInsertOverwrite = true in HOCON for compatibility.")
+    }
+    if (statement.save.isEmpty && containsMysqlCatalogDropTable(statement.sql) && !isNativeDropTableEnabled) {
+      logger.warn(
+        s"Safe Save: native MySQL catalog DROP TABLE blocked, " +
+          s"allowNativeDropTable=false, sql=${summarizeSql(statement.sql)}")
+      throw new CompileException(
+        "Native Spark SQL DROP TABLE for MySQL catalog is disabled by SparkOne DDL safety policy. " +
+          "Set save.allowNativeDropTable = true in HOCON only when the deployment explicitly allows MySQL catalog drops.")
     }
     if (statement.save.isEmpty && containsDropTable(statement.sql) && !isNativeDropTableEnabled) {
       logger.warn(
@@ -288,6 +307,11 @@ private final class NativeSqlSafetyGuard {
       .exists(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
   }
 
+  private def isMysqlOverwriteEnabled: Boolean = {
+    sys.props.get(AllowMysqlOverwriteKey)
+      .exists(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
+  }
+
   private def summarizeSql(sql: String): String = {
     val normalized = sql.replaceAll("\\s+", " ").trim
     if (normalized.length <= 240) normalized else normalized.take(237) + "..."
@@ -297,6 +321,7 @@ private final class NativeSqlSafetyGuard {
 private object NativeSqlSafetyGuard {
   private val AllowNativeInsertOverwriteKey = "sparkone.save.native.insertOverwrite.enabled"
   private val AllowNativeDropTableKey = "sparkone.save.native.dropTable.enabled"
+  private val AllowMysqlOverwriteKey = "sparkone.save.mysql.overwrite.enabled"
 
   private[runtime] def containsInsertOverwrite(sql: String): Boolean = {
     val tokens = sqlKeywordTokens(sql).map(_.toLowerCase)
@@ -314,8 +339,45 @@ private object NativeSqlSafetyGuard {
     }
   }
 
+  private[runtime] def containsMysqlCatalogInsertOverwrite(sql: String): Boolean = {
+    val tokens = sqlTokens(sql)
+    tokens.indices.exists { index =>
+      tokenText(tokens, index).contains("insert") &&
+        tokenText(tokens, index + 1).contains("overwrite") &&
+        firstTargetCatalog(tokens, index + 2, Set("table")).exists(_.equalsIgnoreCase("mysql"))
+    }
+  }
+
+  private[runtime] def containsMysqlCatalogDropTable(sql: String): Boolean = {
+    val tokens = sqlTokens(sql)
+    tokens.indices.exists { index =>
+      tokenText(tokens, index).contains("drop") &&
+        tokenText(tokens, index + 1).contains("table") &&
+        firstTargetCatalog(tokens, index + 2, Set.empty).exists(_.equalsIgnoreCase("mysql"))
+    }
+  }
+
+  private def firstTargetCatalog(tokens: Seq[SqlToken], start: Int, optionalKeywords: Set[String]): Option[String] = {
+    var index = start
+    while (tokenText(tokens, index).exists(value => optionalKeywords.contains(value.toLowerCase))) {
+      index += 1
+    }
+    if (tokenText(tokens, index).exists(_.equalsIgnoreCase("if")) &&
+        tokenText(tokens, index + 1).exists(_.equalsIgnoreCase("exists"))) {
+      index += 2
+    }
+    val first = tokenText(tokens, index)
+    first.filter(_ => tokenText(tokens, index + 1).contains("."))
+  }
+
   private def sqlKeywordTokens(sql: String): Seq[String] = {
-    val tokens = scala.collection.mutable.ArrayBuffer.empty[String]
+    sqlTokens(sql).collect {
+      case SqlToken(value, quoted) if !quoted && value != "." => value
+    }
+  }
+
+  private def sqlTokens(sql: String): Seq[SqlToken] = {
+    val tokens = scala.collection.mutable.ArrayBuffer.empty[SqlToken]
     var index = 0
 
     while (index < sql.length) {
@@ -327,20 +389,29 @@ private object NativeSqlSafetyGuard {
       } else if (current == '\'' || current == '"') {
         index = skipQuotedString(sql, index, current)
       } else if (current == '`') {
-        index = skipBackquotedIdentifier(sql, index)
+        val (identifier, next) = readBackquotedIdentifier(sql, index)
+        if (identifier.nonEmpty) tokens += SqlToken(identifier, quoted = true)
+        index = next
+      } else if (current == '.') {
+        tokens += SqlToken(".", quoted = false)
+        index += 1
       } else if (current.isLetter || current == '_') {
         val start = index
         index += 1
         while (index < sql.length && (sql.charAt(index).isLetterOrDigit || sql.charAt(index) == '_')) {
           index += 1
         }
-        tokens += sql.substring(start, index)
+        tokens += SqlToken(sql.substring(start, index), quoted = false)
       } else {
         index += 1
       }
     }
 
     tokens.toSeq
+  }
+
+  private def tokenText(tokens: Seq[SqlToken], index: Int): Option[String] = {
+    if (index >= 0 && index < tokens.length) Some(tokens(index).value) else None
   }
 
   private def hasNext(sql: String, index: Int, expected: Char): Boolean = {
@@ -372,21 +443,26 @@ private object NativeSqlSafetyGuard {
     sql.length
   }
 
-  private def skipBackquotedIdentifier(sql: String, index: Int): Int = {
+  private def readBackquotedIdentifier(sql: String, index: Int): (String, Int) = {
+    val builder = new StringBuilder
     var cursor = index + 1
     while (cursor < sql.length) {
       if (sql.charAt(cursor) == '`') {
         if (hasNext(sql, cursor, '`')) {
+          builder.append('`')
           cursor += 2
         } else {
-          return cursor + 1
+          return builder.toString() -> (cursor + 1)
         }
       } else {
+        builder.append(sql.charAt(cursor))
         cursor += 1
       }
     }
-    sql.length
+    builder.toString() -> sql.length
   }
+
+  private final case class SqlToken(value: String, quoted: Boolean)
 }
 
 object SparkOneRuntime {

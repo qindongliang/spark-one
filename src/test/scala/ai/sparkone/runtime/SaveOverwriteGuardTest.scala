@@ -227,6 +227,31 @@ final class SaveOverwriteGuardTest {
   }
 
   @Test
+  def nativeMysqlCatalogInsertOverwriteIsBlockedByMysqlOverwritePolicy(): Unit = {
+    val root = Files.createTempDirectory("sparkone-native-mysql-overwrite-block-")
+
+    withSystemProperty(AllowNativeInsertOverwriteKey, "true") {
+      val spark = localSpark(root)
+      try {
+        val runtime = new SparkOneRuntime(spark)
+        val result = runtime.run(
+          """insert overwrite table mysql.`Dworks`.sparkone_target
+            |select 1 as id;
+            |""".stripMargin)
+
+        assertFalse(result.success)
+        val error = result.statements.flatMap(_.error).mkString("\n")
+        assertTrue(error, error.contains("MySQL catalog"))
+        assertTrue(error, error.contains("allowMysqlOverwrite"))
+      } finally {
+        spark.stop()
+      }
+    }
+
+    deleteRecursively(root)
+  }
+
+  @Test
   def nativeDropTableIsBlockedByDefaultAndCannotBeAllowedBySessionSet(): Unit = {
     val root = Files.createTempDirectory("sparkone-native-drop-table-block-")
     val table = "sparkone_drop_table_block_target"
@@ -271,6 +296,24 @@ final class SaveOverwriteGuardTest {
     }
 
     deleteRecursively(root)
+  }
+
+  @Test
+  def nativeMysqlCatalogDropTableIsBlockedByDefault(): Unit = {
+    val root = Files.createTempDirectory("sparkone-native-mysql-drop-block-")
+
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run("drop table `mysql`.`Dworks`.sparkone_target;")
+
+      assertFalse(result.success)
+      val error = result.statements.flatMap(_.error).mkString("\n")
+      assertTrue(error, error.contains("DROP TABLE for MySQL catalog"))
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
   }
 
   @Test
