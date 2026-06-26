@@ -4,7 +4,13 @@ final case class CompiledStatement(
     source: String,
     sql: String,
     load: Option[LoadStatementMetadata] = None,
-    save: Option[SaveStatementMetadata] = None)
+    save: Option[SaveStatementMetadata] = None,
+    set: Option[SetStatementMetadata] = None)
+
+final case class SetStatementMetadata(
+    key: String,
+    value: String,
+    valueType: SetValueType)
 
 final case class LoadStatementMetadata(
     table: String,
@@ -27,6 +33,13 @@ sealed trait LoadTargetType
 object LoadTargetType {
   case object Provider extends LoadTargetType
   case object Mysql extends LoadTargetType
+}
+
+sealed trait SetValueType
+
+object SetValueType {
+  case object Literal extends SetValueType
+  case object Sql extends SetValueType
 }
 
 sealed trait SaveTargetType

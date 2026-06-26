@@ -180,6 +180,7 @@ final class SparkOneServerConfigTest {
     Files.write(file,
       """preview {
         |  maxRows = 25
+        |  defaultTab = "preview"
         |}
         |""".stripMargin.getBytes("UTF-8"))
 
@@ -187,6 +188,7 @@ final class SparkOneServerConfigTest {
       val properties = ServerConfigFile.load(file.toString)
 
       assertEquals("25", properties("sparkone.preview.maxRows"))
+      assertEquals("preview", properties("sparkone.preview.defaultTab"))
     } finally {
       Files.deleteIfExists(file)
     }
@@ -199,6 +201,7 @@ final class SparkOneServerConfigTest {
     assertEquals("127.0.0.1", properties("sparkone.host"))
     assertEquals("local[*]", properties("spark.master"))
     assertEquals("10", properties("sparkone.preview.maxRows"))
+    assertEquals("schema", properties("sparkone.preview.defaultTab"))
     assertEquals("false", properties("sparkone.save.mysql.overwrite.enabled"))
     assertEquals("false", properties("sparkone.save.doris.overwrite.enabled"))
     assertEquals("jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",

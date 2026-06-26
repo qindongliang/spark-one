@@ -30,6 +30,49 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesLiteralSetAndSubstitutesLaterStatements(): Unit = {
+    val sql = compiler.compile(
+      """set biz_date = "2026-03-14";
+        |select '${biz_date}' as dt;
+        |""".stripMargin).map(_.sql)
+
+    assertEquals(
+      Seq(
+        "SELECT 'SET' AS sparkone_action, 'biz_date' AS sparkone_target",
+        "select '2026-03-14' as dt"),
+      sql)
+  }
+
+  @Test
+  def compilesSetAsSelectAsRuntimeSqlVariable(): Unit = {
+    val statement = compiler.compile(
+      """set start_date as select date_sub(current_date(), 1) as dt;
+        |""".stripMargin).head
+
+    assertEquals("SELECT 'SET' AS sparkone_action, 'start_date' AS sparkone_target", statement.sql)
+    assertEquals(Some("start_date"), statement.set.map(_.key))
+    assertEquals(Some("select date_sub(current_date(), 1) as dt"), statement.set.map(_.value))
+    assertEquals(Some(SetValueType.Sql), statement.set.map(_.valueType))
+  }
+
+  @Test
+  def rejectsLegacySetWhereTypeSqlSyntax(): Unit = {
+    try {
+      compiler.compile("""set start_date = `select current_date() as dt` where type = "sql";""")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("set name as select"))
+    }
+  }
+
+  @Test
+  def leavesNativeSparkSetUntouched(): Unit = {
+    val sql = compiler.compile("set sparkone.save.overwrite.policy=allow;").head.sql
+    assertEquals("set sparkone.save.overwrite.policy=allow", sql)
+  }
+
+  @Test
   def compilesMysqlLoadFromHoconDatasourceWithoutRenderingCredentials(): Unit = {
     withSystemProperties(Map(
       "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",

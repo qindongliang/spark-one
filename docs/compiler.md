@@ -12,6 +12,8 @@ load excel.`/tmp/users.xlsx` options header="true" as users_excel;
 load mysql.`analytics.users` as users_mysql;
 load doris.`app.users` as users_doris;
 load doris.`app.orders` where "biz_date = '2026-06-17'" as doris_orders;
+set biz_date = "2026-06-17";
+set start_date as select date_sub(current_date(), 1) as dt;
 view city_stats as select city, count(*) as cnt from users group by city;
 save overwrite users as parquet.`/tmp/users_out`;
 save append city_stats as hive.`default.city_stats` partitionBy dt;
@@ -30,6 +32,8 @@ CREATE OR REPLACE TEMPORARY VIEW users_excel USING excel OPTIONS (path '/tmp/use
 SELECT 'LOAD MYSQL' AS sparkone_action, 'users AS users_mysql' AS sparkone_target;
 CREATE OR REPLACE TEMPORARY VIEW users_doris AS SELECT * FROM doris.app.users;
 CREATE OR REPLACE TEMPORARY VIEW doris_orders AS SELECT * FROM doris.app.orders WHERE biz_date = '2026-06-17';
+SELECT 'SET' AS sparkone_action, 'biz_date' AS sparkone_target;
+SELECT 'SET' AS sparkone_action, 'start_date' AS sparkone_target;
 CREATE OR REPLACE TEMPORARY VIEW city_stats AS select city, count(*) as cnt from users group by city;
 INSERT OVERWRITE DIRECTORY '/tmp/users_out' USING parquet SELECT * FROM users;
 INSERT INTO TABLE default.city_stats PARTITION (dt) SELECT * FROM city_stats;
@@ -51,6 +55,9 @@ group by city;
 
 - 不支持尾部 `select ... as table` 这种自定义糖，避免跟 Spark 原生列别名、表别名冲突。
 - 推荐使用 `view name as select ...` 语法糖，编译成 Spark 原生 `CREATE OR REPLACE TEMPORARY VIEW name AS SELECT ...`。
+- `set name = "literal"` 是 SparkOne 脚本变量，后续语句可用 `${name}` 引用；变量只在单次脚本运行内有效。
+- `set name as select ...` 是 SQL 变量语法，会在 runtime 执行查询，取第一行第一列转成字符串后写入变量；纯 compile 接口不会执行 Spark 查询。
+- SparkOne 只支持普通字面量变量和 `set name as select ...` SQL 变量；不复刻 MLSQL 的 `where type="sql"`、`type="shell"`、`type="conf"`、`defaultParam`、`scope`、`mode` 等运行时能力。
 - `SparkSqlValidator` 使用 `org.apache.spark.sql.execution.SparkSqlParser` 校验生成 SQL。
 - 不要使用 `CatalystSqlParser` 作为最终校验器；它会拒绝部分 Spark SQL execution 层语法。
 - 数据源映射集中在 `DataSourceResolver`，不要把 provider 别名和特殊 source 判断散落在 compiler 主流程。

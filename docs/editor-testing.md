@@ -17,6 +17,7 @@ http://127.0.0.1:7070
 - 选中执行：如果编辑器里有选中的 SQL，`Compile` 和 `Run` 只处理选中部分；没有选区时处理整篇脚本。
 - `Run` 默认隐藏每条 statement 的编译后 SQL；如果需要调试转译结果，在 `conf/sparkone.conf` 里配置 `server.showCompiledSql = true`。
 - `Rows`：控制每条 statement 最多预览多少行；默认上限是 `preview.maxRows = 10`，页面输入只能小于或等于该 HOCON 上限。
+- 默认结果 tab 由 `preview.defaultTab` 控制，可选 `schema` 或 `preview`；默认是 `schema`。
 - 右侧结果区：展示每条语句的编译后 SQL、耗时、schema 和预览数据；schema 和预览数据通过 tab 切换，失败语句会显示错误信息。
 
 ## 基础冒烟测试
@@ -40,6 +41,28 @@ show tables;
 show tables in default;
 ```
 
+## 默认结果 Tab
+
+在 `conf/sparkone.conf` 中可以控制运行结果默认展示 schema 还是 preview：
+
+```hocon
+preview {
+  maxRows = 10
+  defaultTab = "preview"
+}
+```
+
+可选值：
+
+- `schema`：默认展示字段结构，适合检查表结构和类型。
+- `preview`：默认展示结果行；对 `load ... as t` 会自动加载一次 `t` 的预览数据。
+
+改完配置后需要重启服务。可以用下面的 SQL 快速验证：
+
+```sql
+select 1 as id, 'beijing' as city;
+```
+
 ## 多语句上下文
 
 同一次 `Run` 内，多条 SQL 会在同一个 `SparkSession` 中顺序执行。因此可以先创建临时视图，再查询它：
@@ -61,6 +84,53 @@ select * from city_stats order by city;
 ```
 
 页面服务不重启时，临时视图会留在当前本地 Spark 会话里；服务重启后临时视图会消失。
+
+## 脚本变量 Set
+
+SparkOne 支持脚本内变量，变量只在同一次 `Run` 内按顺序生效，后续语句用 `${name}` 引用。
+
+普通字面量变量：
+
+```sql
+set biz_date = "2026-03-14";
+
+select '${biz_date}' as dt;
+```
+
+SQL 变量使用 `set name as select ...`，执行时取查询结果第一行第一列作为变量值：
+
+```sql
+set start_date as select date_sub(date '2026-03-15', 1) as dt;
+set end_date as select date '2026-03-15' as dt;
+
+view source_events as
+select * from values
+  (1, timestamp '2026-03-14 10:00:00'),
+  (2, timestamp '2026-03-15 00:00:00')
+as source_events(id, create_time);
+
+select *
+from source_events
+where create_time >= timestamp '${start_date}'
+  and create_time < timestamp '${end_date}';
+```
+
+MySQL 增量加载可按同样方式拼接 `load mysql ... where` 的过滤条件：
+
+```sql
+set start_date as select date_sub(current_date(), 1) as dt;
+set end_date as select current_date() as dt;
+
+load mysql.`analytics.orders`
+where "createTime >= '${start_date}' and createTime < '${end_date}'"
+as orders_delta;
+```
+
+注意：
+
+- `Compile` 只展示占位动作，不执行 SQL 变量查询；要看到 `${name}` 的运行时替换效果，请用 `Run`。
+- `Run` 时 `set` 语句只更新变量，不展示内部 schema 和 preview；重点看后续业务查询语句的结果。
+- SparkOne 不支持 MLSQL 的 `set name = \`select ...\` where type = "sql"` 写法；请使用 `set name as select ...`。
 
 ## Spark SQL 原生能力
 

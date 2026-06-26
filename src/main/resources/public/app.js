@@ -6,7 +6,7 @@ const summary = document.getElementById('summary');
 const compileButton = document.getElementById('compile');
 const runButton = document.getElementById('run');
 const editor = createEditor(script);
-const appConfig = { showCompiledSql: false, previewMaxRows: 10 };
+const appConfig = { showCompiledSql: false, previewMaxRows: 10, defaultResultTab: 'schema' };
 let limitTouched = false;
 
 loadConfig();
@@ -24,6 +24,7 @@ async function loadConfig() {
     appConfig.showCompiledSql = Boolean(data.showCompiledSql);
     compileButton.hidden = !appConfig.showCompiledSql;
     appConfig.previewMaxRows = normalizePositiveInteger(data.previewMaxRows, 10);
+    appConfig.defaultResultTab = normalizeResultTab(data.defaultResultTab);
     limit.max = String(appConfig.previewMaxRows);
     if (!limitTouched || !limit.value || Number(limit.value) > appConfig.previewMaxRows) {
       limit.value = String(appConfig.previewMaxRows);
@@ -58,6 +59,11 @@ async function submit(path) {
 function normalizePositiveInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+}
+
+function normalizeResultTab(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'preview' ? 'preview' : 'schema';
 }
 
 function createEditor(textarea) {
@@ -196,14 +202,17 @@ function errorBlock(text) {
 function resultTabs(statement) {
   const schema = statement.schema || [];
   const rows = statement.rows || [];
+  const showPreviewFirst = appConfig.defaultResultTab === 'preview';
   const node = document.createElement('div');
+  node.className = 'result-tabs';
   const tabs = document.createElement('div');
   tabs.className = 'tabs';
-  const schemaButton = tabButton('Schema', true);
-  const previewButton = tabButton('Preview', false);
-  const schemaPane = schemaTable(schema);
-  const previewPane = previewContent(statement);
-  previewPane.hidden = true;
+  const schemaButton = tabButton('Schema', !showPreviewFirst);
+  const previewButton = tabButton('Preview', showPreviewFirst);
+  const schemaPane = resultPane(schemaTable(schema));
+  const previewPane = resultPane(previewContent(statement));
+  schemaPane.hidden = showPreviewFirst;
+  previewPane.hidden = !showPreviewFirst;
 
   schemaButton.addEventListener('click', () => showTab(schemaButton, schemaPane, previewButton, previewPane));
   previewButton.addEventListener('click', () => {
@@ -217,7 +226,17 @@ function resultTabs(statement) {
   node.appendChild(tabs);
   node.appendChild(schemaPane);
   node.appendChild(previewPane);
+  if (showPreviewFirst && statement.previewTable && !previewPane.dataset.loaded && !previewPane.dataset.loading) {
+    loadPreview(statement.previewTable, previewPane);
+  }
   return node;
+}
+
+function resultPane(content) {
+  const pane = document.createElement('div');
+  pane.className = 'result-pane';
+  pane.appendChild(content);
+  return pane;
 }
 
 function previewContent(statement) {

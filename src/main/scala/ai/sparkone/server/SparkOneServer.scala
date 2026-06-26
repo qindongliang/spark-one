@@ -117,7 +117,8 @@ object SparkOneServer {
     val preview = PreviewConfig.current
     Map(
       "showCompiledSql" -> showCompiledSql,
-      "previewMaxRows" -> preview.maxRows)
+      "previewMaxRows" -> preview.maxRows,
+      "defaultResultTab" -> preview.defaultTab)
   }
 
   private def showCompiledSql: Boolean = {
@@ -372,7 +373,8 @@ private[server] object SparkOneHoconConfig {
 
   private def previewProperties(config: Config): Map[String, String] = {
     Seq(
-      int(config, "preview.maxRows").map(value => PreviewConfig.MaxRowsKey -> value.toString)).flatten.toMap
+      int(config, "preview.maxRows").map(value => PreviewConfig.MaxRowsKey -> value.toString),
+      string(config, "preview.defaultTab").map(PreviewConfig.DefaultTabKey -> _)).flatten.toMap
   }
 
   private def sparkProperties(config: Config): Map[String, String] = {

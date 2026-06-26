@@ -4,18 +4,52 @@ import ai.sparkone.sql.parser.{SparkOneDslLexer, SparkOneDslParser}
 import org.antlr.v4.runtime.{BaseErrorListener, CharStreams, CommonTokenStream, Parser, RecognitionException, Recognizer}
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 final class SparkOneCompiler(
     sqlValidator: SqlValidator = SqlValidator.Noop,
     dataSourceResolver: DataSourceResolver = new DataSourceResolver()) {
   def compile(script: String): Seq[CompiledStatement] = {
+    compileWithVariables(script, Map.empty, allowUnresolvedVariables = true)
+  }
+
+  def compileStatementWithVariables(script: String, variables: Map[String, String]): CompiledStatement = {
+    val compiled = compileWithVariables(script, variables, allowUnresolvedVariables = false)
+    if (compiled.size != 1) {
+      throw new CompileException(s"Expected exactly one statement after variable substitution, got ${compiled.size}")
+    }
+    compiled.head
+  }
+
+  def splitStatements(script: String): Seq[String] = {
     rejectLegacyDslWhere(script)
     val tree = parse(script)
-    tree.statement().asScala.map { statement =>
-      val source = originalText(script, statement).trim
-      val compiled = compileStatement(script, statement)
+    tree.statement().asScala.map(statement => originalText(script, statement).trim)
+  }
+
+  private def compileWithVariables(
+      script: String,
+      initialVariables: Map[String, String],
+      allowUnresolvedVariables: Boolean): Seq[CompiledStatement] = {
+    val variables = mutable.LinkedHashMap[String, String]() ++ initialVariables
+    splitStatements(script).map { source =>
+      val renderedSource = SparkOneVariableSubstitutor.render(
+        source,
+        variables.toMap,
+        allowUnresolved = allowUnresolvedVariables)
+      val tree = parse(renderedSource)
+      val statements = tree.statement().asScala
+      if (statements.size != 1) {
+        throw new CompileException(s"Expected exactly one statement after variable substitution, got ${statements.size}")
+      }
+      val compiled = compileParsedStatement(renderedSource, statements.head)
       sqlValidator.validate(compiled.sql)
-      CompiledStatement(source, compiled.sql, compiled.load, compiled.save)
+      compiled.set.foreach { metadata =>
+        if (metadata.valueType == SetValueType.Literal) {
+          variables(metadata.key) = metadata.value
+        }
+      }
+      CompiledStatement(renderedSource, compiled.sql, compiled.load, compiled.save, compiled.set)
     }
   }
 
@@ -30,11 +64,13 @@ final class SparkOneCompiler(
     parser.script()
   }
 
-  private def compileStatement(script: String, statement: SparkOneDslParser.StatementContext): CompileResult = {
+  private def compileParsedStatement(script: String, statement: SparkOneDslParser.StatementContext): CompileResult = {
     if (statement.loadStatement() != null) {
       compileLoad(statement.loadStatement())
     } else if (statement.saveStatement() != null) {
       compileSave(statement.saveStatement())
+    } else if (statement.setStatement() != null) {
+      compileSet(script, statement.setStatement())
     } else if (statement.viewStatement() != null) {
       CompileResult(compileView(script, statement.viewStatement()))
     } else {
@@ -44,10 +80,28 @@ final class SparkOneCompiler(
     }
   }
 
+  private def compileSet(script: String, set: SparkOneDslParser.SetStatementContext): CompileResult = {
+    val key = SparkOneSqlRender.requireIdentifier(set.key.getText, "SET key")
+    val valueType =
+      if (set.query != null) SetValueType.Sql else SetValueType.Literal
+    val value =
+      if (set.query != null) originalText(script, set.query).trim
+      else stripQuoted(set.value.getText).trim
+    if (value.isEmpty) {
+      throw new CompileException("SET value must not be empty")
+    }
+    CompileResult(
+      SparkOneSqlRender.renderSparkOneAction("SET", key),
+      set = Some(SetStatementMetadata(key, value, valueType)))
+  }
+
   private def rejectLegacyDslWhere(sql: String): Unit = {
     if (SparkOneCompiler.LegacyLoadWherePattern.findFirstIn(sql).nonEmpty ||
         SparkOneCompiler.LegacySaveWherePattern.findFirstIn(sql).nonEmpty) {
       throw new CompileException("SparkOne DSL options must use OPTIONS, not WHERE.")
+    }
+    if (SparkOneCompiler.LegacySetSqlTypePattern.findFirstIn(sql).nonEmpty) {
+      throw new CompileException("SparkOne SQL variables must use `set name as select ...`, not `where type=\"sql\"`.")
     }
   }
 
@@ -203,7 +257,8 @@ final class SparkOneCompiler(
 private final case class CompileResult(
     sql: String,
     save: Option[SaveStatementMetadata] = None,
-    load: Option[LoadStatementMetadata] = None)
+    load: Option[LoadStatementMetadata] = None,
+    set: Option[SetStatementMetadata] = None)
 
 private object SparkOneCompiler {
   private val DslSource = """[A-Za-z_][A-Za-z0-9_]*\s*\.\s*`(?:``|[^`])*`"""
@@ -217,6 +272,9 @@ private object SparkOneCompiler {
   private val LegacySaveWherePattern =
     ("""(?is)(?:^|;)\s*save\s+(?:(?:overwrite|append|errorifexists|ignore)\s+)?""" +
       """[A-Za-z_][A-Za-z0-9_]*\s+as\s+""" + DslSource + """\s+where\b""").r
+
+  private val LegacySetSqlTypePattern =
+    """(?is)(?:^|;)\s*set\s+[A-Za-z_][A-Za-z0-9_]*\s*=.*\bwhere\s+type\s*=\s*['"]sql['"]""".r
 
   private def suggestAlias(path: String): String = {
     val candidate = path.split("\\.").lastOption.getOrElse("loaded_table")

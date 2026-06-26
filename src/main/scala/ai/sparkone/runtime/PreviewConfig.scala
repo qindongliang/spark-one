@@ -1,6 +1,6 @@
 package ai.sparkone.runtime
 
-final case class PreviewConfig(maxRows: Int) {
+final case class PreviewConfig(maxRows: Int, defaultTab: String) {
   def clampRows(requested: Option[Int]): Int = {
     requested.map(_.max(1).min(maxRows)).getOrElse(maxRows)
   }
@@ -8,11 +8,14 @@ final case class PreviewConfig(maxRows: Int) {
 
 object PreviewConfig {
   val MaxRowsKey = "sparkone.preview.maxRows"
+  val DefaultTabKey = "sparkone.preview.defaultTab"
   val DefaultMaxRows = 10
+  val DefaultTab = "schema"
 
   def current: PreviewConfig = {
     PreviewConfig(
-      maxRows = intProperty(MaxRowsKey, DefaultMaxRows).max(1))
+      maxRows = intProperty(MaxRowsKey, DefaultMaxRows).max(1),
+      defaultTab = tabProperty(DefaultTabKey, DefaultTab))
   }
 
   private def intProperty(key: String, defaultValue: Int): Int = {
@@ -25,5 +28,12 @@ object PreviewConfig {
     } catch {
       case _: NumberFormatException => None
     }
+  }
+
+  private def tabProperty(key: String, defaultValue: String): String = {
+    sys.props.get(key)
+      .map(_.trim.toLowerCase)
+      .filter(value => Set("schema", "preview").contains(value))
+      .getOrElse(defaultValue)
   }
 }

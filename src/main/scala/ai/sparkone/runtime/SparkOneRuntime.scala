@@ -1,6 +1,6 @@
 package ai.sparkone.runtime
 
-import ai.sparkone.sql.{CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SaveStatementMetadata, SaveTargetType, SparkOneCompiler, SparkSqlValidator}
+import ai.sparkone.sql.{CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SaveStatementMetadata, SaveTargetType, SetStatementMetadata, SetValueType, SparkOneCompiler, SparkSqlValidator}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.UserGroupInformation
@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory
 
 import java.io.File
 import java.net.URLClassLoader
+import scala.collection.mutable
 import scala.util.control.NonFatal
 
 final class SparkOneRuntime(
@@ -31,43 +32,50 @@ final class SparkOneRuntime(
       limit: Int = PreviewConfig.current.maxRows): RunResult = runLock.synchronized {
     withDriverClassLoader {
       val previewLimit = PreviewConfig.current.clampRows(Some(limit))
-      val compiled = compiler.compile(script)
-      val results: Seq[StatementResult] = compiled.zipWithIndex.map { case (statement, offset) =>
+      val sources = compiler.splitStatements(script)
+      val variables = mutable.LinkedHashMap[String, String]()
+      val results: Seq[StatementResult] = sources.zipWithIndex.map { case (source, offset) =>
         val started = System.nanoTime()
         var preparation: Option[SaveOverwriteGuard.OverwritePreparation] = None
+        var statement: Option[CompiledStatement] = None
         try {
-          nativeSqlSafetyGuard.validate(statement)
-          preparation = saveOverwriteGuard.prepare(statement.save)
-          validateSaveTargetExists(statement.save)
-          val dataFrame = execute(statement)
+          val compiledStatement = compiler.compileStatementWithVariables(source, variables.toMap)
+          statement = Some(compiledStatement)
+          nativeSqlSafetyGuard.validate(compiledStatement)
+          preparation = saveOverwriteGuard.prepare(compiledStatement.save)
+          validateSaveTargetExists(compiledStatement.save)
+          val dataFrame = execute(compiledStatement, variables)
           preparation.foreach(_.commit())
-          val shouldCollectRows = statement.load.isEmpty
+          val shouldCollectRows = compiledStatement.load.isEmpty && compiledStatement.set.isEmpty
           val collected =
             if (shouldCollectRows) dataFrame.limit(previewLimit + 1).collect().toSeq
             else Seq.empty[Row]
           val visibleRows = collected.take(previewLimit).map(rowToStrings)
           StatementResult(
             index = offset + 1,
-            source = statement.source,
-            sql = statement.sql,
+            source = compiledStatement.source,
+            sql = compiledStatement.sql,
             success = true,
             schema = schemaInfo(dataFrame),
             rows = visibleRows,
             rowCount = visibleRows.size,
             truncated = shouldCollectRows && collected.size > previewLimit,
-            previewTable = statement.load.map(_.table),
+            previewTable = compiledStatement.load.map(_.table),
             durationMs = elapsedMs(started),
             error = None)
         } catch {
           case e: Exception =>
             preparation.foreach(_.rollback())
+            val sourceSummary = statement.map(_.source).getOrElse(source)
+            val sqlSummary = statement.map(_.sql).getOrElse(source)
             logger.error(
-              s"Statement ${offset + 1} failed, sql=${summarizeSql(statement.sql)}, reason=${errorMessage(e)}",
+              s"Statement ${offset + 1} failed, source=${summarizeSql(sourceSummary)}, " +
+                s"sql=${summarizeSql(sqlSummary)}, reason=${errorMessage(e)}",
               e)
             StatementResult(
               index = offset + 1,
-              source = statement.source,
-              sql = statement.sql,
+              source = sourceSummary,
+              sql = sqlSummary,
               success = false,
               schema = Nil,
               rows = Nil,
@@ -81,7 +89,7 @@ final class SparkOneRuntime(
 
       val success = results.forall(_.success)
       val visibleResults =
-        if (success && compiled.nonEmpty && compiled.forall(_.load.nonEmpty)) results.takeRight(1)
+        if (success && results.nonEmpty && results.forall(_.previewTable.nonEmpty)) results.takeRight(1)
         else results
       RunResult(success, visibleResults)
     }
@@ -115,8 +123,13 @@ final class SparkOneRuntime(
     spark.stop()
   }
 
-  private def execute(statement: CompiledStatement): DataFrame = {
-    statement.load match {
+  private def execute(
+      statement: CompiledStatement,
+      variables: mutable.Map[String, String]): DataFrame = {
+    statement.set match {
+      case Some(metadata) =>
+        executeSet(metadata, variables)
+      case None => statement.load match {
       case Some(metadata) =>
         executeLoad(statement, metadata)
       case _ =>
@@ -126,7 +139,22 @@ final class SparkOneRuntime(
           case _ =>
             spark.sql(statement.sql)
         }
+      }
     }
+  }
+
+  private def executeSet(
+      metadata: SetStatementMetadata,
+      variables: mutable.Map[String, String]): DataFrame = {
+    val value = metadata.valueType match {
+      case SetValueType.Literal =>
+        metadata.value
+      case SetValueType.Sql =>
+        val resultHead = spark.sql(metadata.value).limit(1).collect().headOption
+        resultHead.flatMap(row => Option(row.get(0))).map(_.toString).getOrElse("")
+    }
+    variables(metadata.key) = value
+    spark.emptyDataFrame
   }
 
   private def executeLoad(statement: CompiledStatement, metadata: LoadStatementMetadata): DataFrame = {

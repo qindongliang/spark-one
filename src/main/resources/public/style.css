@@ -91,13 +91,21 @@ button.primary:hover {
 }
 
 button.tab {
-  height: 28px;
+  position: relative;
+  height: 30px;
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
+  border-color: #cfd7e3;
+  background: #f5f7fa;
+  color: #344054;
+  margin-bottom: -1px;
 }
 
 button.tab.active {
-  background: #eef3f8;
+  z-index: 1;
+  background: var(--panel);
+  border-bottom-color: var(--panel);
+  color: var(--text);
   font-weight: 650;
 }
 
@@ -221,10 +229,23 @@ pre {
   color: var(--muted);
 }
 
+.result-tabs {
+  min-width: 100%;
+}
+
 .tabs {
   display: flex;
   gap: 4px;
-  margin-bottom: 8px;
+  align-items: flex-end;
+  margin-bottom: 0;
+}
+
+.result-pane {
+  min-width: 100%;
+  padding: 0;
+  border: 1px solid #cfd7e3;
+  background: var(--panel);
+  overflow-x: auto;
 }
 
 .empty {
@@ -241,6 +262,10 @@ table {
   table-layout: auto;
 }
 
+.result-pane > table {
+  border: 0;
+}
+
 th,
 td {
   border: 1px solid var(--line);
@@ -251,6 +276,24 @@ td {
   max-width: 420px;
   white-space: normal;
   overflow-wrap: break-word;
+}
+
+.result-pane > table th:first-child,
+.result-pane > table td:first-child {
+  border-left: 0;
+}
+
+.result-pane > table th:last-child,
+.result-pane > table td:last-child {
+  border-right: 0;
+}
+
+.result-pane > table thead:first-child tr:first-child th {
+  border-top: 0;
+}
+
+.result-pane > table tbody:last-child tr:last-child td {
+  border-bottom: 0;
 }
 
 th {

@@ -7,6 +7,7 @@ script
 statement
     : loadStatement
     | saveStatement
+    | setStatement
     | viewStatement
     | sqlStatement
     ;
@@ -21,6 +22,10 @@ saveStatement
 
 viewStatement
     : VIEW table=identifier AS sqlStatement
+    ;
+
+setStatement
+    : SET key=identifier (EQ value=setValue | AS query=sqlStatement)
     ;
 
 source
@@ -56,6 +61,12 @@ optionValue
     | NUMBER
     ;
 
+setValue
+    : quotedValue
+    | identifier
+    | NUMBER
+    ;
+
 quotedValue
     : BACKQUOTED_IDENTIFIER
     | SINGLE_QUOTED_STRING
@@ -73,6 +84,7 @@ sqlStatement
 sqlToken
     : LOAD
     | SAVE
+    | SET
     | VIEW
     | AS
     | WHERE
@@ -100,6 +112,7 @@ terminator
 
 LOAD: L O A D;
 SAVE: S A V E;
+SET: S E T;
 VIEW: V I E W;
 AS: A S;
 WHERE: W H E R E;

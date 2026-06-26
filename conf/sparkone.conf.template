@@ -11,6 +11,9 @@ server {
 preview {
   # 每条 statement 默认最多预览 10 行；页面 Rows 只能调小或等于该值，不能放大。
   maxRows = 10
+  # 结果默认展示 tab：schema 或 preview。
+  # schema 适合看字段结构；preview 适合直接看查询结果。
+  defaultTab = "schema"
 }
 
 spark {

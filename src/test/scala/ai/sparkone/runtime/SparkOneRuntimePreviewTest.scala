@@ -73,10 +73,12 @@ final class SparkOneRuntimePreviewTest {
   @Test
   def previewConfigDefaultsToTenRowsAndClampsRequestedLimit(): Unit = {
     withSystemProperties(Map(
-      PreviewConfig.MaxRowsKey -> "3")) {
+      PreviewConfig.MaxRowsKey -> "3",
+      PreviewConfig.DefaultTabKey -> "preview")) {
       val config = PreviewConfig.current
 
       assertEquals(3, config.maxRows)
+      assertEquals("preview", config.defaultTab)
       assertEquals(3, config.clampRows(None))
       assertEquals(2, config.clampRows(Some(2)))
       assertEquals(3, config.clampRows(Some(200)))
@@ -85,6 +87,7 @@ final class SparkOneRuntimePreviewTest {
 
     val defaults = PreviewConfig.current
     assertEquals(10, defaults.maxRows)
+    assertEquals("schema", defaults.defaultTab)
   }
 
   @Test
@@ -107,6 +110,50 @@ final class SparkOneRuntimePreviewTest {
         assertEquals(2, result.statements.head.rowCount)
         assertTrue(result.statements.head.truncated)
       }
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def runSubstitutesLiteralSetVariablesInLaterStatements(): Unit = {
+    val root = Files.createTempDirectory("sparkone-runtime-set-literal-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """set biz_date = "2026-03-14";
+          |select '${biz_date}' as dt;
+          |""".stripMargin)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(2, result.statements.size)
+      assertEquals(Nil, result.statements.head.schema)
+      assertEquals(0, result.statements.head.rowCount)
+      assertEquals(Seq("2026-03-14"), result.statements.last.rows.head)
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def runEvaluatesSqlSetVariablesBeforeLaterStatements(): Unit = {
+    val root = Files.createTempDirectory("sparkone-runtime-set-sql-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """set start_date as select date_sub(date '2026-03-15', 1) as dt;
+          |select '${start_date}' as dt;
+          |""".stripMargin)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(2, result.statements.size)
+      assertEquals(Nil, result.statements.head.schema)
+      assertEquals(0, result.statements.head.rowCount)
+      assertEquals(Seq("2026-03-14"), result.statements.last.rows.head)
     } finally {
       spark.stop()
       deleteRecursively(root)
