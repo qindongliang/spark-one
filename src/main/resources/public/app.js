@@ -154,6 +154,9 @@ function render(data, path, scope) {
   }
 
   if (path === '/api/compile') {
+    for (const diagnostic of data.diagnostics || []) {
+      output.appendChild(warningBlock(diagnostic));
+    }
     for (const statement of data.statements || []) {
       output.appendChild(section(`Statement ${statement.index}`, pre(statement.sql + ';')));
     }
@@ -219,6 +222,13 @@ function emptyBlock(text) {
 function errorBlock(text) {
   const node = document.createElement('div');
   node.className = 'error';
+  node.textContent = text;
+  return node;
+}
+
+function warningBlock(text) {
+  const node = document.createElement('div');
+  node.className = 'warning';
   node.textContent = text;
   return node;
 }

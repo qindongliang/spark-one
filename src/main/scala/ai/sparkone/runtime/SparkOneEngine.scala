@@ -12,11 +12,41 @@ trait SparkOneEngine extends AutoCloseable {
   def id: String
   def label: String
   def engineType: String
+  def capabilities: EngineCapabilities
+  def compile(script: String): Seq[CompiledStatement]
   def run(script: String, limit: Int = PreviewConfig.current.maxRows): RunResult
   def previewTable(table: String, limit: Int = PreviewConfig.current.maxRows): StatementResult
 }
 
-final case class EngineInfo(id: String, label: String, engineType: String)
+final case class EngineCapabilities(
+    mysqlAdapter: Boolean,
+    fileSafeBackup: Boolean,
+    externalCatalogConfiguredBySparkOne: Boolean,
+    sessionScopedTempViews: Boolean,
+    kyuubiExternalEngineConfig: Boolean,
+    compileDiagnostics: Seq[String])
+
+object EngineCapabilities {
+  val Local: EngineCapabilities = EngineCapabilities(
+    mysqlAdapter = true,
+    fileSafeBackup = true,
+    externalCatalogConfiguredBySparkOne = true,
+    sessionScopedTempViews = true,
+    kyuubiExternalEngineConfig = false,
+    compileDiagnostics = Nil)
+
+  val Kyuubi: EngineCapabilities = EngineCapabilities(
+    mysqlAdapter = false,
+    fileSafeBackup = false,
+    externalCatalogConfiguredBySparkOne = false,
+    sessionScopedTempViews = true,
+    kyuubiExternalEngineConfig = true,
+    compileDiagnostics = Seq(
+      "Kyuubi engine does not read engines.local catalog, datasource, or jars config; configure catalogs and provider jars in Kyuubi/Spark engine.",
+      "SparkOne load/save mysql adapter is local-only; use Spark JDBC Catalog SQL or Kyuubi/Spark-side datasource configuration."))
+}
+
+final case class EngineInfo(id: String, label: String, engineType: String, capabilities: EngineCapabilities)
 
 final class LocalSparkEngine(
     val id: String,
@@ -26,8 +56,14 @@ final class LocalSparkEngine(
   extends SparkOneEngine {
 
   override val engineType: String = "local"
-  private lazy val delegate = withLocalProperties {
-    runtime
+  override val capabilities: EngineCapabilities = EngineCapabilities.Local
+  private val compiler = new SparkOneCompiler(new SparkSqlValidator)
+  @volatile private var delegateRef: SparkOneRuntime = _
+
+  override def compile(script: String): Seq[CompiledStatement] = {
+    withLocalProperties {
+      compiler.compile(script)
+    }
   }
 
   override def run(script: String, limit: Int): RunResult = {
@@ -43,7 +79,22 @@ final class LocalSparkEngine(
   }
 
   override def close(): Unit = {
-    delegate.close()
+    val current = delegateRef
+    if (current != null) {
+      current.close()
+      delegateRef = null
+    }
+  }
+
+  private def delegate: SparkOneRuntime = {
+    if (delegateRef == null) {
+      this.synchronized {
+        if (delegateRef == null) {
+          delegateRef = runtime
+        }
+      }
+    }
+    delegateRef
   }
 
   private def withLocalProperties[T](body: => T): T = LocalSparkEngine.PropertyLock.synchronized {
@@ -72,12 +123,20 @@ final class KyuubiJdbcEngine(
   extends SparkOneEngine {
 
   override val engineType: String = "kyuubi"
+  override val capabilities: EngineCapabilities = EngineCapabilities.Kyuubi
 
   private val logger = LoggerFactory.getLogger(getClass)
   private val runLock = new AnyRef
   private val nativeSqlSafetyGuard = new NativeSqlSafetyGuard
   private val saveSafetyGuard = new RemoteSaveSafetyGuard
   @volatile private var connectionRef: Connection = _
+
+  override def compile(script: String): Seq[CompiledStatement] = {
+    compiler.compile(script).map { statement =>
+      validateSupported(statement)
+      statement
+    }
+  }
 
   override def run(script: String, limit: Int): RunResult = runLock.synchronized {
     val previewLimit = PreviewConfig.current.clampRows(Some(limit))

@@ -6,7 +6,9 @@ final class SparkOneEngineRegistry private (
   extends AutoCloseable {
 
   def infos: Seq[EngineInfo] = {
-    engines.values.toSeq.sortBy(_.id).map(engine => EngineInfo(engine.id, engine.label, engine.engineType))
+    engines.values.toSeq.sortBy(_.id).map { engine =>
+      EngineInfo(engine.id, engine.label, engine.engineType, engine.capabilities)
+    }
   }
 
   def get(requestedId: Option[String]): SparkOneEngine = {

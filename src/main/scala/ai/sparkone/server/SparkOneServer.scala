@@ -1,7 +1,6 @@
 package ai.sparkone.server
 
 import ai.sparkone.runtime.{PreviewConfig, SparkOneEngineRegistry}
-import ai.sparkone.sql.{SparkOneCompiler, SparkSqlValidator}
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import io.javalin.Javalin
@@ -20,7 +19,6 @@ import scala.collection.JavaConverters._
 object SparkOneServer {
   private lazy val logger = LoggerFactory.getLogger(getClass)
   private val mapper = new ObjectMapper().registerModule(DefaultScalaModule)
-  private val compiler = new SparkOneCompiler(new SparkSqlValidator)
   private val SimpleIdentifier = "^[A-Za-z_][A-Za-z0-9_]*$".r
   @volatile private var enginesRef: SparkOneEngineRegistry = _
 
@@ -70,13 +68,18 @@ object SparkOneServer {
   private def handleCompile(ctx: Context): Unit = {
     val request = readSqlRequest(ctx)
     try {
-      val statements = compiler.compile(request.script).zipWithIndex.map { case (statement, index) =>
+      val engine = engines.get(request.engine)
+      val statements = engine.compile(request.script).zipWithIndex.map { case (statement, index) =>
         Map(
           "index" -> (index + 1),
           "source" -> statement.source,
           "sql" -> statement.sql)
       }
-      json(ctx, Map("success" -> true, "statements" -> statements))
+      json(ctx, Map(
+        "success" -> true,
+        "engine" -> engine.id,
+        "diagnostics" -> engine.capabilities.compileDiagnostics,
+        "statements" -> statements))
     } catch {
       case e: Throwable =>
         logger.warn("Failed to compile SQL request", e)
