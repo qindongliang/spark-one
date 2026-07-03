@@ -41,7 +41,7 @@ Shade jar：
 - Doris 4.x 读写由 Spark Doris Catalog / Connector 提供，Spark 3.5 可通过运行环境引入 `org.apache.doris:spark-doris-connector-spark-3.5:25.2.0`；SparkOne 主包不默认内置该 connector。
 - `excel` 不是 Spark core 内置，不默认打进 SparkOne 主包。
 - provider 别名不要写死在前端或 runtime，统一放在 `DataSourceResolver`。
-- 外部 provider 通过 `spark.jars.packages`、`spark.jars` 或 Kyuubi engine classpath 管理。
+- 外部 provider 在 local 模式通过 `engines.local.jars.packages`、`engines.local.jars.jars` 管理；Kyuubi 模式放到 Kyuubi/Spark engine classpath。
 - shade 保留 `ServicesResourceTransformer`，仅用于未来确有必要随主包合并 service 文件的场景。
 
 配置文件依赖：

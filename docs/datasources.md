@@ -23,9 +23,9 @@ libsvm
 - `save overwrite t as hive.\`db.table\`` 编译成 `INSERT OVERWRITE TABLE db.table SELECT * FROM t`，要求目标表已存在，默认仍需要 `options sparkoneOverwrite="allow"` 显式确认。
 - `partitionBy` 仅用于 catalog 表写入：`save append t as hive.\`db.table\` partitionBy dt` 编译成动态分区插入。
 - SparkOne 不复刻 MLSQL 的 `storage="hive"` / 数据湖替换逻辑；如果要创建表、指定存储格式或改表结构，优先使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE`。
-- `mysql` 是关系库特殊 source：`load mysql.\`analytics.users\` as users` 从 HOCON 的 `datasources.mysql.analytics` 读取连接，再用 Spark JDBC reader 注册临时视图。
-- `catalogs.mysql` 是显式 Spark JDBC Catalog 配置：可用 `show namespaces in mysql` 查看 MySQL database，用 `show tables in mysql.app` 查看表，用 `select * from mysql.app.users` 做原生查询。MySQL JDBC URL 需要带 `databaseTerm=SCHEMA`，让 Spark 传入的 JDBC schemaPattern 对应 MySQL database。
-- MySQL catalog 只用于原生 SQL 浏览/查询；`datasources.mysql` 和 `catalogs.mysql` 不互相隐式复用。`load/save mysql` 仍走 SparkOne adapter，因此 SQL 侧仍不能覆盖 `url/user/password/driver/dbtable/query`，`load mysql ... where "..."` 的 JDBC 子查询和 `save overwrite` 安全策略也保持不变。
+- `mysql` 是关系库特殊 source：`load mysql.\`analytics.users\` as users` 从 local 引擎的 `datasources.mysql.analytics` 读取连接，再用 Spark JDBC reader 注册临时视图。
+- `engines.local.catalogs.mysql` 是显式 Spark JDBC Catalog 配置：可用 `show namespaces in mysql` 查看 MySQL database，用 `show tables in mysql.app` 查看表，用 `select * from mysql.app.users` 做原生查询。MySQL JDBC URL 需要带 `databaseTerm=SCHEMA`，让 Spark 传入的 JDBC schemaPattern 对应 MySQL database。
+- MySQL catalog 只用于原生 SQL 浏览/查询；local 引擎下的 `datasources.mysql` 和 `catalogs.mysql` 不互相隐式复用。`load/save mysql` 仍走 SparkOne adapter，因此 SQL 侧仍不能覆盖 `url/user/password/driver/dbtable/query`，`load mysql ... where "..."` 的 JDBC 子查询和 `save overwrite` 安全策略也保持不变。
 - `save append t as mysql.\`analytics.target_table\`` 用 Spark JDBC writer 追加写入 MySQL，要求目标表已存在。
 - `save overwrite t as mysql.\`analytics.target_table\`` 默认被 `save.allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 HOCON 打开 `save.allowMysqlOverwrite = true`，再在单条语句里显式写 `options sparkoneOverwrite="allow"`；SparkOne 不对 MySQL 表做备份。
 - `doris` 是 Spark Doris Catalog 名：`select * from doris.db.users` 直接走 Spark 原生 catalog 解析。
@@ -39,56 +39,74 @@ libsvm
 - Hive/MySQL/Doris 的 `save append/overwrite` 都不会自动创建目标表。目标表、分区、索引、Doris key/distribution 等应由明确 DDL 先创建和治理。
 - Doris 聚合、写入优先使用 Spark 标准 SQL，例如 `select city, count(*) from doris.db.users group by city`、`insert into doris.db.target select ...`。
 
-HOCON 数据源推荐按类型和连接名分层，连接信息仍留在启动配置中，SQL 只引用连接名：
+HOCON 数据源推荐按类型和连接名分层。local 进程内引擎的连接信息放在 `engines.local` 下，SQL 只引用连接名：
 
 ```hocon
-datasources.mysql {
-  analytics {
-    url = "jdbc:mysql://127.0.0.1:3306/app"
-    user = "reader"
-    password = ${?SPARKONE_MYSQL_ANALYTICS_PASSWORD}
+engines {
+  local {
+    type = "local"
 
-    options {
-      fetchsize = 1000
-      batchsize = 1000
+    datasources.mysql {
+      analytics {
+        url = "jdbc:mysql://127.0.0.1:3306/app"
+        user = "reader"
+        password = ${?SPARKONE_MYSQL_ANALYTICS_PASSWORD}
+
+        options {
+          fetchsize = 1000
+          batchsize = 1000
+        }
+      }
+
+      reporting = ${engines.local.datasources.mysql.analytics}
+      reporting.url = "jdbc:mysql://127.0.0.1:3306/reporting"
     }
   }
-
-  reporting = ${datasources.mysql.analytics}
-  reporting.url = "jdbc:mysql://127.0.0.1:3306/reporting"
 }
 ```
 
-MySQL 原生 catalog 单独配置在 `catalogs.mysql`，不要和 adapter 配置揉在一起：
+MySQL 原生 catalog 单独配置在 `engines.local.catalogs.mysql`，不要和 adapter 配置揉在一起：
 
 ```hocon
-catalogs.mysql {
-  url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA"
-  user = "reader"
-  password = ${?SPARKONE_MYSQL_CATALOG_PASSWORD}
+engines {
+  local {
+    type = "local"
 
-  options {
-    fetchsize = 1000
+    catalogs.mysql {
+      url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA"
+      user = "reader"
+      password = ${?SPARKONE_MYSQL_CATALOG_PASSWORD}
+
+      options {
+        fetchsize = 1000
+      }
+    }
   }
 }
 ```
 
 这里的 `databaseTerm=SCHEMA` 只用于 Spark 原生 JDBC Catalog。原因是 Spark 执行 `show tables in mysql.app` 时，会把 `app` 作为 JDBC `DatabaseMetaData.getTables` 的 `schemaPattern` 参数传给驱动；而 MySQL Connector/J 默认把 MySQL database 解释为 JDBC catalog，不解释为 schema。加上该参数后，MySQL database 会按 JDBC schema 暴露，`show tables in mysql.app` 才会过滤到 `app` 这个库。
 
-Doris 按 Spark Catalog 配置。SparkOne 本地运行时会把下面的 HOCON 转成 `spark.sql.catalog.doris.*`；接 Kyuubi 时，把同样的 Spark 配置放到 Kyuubi/Spark engine 即可：
+Doris 按 Spark Catalog 配置。SparkOne local 运行时会把下面的 HOCON 转成 `spark.sql.catalog.doris.*`；接 Kyuubi 时，把同样的 Spark 配置放到 Kyuubi/Spark engine 即可：
 
 ```hocon
-catalogs.doris {
-  fenodes = "fe-1:8030,fe-2:8030"
-  queryPort = 9030
-  user = "reader"
-  password = ${?SPARKONE_DORIS_PASSWORD}
+engines {
+  local {
+    type = "local"
 
-  options {
-    doris.request.retries = 3
-    # 需要 Arrow Flight SQL 读取时，可按 Doris 服务端配置打开：
-    # doris.read.mode = "arrow"
-    # doris.read.arrow-flight-sql.port = 12345
+    catalogs.doris {
+      fenodes = "fe-1:8030,fe-2:8030"
+      queryPort = 9030
+      user = "reader"
+      password = ${?SPARKONE_DORIS_PASSWORD}
+
+      options {
+        doris.request.retries = 3
+        # 需要 Arrow Flight SQL 读取时，可按 Doris 服务端配置打开：
+        # doris.read.mode = "arrow"
+        # doris.read.arrow-flight-sql.port = 12345
+      }
+    }
   }
 }
 ```
@@ -114,8 +132,8 @@ include "datasources/hive.conf"
 外部 provider：
 
 - `excel` 编译成 `USING excel`，provider jar 需要通过运行环境提供。
-- 本地 MVP 可用 `-Dspark.jars.packages=dev.mauch:spark-excel_2.12:3.5.6_0.31.2`。
-- Doris 4.x / Spark 3.5 读写需要 Spark Doris Connector，例如 `org.apache.doris:spark-doris-connector-spark-3.5:25.2.0`。SparkOne 不把该 connector 默认打进主包，由运行环境通过 `spark.jars.packages` 或 classpath 提供。
+- 本地 MVP 可用 `engines.local.jars.packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"`。
+- Doris 4.x / Spark 3.5 读写需要 Spark Doris Connector，例如 `org.apache.doris:spark-doris-connector-spark-3.5:25.2.0`。SparkOne 不把该 connector 默认打进主包，由 local 引擎的 `engines.local.jars.packages`、`engines.local.jars.jars` 或运行环境 classpath 提供。
 - 未来接 Kyuubi 时，在 Kyuubi/Spark engine 配置 `spark.jars.packages` 或 engine classpath。
 
 新增数据源时：

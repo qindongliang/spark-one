@@ -9,28 +9,72 @@ SparkOne 对接 HDFS/Hive 的原则：
 
 本机测试环境：
 
+`conf/sparkone.conf` 中至少配置 local 引擎的 Hadoop/Hive XML：
+
+```hocon
+engines {
+  local {
+    type = "local"
+
+    hadoop {
+      confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
+      groupStaticOverrides = "odep=odep"
+    }
+
+    hive {
+      enabled = true
+      confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
+    }
+  }
+}
+```
+
+如果启动前手动拿票据：
+
 ```bash
 export KRB5CCNAME=/tmp/krb5cc_$(id -u)
 kinit -kt /Users/qindongliang/bigdata/odep.keytab odep@HADOOP.COM
 
-HADOOP_CONF_DIR=/Users/qindongliang/bigdata/hadoop/etc/hadoop \
 mvn exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
-  -Dsparkone.hive.enabled=true \
-  -Dsparkone.hive.conf.file=/Users/qindongliang/bigdata/hive/conf/hive-site.xml
+  -Dexec.args="--conf conf/sparkone.conf"
 ```
 
 也可以让 SparkOne 直接用 keytab 登录：
 
+```hocon
+engines {
+  local {
+    type = "local"
+
+    hadoop {
+      confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
+      groupStaticOverrides = "odep=odep"
+    }
+
+    hive {
+      enabled = true
+      confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
+    }
+
+    spark {
+      kerberos {
+        principal = "odep@HADOOP.COM"
+        keytab = "/Users/qindongliang/bigdata/odep.keytab"
+      }
+    }
+
+    kerberos {
+      krb5Conf = "/etc/krb5.conf"
+    }
+  }
+}
+```
+
 ```bash
-HADOOP_CONF_DIR=/Users/qindongliang/bigdata/hadoop/etc/hadoop \
 mvn exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
-  -Dsparkone.hive.enabled=true \
-  -Dsparkone.hive.conf.file=/Users/qindongliang/bigdata/hive/conf/hive-site.xml \
-  -Dspark.kerberos.principal=odep@HADOOP.COM \
-  -Dspark.kerberos.keytab=/Users/qindongliang/bigdata/odep.keytab \
-  -Djava.security.krb5.conf=/etc/krb5.conf
+  -Dexec.args="--conf conf/sparkone.conf"
 ```
 
 或者使用类似 Spark 的程序参数：
@@ -116,27 +160,23 @@ SIMPLE authentication is not enabled. Available: [TOKEN, KERBEROS]
 
 - `conf/sparkone.conf` 是否存在，或启动参数是否显式包含 `--conf conf/sparkone.conf`。
 - IDEA 的 Working directory 是否是 `/Users/qindongliang/project/ai/spark-one`，否则默认配置文件路径会找不到。
-- `hadoop.confDir` 是否能读到 `core-site.xml`，其中应包含 `hadoop.security.authentication=kerberos`。
-- `hive.enabled=true` 且 `hive.confFile` 指向正确的 `hive-site.xml`。
-- `spark.kerberos.principal/keytab` 和 `kerberos.krb5Conf` 是否正确，principal 建议使用 keytab 里的完整主体名，例如 `odep@HADOOP.COM`；或者启动前是否已经手动 `kinit`。
+- `engines.local.hadoop.confDir` 是否能读到 `core-site.xml`，其中应包含 `hadoop.security.authentication=kerberos`。
+- `engines.local.hive.enabled=true` 且 `engines.local.hive.confFile` 指向正确的 `hive-site.xml`。
+- `engines.local.spark.kerberos.principal/keytab` 和 `engines.local.kerberos.krb5Conf` 是否正确，principal 建议使用 keytab 里的完整主体名，例如 `odep@HADOOP.COM`；或者启动前是否已经手动 `kinit`。
 - IDEA 控制台是否能看到 `Refreshed Hadoop UserGroupInformation from SparkContext HadoopConf`，且 `UGI security enabled after SparkContext start: true`。
 
 配置入口：
 
-- `sparkone.hadoop.conf.dir` / `HADOOP_CONF_DIR`
-- `sparkone.hadoop.conf.files` / `SPARKONE_HADOOP_CONF_FILES`
-- `sparkone.hadoop.group.static.mapping.overrides` / `SPARKONE_HADOOP_GROUP_STATIC_MAPPING_OVERRIDES`
-- `sparkone.hive.enabled` / `SPARKONE_HIVE_ENABLED`
-- `sparkone.hive.conf.file` / `SPARKONE_HIVE_CONF_FILE`
-- `sparkone.hive.conf.dir` / `HIVE_CONF_DIR`
-- `spark.kerberos.principal`
-- `spark.kerberos.keytab`
-- `java.security.krb5.conf`
+- HOCON：`engines.local.hadoop.confDir`、`engines.local.hadoop.confFiles`、`engines.local.hadoop.groupStaticOverrides`
+- HOCON：`engines.local.hive.enabled`、`engines.local.hive.confFile`、`engines.local.hive.confDir`
+- HOCON：`engines.local.spark.kerberos.principal`、`engines.local.spark.kerberos.keytab`、`engines.local.kerberos.krb5Conf`
+- 启动参数：`--hadoop-conf-dir`、`--hadoop-conf-files`、`--hive-conf`、`--hive-conf-dir`、`--principal`、`--keytab`、`--krb5-conf`
+- 环境变量仍可作为 local Spark runtime 的兜底：`HADOOP_CONF_DIR`、`SPARKONE_HADOOP_CONF_FILES`、`SPARKONE_HADOOP_GROUP_STATIC_MAPPING_OVERRIDES`、`SPARKONE_HIVE_ENABLED`、`SPARKONE_HIVE_CONF_FILE`、`HIVE_CONF_DIR`
 
 注意：
 
 - macOS 上 `kinit` 默认可能写入 KCM ticket cache，Java/Hadoop 不一定能识别；推荐显式设置 `KRB5CCNAME=/tmp/krb5cc_$(id -u)`。
-- 本地 macOS 没有 Kerberos 用户对应的系统账号时，Hadoop 默认组解析会执行类似 `id odep` 并打印 WARN。`conf/sparkone.conf` 可配置 `hadoop.groupStaticOverrides = "odep=odep"` 绕开本机 Unix 组查询；如果没有显式配置，SparkOne 会根据 Kerberos principal 自动补一条 short name 映射。
+- 本地 macOS 没有 Kerberos 用户对应的系统账号时，Hadoop 默认组解析会执行类似 `id odep` 并打印 WARN。`conf/sparkone.conf` 可配置 `engines.local.hadoop.groupStaticOverrides = "odep=odep"` 绕开本机 Unix 组查询；如果没有显式配置，SparkOne 会根据 Kerberos principal 自动补一条 short name 映射。
 - 如果 Hive metastore 版本或协议不兼容，优先调整 Spark 3.5 的 Hive metastore client 配置，不引入 Spark 3.3.4 的 jar。
 - 程序会把 XML 配置转换成 `spark.hadoop.*` 注入 Spark，并用加载到的 HadoopConf 初始化 `UserGroupInformation`。
 - 当前 Maven runtime 传递的 Hadoop client 是 `3.3.4`，测试集群 Hadoop 是 `2.8.5`。本地 MVP 不建议强行替换 Spark 3.5 的 Hadoop 依赖；如果确认是客户端/集群版本兼容问题，优先把执行面迁到集群匹配的 Kyuubi/Spark engine，SparkOne 只保留 SQL 编译与服务层。

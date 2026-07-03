@@ -281,7 +281,7 @@ final class SparkOneRuntime(
   }
 }
 
-private final class NativeSqlSafetyGuard {
+private[runtime] final class NativeSqlSafetyGuard {
   import NativeSqlSafetyGuard._
 
   private val logger = LoggerFactory.getLogger(getClass)

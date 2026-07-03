@@ -1,6 +1,6 @@
 package ai.sparkone.server
 
-import ai.sparkone.runtime.{PreviewConfig, SparkOneRuntime}
+import ai.sparkone.runtime.{PreviewConfig, SparkOneEngineRegistry}
 import ai.sparkone.sql.{SparkOneCompiler, SparkSqlValidator}
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
@@ -22,7 +22,7 @@ object SparkOneServer {
   private val mapper = new ObjectMapper().registerModule(DefaultScalaModule)
   private val compiler = new SparkOneCompiler(new SparkSqlValidator)
   private val SimpleIdentifier = "^[A-Za-z_][A-Za-z0-9_]*$".r
-  @volatile private var runtimeRef: SparkOneRuntime = _
+  @volatile private var enginesRef: SparkOneEngineRegistry = _
 
   def main(args: Array[String]): Unit = {
     val options = ServerOptions.parse(args)
@@ -57,7 +57,7 @@ object SparkOneServer {
     app.post("/api/preview", (ctx: Context) => handlePreview(ctx))
 
     sys.addShutdownHook {
-      Option(runtimeRef).foreach(_.close())
+      Option(enginesRef).foreach(_.close())
     }
 
     logger.info(s"SparkOne SQL is listening on http://$host:$port")
@@ -87,9 +87,11 @@ object SparkOneServer {
   private def handleRun(ctx: Context): Unit = {
     val request = readSqlRequest(ctx)
     try {
-      val result = runtime.run(request.script, request.limit)
+      val engine = engines.get(request.engine)
+      val result = engine.run(request.script, request.limit)
       json(ctx, Map(
         "success" -> result.success,
+        "engine" -> engine.id,
         "showCompiledSql" -> showCompiledSql,
         "statements" -> result.statements))
     } catch {
@@ -102,9 +104,11 @@ object SparkOneServer {
   private def handlePreview(ctx: Context): Unit = {
     try {
       val request = readPreviewRequest(ctx)
-      val result = runtime.previewTable(request.table, request.limit)
+      val engine = engines.get(request.engine)
+      val result = engine.previewTable(request.table, request.limit)
       json(ctx, Map(
         "success" -> true,
+        "engine" -> engine.id,
         "statement" -> result))
     } catch {
       case e: Throwable =>
@@ -118,22 +122,24 @@ object SparkOneServer {
     Map(
       "showCompiledSql" -> showCompiledSql,
       "previewMaxRows" -> preview.maxRows,
-      "defaultResultTab" -> preview.defaultTab)
+      "defaultResultTab" -> preview.defaultTab,
+      "defaultEngine" -> engines.defaultId,
+      "engines" -> engines.infos)
   }
 
   private def showCompiledSql: Boolean = {
     enabled("sparkone.ui.showCompiledSql", defaultValue = false)
   }
 
-  private def runtime: SparkOneRuntime = {
-    if (runtimeRef == null) {
+  private def engines: SparkOneEngineRegistry = {
+    if (enginesRef == null) {
       this.synchronized {
-        if (runtimeRef == null) {
-          runtimeRef = SparkOneRuntime.local()
+        if (enginesRef == null) {
+          enginesRef = SparkOneEngineRegistry.fromSystemProperties()
         }
       }
     }
-    runtimeRef
+    enginesRef
   }
 
   private def readSqlRequest(ctx: Context): SqlRequest = {
@@ -144,7 +150,8 @@ object SparkOneServer {
       .filterNot(_.isNull)
       .map(_.asInt(preview.maxRows))
     val limit = preview.clampRows(requestedLimit)
-    SqlRequest(script, limit)
+    val engine = Option(node.get("engine")).filterNot(_.isNull).map(_.asText()).map(_.trim).filter(_.nonEmpty)
+    SqlRequest(script, limit, engine)
   }
 
   private def readPreviewRequest(ctx: Context): PreviewRequest = {
@@ -157,7 +164,8 @@ object SparkOneServer {
     val requestedLimit = Option(node.get("limit"))
       .filterNot(_.isNull)
       .map(_.asInt(preview.maxRows))
-    PreviewRequest(table, preview.clampRows(requestedLimit))
+    val engine = Option(node.get("engine")).filterNot(_.isNull).map(_.asText()).map(_.trim).filter(_.nonEmpty)
+    PreviewRequest(table, preview.clampRows(requestedLimit), engine)
   }
 
   private def json(ctx: Context, value: Any): Unit = {
@@ -183,9 +191,9 @@ object SparkOneServer {
   }
 }
 
-final case class SqlRequest(script: String, limit: Int)
+final case class SqlRequest(script: String, limit: Int, engine: Option[String])
 
-final case class PreviewRequest(table: String, limit: Int)
+final case class PreviewRequest(table: String, limit: Int, engine: Option[String])
 
 private final case class ServerOptions(port: Option[Int], properties: Map[String, String])
 
@@ -254,7 +262,7 @@ private object ServerOptions {
         val arg = next()
         arg match {
           case "--hive" | "--hive-enabled" =>
-            properties += "sparkone.hive.enabled" -> "true"
+            properties += localProperty("sparkone.hive.enabled") -> "true"
           case value if value.startsWith("--") && value.contains("=") =>
             val Array(name, rawValue) = value.split("=", 2)
             setOption(name, rawValue)
@@ -265,21 +273,21 @@ private object ServerOptions {
           case "--log-level" =>
             properties += "sparkone.logLevel" -> requireValue(arg)
           case "--hadoop-conf-dir" =>
-            properties += "sparkone.hadoop.conf.dir" -> requireValue(arg)
+            properties += localProperty("sparkone.hadoop.conf.dir") -> requireValue(arg)
           case "--hadoop-conf-files" =>
-            properties += "sparkone.hadoop.conf.files" -> requireValue(arg)
+            properties += localProperty("sparkone.hadoop.conf.files") -> requireValue(arg)
           case "--hadoop-group-static-overrides" =>
-            properties += "sparkone.hadoop.group.static.mapping.overrides" -> requireValue(arg)
+            properties += localProperty("sparkone.hadoop.group.static.mapping.overrides") -> requireValue(arg)
           case "--hive-conf" =>
-            properties += "sparkone.hive.conf.file" -> requireValue(arg)
+            properties += localProperty("sparkone.hive.conf.file") -> requireValue(arg)
           case "--hive-conf-dir" =>
-            properties += "sparkone.hive.conf.dir" -> requireValue(arg)
+            properties += localProperty("sparkone.hive.conf.dir") -> requireValue(arg)
           case "--principal" =>
-            properties += "spark.kerberos.principal" -> requireValue(arg)
+            properties += localProperty("spark.kerberos.principal") -> requireValue(arg)
           case "--keytab" =>
-            properties += "spark.kerberos.keytab" -> requireValue(arg)
+            properties += localProperty("spark.kerberos.keytab") -> requireValue(arg)
           case "--krb5-conf" =>
-            properties += "java.security.krb5.conf" -> requireValue(arg)
+            properties += localProperty("java.security.krb5.conf") -> requireValue(arg)
           case "--save-overwrite-policy" =>
             properties += "sparkone.save.overwrite.policy" -> requireValue(arg)
           case "--save-overwrite-backup" =>
@@ -302,14 +310,14 @@ private object ServerOptions {
         case "--host" => properties += "sparkone.host" -> value
         case "--port" => properties += "sparkone.port" -> value
         case "--log-level" => properties += "sparkone.logLevel" -> value
-        case "--hadoop-conf-dir" => properties += "sparkone.hadoop.conf.dir" -> value
-        case "--hadoop-conf-files" => properties += "sparkone.hadoop.conf.files" -> value
-        case "--hadoop-group-static-overrides" => properties += "sparkone.hadoop.group.static.mapping.overrides" -> value
-        case "--hive-conf" => properties += "sparkone.hive.conf.file" -> value
-        case "--hive-conf-dir" => properties += "sparkone.hive.conf.dir" -> value
-        case "--principal" => properties += "spark.kerberos.principal" -> value
-        case "--keytab" => properties += "spark.kerberos.keytab" -> value
-        case "--krb5-conf" => properties += "java.security.krb5.conf" -> value
+        case "--hadoop-conf-dir" => properties += localProperty("sparkone.hadoop.conf.dir") -> value
+        case "--hadoop-conf-files" => properties += localProperty("sparkone.hadoop.conf.files") -> value
+        case "--hadoop-group-static-overrides" => properties += localProperty("sparkone.hadoop.group.static.mapping.overrides") -> value
+        case "--hive-conf" => properties += localProperty("sparkone.hive.conf.file") -> value
+        case "--hive-conf-dir" => properties += localProperty("sparkone.hive.conf.dir") -> value
+        case "--principal" => properties += localProperty("spark.kerberos.principal") -> value
+        case "--keytab" => properties += localProperty("spark.kerberos.keytab") -> value
+        case "--krb5-conf" => properties += localProperty("java.security.krb5.conf") -> value
         case "--save-overwrite-policy" => properties += "sparkone.save.overwrite.policy" -> value
         case "--save-overwrite-backup" => properties += "sparkone.save.overwrite.backup" -> value
         case "--save-overwrite-backup-path" => properties += "sparkone.save.overwrite.backup.path" -> value
@@ -328,6 +336,10 @@ private object ServerOptions {
         throw new IllegalArgumentException(s"Missing value for server argument: $option")
       }
       next()
+    }
+
+    private def localProperty(name: String): String = {
+      s"sparkone.engine.local.local.property.$name"
     }
   }
 }
@@ -352,14 +364,8 @@ private[server] object SparkOneHoconConfig {
     Seq(
       serverProperties(config),
       previewProperties(config),
-      sparkProperties(config),
-      hadoopProperties(config),
-      hiveProperties(config),
-      kerberosProperties(config),
+      engineProperties(config),
       saveProperties(config),
-      jarsProperties(config),
-      catalogProperties(config),
-      dataSourceProperties(config),
       passthroughProperties(config)).flatten.toMap
   }
 
@@ -377,13 +383,65 @@ private[server] object SparkOneHoconConfig {
       string(config, "preview.defaultTab").map(PreviewConfig.DefaultTabKey -> _)).flatten.toMap
   }
 
-  private def sparkProperties(config: Config): Map[String, String] = {
+  private def engineProperties(config: Config): Map[String, String] = {
+    val defaultEngine = string(config, "engines.default").map("sparkone.engine.default" -> _).toMap
+    if (!config.hasPath("engines")) {
+      defaultEngine
+    } else {
+      val engines = config.getConfig("engines").root().keySet().asScala
+        .filter(_ != "default")
+        .flatMap { id =>
+          val engineConfig = config.getConfig(s"engines.$id")
+          singleEngineProperties(id, engineConfig)
+        }
+        .toMap
+      defaultEngine ++ engines
+    }
+  }
+
+  private def singleEngineProperties(id: String, config: Config): Map[String, String] = {
+    val prefix = s"sparkone.engine.$id"
+    val common = Seq(
+      string(config, "type").map(s"$prefix.type" -> _),
+      string(config, "label").map(s"$prefix.label" -> _),
+      boolean(config, "enabled").map(value => s"$prefix.enabled" -> value.toString)).flatten
+
+    val kyuubi =
+      if (!string(config, "type").exists(_.equalsIgnoreCase("kyuubi"))) Seq.empty
+      else Seq(
+        string(config, "url").map(s"$prefix.kyuubi.url" -> _),
+        string(config, "user").map(s"$prefix.kyuubi.user" -> _),
+        string(config, "password").map(s"$prefix.kyuubi.password" -> _),
+        string(config, "driver").map(s"$prefix.kyuubi.driver" -> _)).flatten ++
+        stringMap(config, "options").map { case (key, value) =>
+          s"$prefix.kyuubi.option.$key" -> value
+        }
+
+    val local =
+      if (string(config, "type").exists(_.equalsIgnoreCase("kyuubi"))) Seq.empty
+      else localEngineProperties(prefix, config)
+
+    (common ++ local ++ kyuubi).toMap
+  }
+
+  private def localEngineProperties(prefix: String, config: Config): Seq[(String, String)] = {
+    val propertyPrefix = s"$prefix.local.property"
+    localSparkProperties(propertyPrefix, config) ++
+      localHadoopProperties(propertyPrefix, config) ++
+      localHiveProperties(propertyPrefix, config) ++
+      localKerberosProperties(propertyPrefix, config) ++
+      localJarsProperties(propertyPrefix, config) ++
+      localCatalogProperties(propertyPrefix, config) ++
+      localDataSourceProperties(propertyPrefix, config)
+  }
+
+  private def localSparkProperties(prefix: String, config: Config): Seq[(String, String)] = {
     Seq(
-      string(config, "spark.master").map("spark.master" -> _),
-      string(config, "spark.driverHost").map("spark.driver.host" -> _),
-      string(config, "spark.driverBindAddress").map("spark.driver.bindAddress" -> _),
-      string(config, "spark.kerberos.principal").map("spark.kerberos.principal" -> _),
-      string(config, "spark.kerberos.keytab").map("spark.kerberos.keytab" -> _)).flatten.toMap
+      string(config, "spark.master").map(s"$prefix.spark.master" -> _),
+      string(config, "spark.driverHost").map(s"$prefix.spark.driver.host" -> _),
+      string(config, "spark.driverBindAddress").map(s"$prefix.spark.driver.bindAddress" -> _),
+      string(config, "spark.kerberos.principal").map(s"$prefix.spark.kerberos.principal" -> _),
+      string(config, "spark.kerberos.keytab").map(s"$prefix.spark.kerberos.keytab" -> _)).flatten
   }
 
   private def saveProperties(config: Config): Map[String, String] = {
@@ -401,44 +459,44 @@ private[server] object SparkOneHoconConfig {
       boolean(config, "save.allowNativeDropTable").map(value => "sparkone.save.native.dropTable.enabled" -> value.toString)).flatten.toMap
   }
 
-  private def hadoopProperties(config: Config): Map[String, String] = {
+  private def localHadoopProperties(prefix: String, config: Config): Seq[(String, String)] = {
     Seq(
-      string(config, "hadoop.confDir").map("sparkone.hadoop.conf.dir" -> _),
-      string(config, "hadoop.confFiles").map("sparkone.hadoop.conf.files" -> _),
-      string(config, "hadoop.groupStaticOverrides").map("sparkone.hadoop.group.static.mapping.overrides" -> _)).flatten.toMap
+      string(config, "hadoop.confDir").map(s"$prefix.sparkone.hadoop.conf.dir" -> _),
+      string(config, "hadoop.confFiles").map(s"$prefix.sparkone.hadoop.conf.files" -> _),
+      string(config, "hadoop.groupStaticOverrides").map(s"$prefix.sparkone.hadoop.group.static.mapping.overrides" -> _)).flatten
   }
 
-  private def hiveProperties(config: Config): Map[String, String] = {
+  private def localHiveProperties(prefix: String, config: Config): Seq[(String, String)] = {
     Seq(
-      boolean(config, "hive.enabled").map(value => "sparkone.hive.enabled" -> value.toString),
-      string(config, "hive.confFile").map("sparkone.hive.conf.file" -> _),
-      string(config, "hive.confDir").map("sparkone.hive.conf.dir" -> _)).flatten.toMap
+      boolean(config, "hive.enabled").map(value => s"$prefix.sparkone.hive.enabled" -> value.toString),
+      string(config, "hive.confFile").map(s"$prefix.sparkone.hive.conf.file" -> _),
+      string(config, "hive.confDir").map(s"$prefix.sparkone.hive.conf.dir" -> _)).flatten
   }
 
-  private def kerberosProperties(config: Config): Map[String, String] = {
-    Seq(string(config, "kerberos.krb5Conf").map("java.security.krb5.conf" -> _)).flatten.toMap
+  private def localKerberosProperties(prefix: String, config: Config): Seq[(String, String)] = {
+    Seq(string(config, "kerberos.krb5Conf").map(s"$prefix.java.security.krb5.conf" -> _)).flatten
   }
 
-  private def jarsProperties(config: Config): Map[String, String] = {
+  private def localJarsProperties(prefix: String, config: Config): Seq[(String, String)] = {
     Seq(
-      string(config, "jars.packages").map("spark.jars.packages" -> _),
-      string(config, "jars.jars").map("spark.jars" -> _),
-      string(config, "jars.files").map("spark.files" -> _),
-      string(config, "jars.repositories").map("spark.jars.repositories" -> _)).flatten.toMap
+      string(config, "jars.packages").map(s"$prefix.spark.jars.packages" -> _),
+      string(config, "jars.jars").map(s"$prefix.spark.jars" -> _),
+      string(config, "jars.files").map(s"$prefix.spark.files" -> _),
+      string(config, "jars.repositories").map(s"$prefix.spark.jars.repositories" -> _)).flatten
   }
 
-  private def dataSourceProperties(config: Config): Map[String, String] = {
-    if (!config.hasPath("datasources.mysql")) Map.empty[String, String]
+  private def localDataSourceProperties(prefix: String, config: Config): Seq[(String, String)] = {
+    if (!config.hasPath("datasources.mysql")) Seq.empty[(String, String)]
     else {
       config.getConfig("datasources.mysql").root().keySet().asScala.flatMap { name =>
         val datasource = config.getConfig(s"datasources.mysql.$name")
-        mysqlProperties(name, datasource)
-      }.toMap
+        mysqlProperties(prefix, name, datasource)
+      }.toSeq
     }
   }
 
-  private def mysqlProperties(name: String, config: Config): Map[String, String] = {
-    val prefix = s"sparkone.datasource.mysql.$name"
+  private def mysqlProperties(propertyPrefix: String, name: String, config: Config): Map[String, String] = {
+    val prefix = s"$propertyPrefix.sparkone.datasource.mysql.$name"
     (Seq(
       string(config, "url").map(s"$prefix.url" -> _),
       string(config, "driver").map(s"$prefix.driver" -> _),
@@ -449,19 +507,19 @@ private[server] object SparkOneHoconConfig {
       }).toMap
   }
 
-  private def catalogProperties(config: Config): Map[String, String] = {
+  private def localCatalogProperties(prefix: String, config: Config): Seq[(String, String)] = {
     val doris =
       if (!config.hasPath("catalogs.doris")) Map.empty[String, String]
-      else dorisCatalogProperties(config.getConfig("catalogs.doris"))
+      else dorisCatalogProperties(prefix, config.getConfig("catalogs.doris"))
     val mysql =
       if (!config.hasPath("catalogs.mysql")) Map.empty[String, String]
-      else mysqlCatalogProperties(config.getConfig("catalogs.mysql"))
+      else mysqlCatalogProperties(prefix, config.getConfig("catalogs.mysql"))
 
-    doris ++ mysql
+    (doris ++ mysql).toSeq
   }
 
-  private def mysqlCatalogProperties(config: Config): Map[String, String] = {
-    val prefix = "spark.sql.catalog.mysql"
+  private def mysqlCatalogProperties(propertyPrefix: String, config: Config): Map[String, String] = {
+    val prefix = s"$propertyPrefix.spark.sql.catalog.mysql"
     (Seq(
       string(config, "class").orElse(Some("org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog")).map(prefix -> _),
       string(config, "url").map(s"$prefix.url" -> _),
@@ -474,8 +532,8 @@ private[server] object SparkOneHoconConfig {
       }).toMap
   }
 
-  private def dorisCatalogProperties(config: Config): Map[String, String] = {
-    val prefix = "spark.sql.catalog.doris"
+  private def dorisCatalogProperties(propertyPrefix: String, config: Config): Map[String, String] = {
+    val prefix = s"$propertyPrefix.spark.sql.catalog.doris"
     (Seq(
       string(config, "class").orElse(Some("org.apache.doris.spark.catalog.DorisTableCatalog")).map(prefix -> _),
       string(config, "fenodes").map(s"$prefix.doris.fenodes" -> _),
@@ -492,7 +550,7 @@ private[server] object SparkOneHoconConfig {
       .map(entry => entry.getKey -> unwrappedString(entry.getValue.unwrapped()))
       .collect {
         case (key, value) if value.nonEmpty &&
-          (key.startsWith("sparkone.") || key.startsWith("spark.") || key == "java.security.krb5.conf") =>
+          key.startsWith("sparkone.") =>
           key -> value
       }
       .toMap

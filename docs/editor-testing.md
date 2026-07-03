@@ -376,19 +376,25 @@ Doris：
 先在 `conf/sparkone.conf` 配置 Spark Doris Catalog。SparkOne 本地运行时会把它转成 `spark.sql.catalog.doris.*`；接 Kyuubi 时，把同样的 Spark 配置放到 Kyuubi/Spark engine：
 
 ```hocon
-catalogs.doris {
-  fenodes = "fe-1:8030,fe-2:8030"
-  queryPort = 9030
-  user = "root"
-  password = "******"
+engines {
+  local {
+    type = "local"
 
-  options {
-    doris.request.retries = 3
+    catalogs.doris {
+      fenodes = "fe-1:8030,fe-2:8030"
+      queryPort = 9030
+      user = "root"
+      password = "******"
+
+      options {
+        doris.request.retries = 3
+      }
+    }
+
+    jars {
+      packages = "org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
+    }
   }
-}
-
-jars {
-  packages = "org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
 }
 
 save {
@@ -727,7 +733,7 @@ order by city;
 
 - `doris.\`app.sparkone_doris_city_result\`` 中 `app` 是 Doris database，`sparkone_doris_city_result` 是 Doris 表名；SparkOne 会补成 Spark Catalog 表名 `doris.app.sparkone_doris_city_result`。
 - `save append/overwrite ... as doris` 都要求目标表已存在；SparkOne 不会自动创建 Doris 表。表结构、key、distribution、分区等用 Doris DDL 先建好。
-- `save doris` 不支持在 SQL 里写 `fenodes/user/password` 等连接 options，这些统一放在 `catalogs.doris` 或 Kyuubi/Spark engine 配置。
+- `save doris` 不支持在 SQL 里写 `fenodes/user/password` 等连接 options，这些统一放在 `engines.local.catalogs.doris` 或 Kyuubi/Spark engine 配置。
 - `save doris` 不支持 `partitionBy`，Doris 的分布、分区和表结构应由 Doris DDL 管理。
 - `save overwrite ... as doris` 需要先用 HOCON 打开 `save.allowDorisOverwrite = true`，再用单条 SQL 的 `sparkoneOverwrite="allow"` 显式确认；`allowNativeInsertOverwrite` 不能替代这个开关。
 
@@ -736,26 +742,32 @@ MySQL：
 先在 `conf/sparkone.conf` 配置连接，SQL 里只引用连接名：
 
 ```hocon
-datasources.mysql.analytics {
-  url = "jdbc:mysql://192.168.1.179:3306/Dworks?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
-  driver = "com.mysql.cj.jdbc.Driver"
-  user = "root"
-  password = "******"
+engines {
+  local {
+    type = "local"
 
-  options {
-    fetchsize = 1000
-    batchsize = 1000
-  }
-}
+    datasources.mysql.analytics {
+      url = "jdbc:mysql://192.168.1.179:3306/Dworks?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+      driver = "com.mysql.cj.jdbc.Driver"
+      user = "root"
+      password = "******"
 
-catalogs.mysql {
-  url = "jdbc:mysql://192.168.1.179:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
-  driver = "com.mysql.cj.jdbc.Driver"
-  user = "root"
-  password = "******"
+      options {
+        fetchsize = 1000
+        batchsize = 1000
+      }
+    }
 
-  options {
-    fetchsize = 1000
+    catalogs.mysql {
+      url = "jdbc:mysql://192.168.1.179:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+      driver = "com.mysql.cj.jdbc.Driver"
+      user = "root"
+      password = "******"
+
+      options {
+        fetchsize = 1000
+      }
+    }
   }
 }
 ```
@@ -763,9 +775,15 @@ catalogs.mysql {
 运行时还需要 MySQL JDBC driver 在 classpath 中，可以在 HOCON 里选择 `packages` 或本地 JAR：
 
 ```hocon
-jars {
-  packages = "com.mysql:mysql-connector-j:8.4.0"
-  # jars = "/Users/qindongliang/.m2/repository/com/mysql/mysql-connector-j/8.4.0/mysql-connector-j-8.4.0.jar"
+engines {
+  local {
+    type = "local"
+
+    jars {
+      packages = "com.mysql:mysql-connector-j:8.4.0"
+      # jars = "/Users/qindongliang/.m2/repository/com/mysql/mysql-connector-j/8.4.0/mysql-connector-j-8.4.0.jar"
+    }
+  }
 }
 ```
 
@@ -841,9 +859,9 @@ show tables in mysql.Dworks;
 select * from mysql.Dworks.sparkone_mysql_seed limit 10;
 ```
 
-说明：`mysql` 由 HOCON 的 `catalogs.mysql` 显式注册。它适合浏览和原生查询；`load/save mysql` 仍走 `datasources.mysql.*` adapter，用于隐藏连接信息、控制 `dbtable/query` 和执行 save 安全策略。
+说明：`mysql` 由 HOCON 的 `engines.local.catalogs.mysql` 显式注册。它适合浏览和原生查询；`load/save mysql` 仍走 local 引擎的 `datasources.mysql.*` adapter，用于隐藏连接信息、控制 `dbtable/query` 和执行 save 安全策略。
 
-`catalogs.mysql.url` 需要带 `databaseTerm=SCHEMA`。Spark 原生 JDBC Catalog 会把 `mysql.Dworks` 中的 `Dworks` 当 JDBC `schemaPattern` 查询元数据；MySQL Connector/J 默认把 MySQL database 当 JDBC catalog。加上该参数后，`show tables in mysql.Dworks` 才会按 `Dworks` 这个库过滤。
+`engines.local.catalogs.mysql.url` 需要带 `databaseTerm=SCHEMA`。Spark 原生 JDBC Catalog 会把 `mysql.Dworks` 中的 `Dworks` 当 JDBC `schemaPattern` 查询元数据；MySQL Connector/J 默认把 MySQL database 当 JDBC catalog。加上该参数后，`show tables in mysql.Dworks` 才会按 `Dworks` 这个库过滤。
 
 `load mysql` 会在运行时用 Spark JDBC reader 注册临时视图。`Compile` 只展示安全占位 SQL，不展示 HOCON 里的账号密码：
 
@@ -1401,12 +1419,18 @@ select * from t limit 20;
 `excel` 当前只是 provider 别名，主包不内置 Excel connector。要测试 Excel，启动时必须提供对应 provider jar 或 Maven package，例如在 `conf/sparkone.conf` 中配置：
 
 ```hocon
-jars {
-  packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
-  # 或者直接指定本地 jar：
-  # jars = "/Users/qindongliang/.m2/repository/dev/mauch/spark-excel_2.12/3.5.6_0.31.2/spark-excel_2.12-3.5.6_0.31.2.jar"
-  # 如果只是分发普通配置文件，用 files，不要用来放 provider jar：
-  # files = "/path/to/app.conf"
+engines {
+  local {
+    type = "local"
+
+    jars {
+      packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
+      # 或者直接指定本地 jar：
+      # jars = "/Users/qindongliang/.m2/repository/dev/mauch/spark-excel_2.12/3.5.6_0.31.2/spark-excel_2.12-3.5.6_0.31.2.jar"
+      # 如果只是分发普通配置文件，用 files，不要用来放 provider jar：
+      # files = "/path/to/app.conf"
+    }
+  }
 }
 ```
 
@@ -1424,12 +1448,18 @@ select * from users_excel limit 20;
 
 如果 provider 没加载，`Compile` 可能成功，但 `Run` 会失败，因为真正解析 provider 的是 Spark runtime。
 
-如果启动 SparkContext 时出现 `Failed to connect to /192.168...` 且日志里有 `Added JAR ... at spark://.../jars/...`，通常是本地调试时 Spark driver 广播地址和实际绑定地址不一致。`conf/sparkone.conf` 的 `spark` 建议保留：
+如果启动 SparkContext 时出现 `Failed to connect to /192.168...` 且日志里有 `Added JAR ... at spark://.../jars/...`，通常是本地调试时 Spark driver 广播地址和实际绑定地址不一致。`conf/sparkone.conf` 的 `engines.local.spark` 建议保留：
 
 ```hocon
-spark {
-  driverHost = "127.0.0.1"
-  driverBindAddress = "127.0.0.1"
+engines {
+  local {
+    type = "local"
+
+    spark {
+      driverHost = "127.0.0.1"
+      driverBindAddress = "127.0.0.1"
+    }
+  }
 }
 ```
 

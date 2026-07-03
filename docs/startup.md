@@ -91,7 +91,7 @@ SIMPLE authentication is not enabled. Available: [TOKEN, KERBEROS]
 
 通常说明当前进程没有读到 Kerberos/Hadoop/Hive 配置，或 keytab 登录没有生效。先确认 IDEA 的 Working directory 是项目根目录，并且 `conf/sparkone.conf` 存在；或者在 Program arguments 显式填写 `--conf conf/sparkone.conf`。
 
-如果 Hive 查询时出现 `id: odep: no such user` 这类本机用户组 WARN，说明 Hadoop 在 macOS 上尝试解析 Kerberos 用户对应的本地 Unix 组。`conf/sparkone.conf` 里可用 `hadoop.groupStaticOverrides = "odep=odep"` 处理；未显式配置时，SparkOne 会根据 Kerberos principal 自动补一条 short name 映射。
+如果 Hive 查询时出现 `id: odep: no such user` 这类本机用户组 WARN，说明 Hadoop 在 macOS 上尝试解析 Kerberos 用户对应的本地 Unix 组。`conf/sparkone.conf` 里可用 `engines.local.hadoop.groupStaticOverrides = "odep=odep"` 处理；未显式配置时，SparkOne 会根据 Kerberos principal 自动补一条 short name 映射。
 
 日志配置：
 
@@ -138,30 +138,82 @@ server {
   showCompiledSql = false
 }
 
-spark {
-  master = "local[*]"
-  # local[*] 会默认使用 127.0.0.1；YARN/client 模式不要把 driverHost 固定为 127.0.0.1。
-  # driverHost = "127.0.0.1"
-  # driverBindAddress = "127.0.0.1"
+engines {
+  default = "local"
 
-  kerberos {
-    principal = "odep@HADOOP.COM"
-    keytab = "/Users/qindongliang/bigdata/odep.keytab"
+  local {
+    type = "local"
+    enabled = true
+    label = "Local"
+
+    spark {
+      master = "local[*]"
+      # local[*] 会默认使用 127.0.0.1；YARN/client 模式不要把 driverHost 固定为 127.0.0.1。
+      # driverHost = "127.0.0.1"
+      # driverBindAddress = "127.0.0.1"
+
+      kerberos {
+        principal = "odep@HADOOP.COM"
+        keytab = "/Users/qindongliang/bigdata/odep.keytab"
+      }
+    }
+
+    hadoop {
+      confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
+      groupStaticOverrides = "odep=odep"
+    }
+
+    hive {
+      enabled = true
+      confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
+    }
+
+    kerberos {
+      krb5Conf = "/etc/krb5.conf"
+    }
+
+    datasources.mysql {
+      analytics {
+        url = "jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+        driver = "com.mysql.cj.jdbc.Driver"
+        user = "root"
+        password = "change-me"
+
+        options {
+          fetchsize = 1000
+          batchsize = 1000
+        }
+      }
+    }
+
+    catalogs {
+      mysql {
+        url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+        driver = "com.mysql.cj.jdbc.Driver"
+        user = "root"
+        password = "change-me"
+
+        options {
+          fetchsize = 1000
+        }
+      }
+
+      doris {
+        fenodes = "fe-1:8030,fe-2:8030"
+        queryPort = 9030
+        user = "root"
+        password = "change-me"
+
+        options {
+          doris.request.retries = 3
+        }
+      }
+    }
+
+    jars {
+      packages = "com.mysql:mysql-connector-j:8.4.0,org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
+    }
   }
-}
-
-hadoop {
-  confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
-  groupStaticOverrides = "odep=odep"
-}
-
-hive {
-  enabled = true
-  confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
-}
-
-kerberos {
-  krb5Conf = "/etc/krb5.conf"
 }
 
 save {
@@ -181,51 +233,9 @@ save {
   #   "/tmp",
   # ]
 }
-
-datasources.mysql {
-  analytics {
-    url = "jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
-    driver = "com.mysql.cj.jdbc.Driver"
-    user = "root"
-    password = "change-me"
-
-    options {
-      fetchsize = 1000
-      batchsize = 1000
-    }
-  }
-}
-
-catalogs {
-  mysql {
-    url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
-    driver = "com.mysql.cj.jdbc.Driver"
-    user = "root"
-    password = "change-me"
-
-    options {
-      fetchsize = 1000
-    }
-  }
-
-  doris {
-    fenodes = "fe-1:8030,fe-2:8030"
-    queryPort = 9030
-    user = "root"
-    password = "change-me"
-
-    options {
-      doris.request.retries = 3
-    }
-  }
-}
-
-jars {
-  packages = "com.mysql:mysql-connector-j:8.4.0,org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
-}
 ```
 
-MySQL catalog 单独配置在 `catalogs.mysql`，不会从 `datasources.mysql.analytics` 隐式生成：
+MySQL catalog 单独配置在 `engines.local.catalogs.mysql`，不会从 `engines.local.datasources.mysql.analytics` 隐式生成：
 
 ```sql
 show namespaces in mysql;
@@ -233,7 +243,7 @@ show tables in mysql.app;
 select * from mysql.app.some_table limit 10;
 ```
 
-这个 catalog 适合浏览和原生查询；`load/save mysql` 仍走 `datasources.mysql.*` adapter，用于隐藏连接信息、控制 `dbtable/query` 和执行 save 安全策略。
+这个 catalog 适合浏览和原生查询；`load/save mysql` 仍走 local 引擎的 `datasources.mysql.*` adapter，用于隐藏连接信息、控制 `dbtable/query` 和执行 save 安全策略。
 
 注意 MySQL catalog 的 JDBC URL 需要带 `databaseTerm=SCHEMA`。Spark JDBC Catalog 会把 `show tables in mysql.app` 里的 `app` 作为 JDBC `schemaPattern` 查询元数据；MySQL Connector/J 默认把 database 当作 JDBC catalog，导致 schemaPattern 过滤不到预期库。设置后，MySQL database 会按 schema 暴露，`show namespaces/tables` 的层级才和 Spark catalog 语法一致。
 

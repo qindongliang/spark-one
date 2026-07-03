@@ -16,14 +16,14 @@ final class DataSourceResolver(
       filter: Option[String] = None): ResolvedLoadSource = {
     val normalized = format.toLowerCase
     if (normalized == "jdbc") {
-      throw new CompileException("SparkOne does not support LOAD jdbc. Use LOAD mysql with HOCON datasource config.")
+      throw new CompileException("SparkOne does not support LOAD jdbc. Use LOAD mysql with the selected local engine's datasources.mysql config.")
     } else if (normalized == "mysql") {
       val target = mysqlTarget(path, "LOAD")
       val dbtable = filter.map(renderMysqlFilteredDbtable(target.dbtable, _)).getOrElse(target.dbtable)
       MysqlLoadSource(dbtable, mysqlOptions(target.connection, dbtable, options))
     } else if (normalized == "doris") {
       if (options.nonEmpty) {
-        throw new CompileException("LOAD doris does not support SQL OPTIONS. Configure Spark Doris Catalog in HOCON catalogs.doris.")
+        throw new CompileException("LOAD doris does not support SQL OPTIONS. Configure Spark Doris Catalog in the selected local engine's catalogs.doris or Kyuubi/Spark engine config.")
       }
       val identifier = SparkOneSqlRender.renderMultipartIdentifier(s"doris.$path", "LOAD doris table")
       val tableExpression = filter.map(condition => s"$identifier WHERE $condition").getOrElse(identifier)
@@ -46,13 +46,13 @@ final class DataSourceResolver(
   def resolveSave(format: String, path: String, options: Seq[(String, String)]): ResolvedSaveSource = {
     val normalized = format.toLowerCase
     if (normalized == "jdbc") {
-      throw new CompileException("SparkOne does not support SAVE jdbc. Use SAVE mysql with HOCON datasource config.")
+      throw new CompileException("SparkOne does not support SAVE jdbc. Use SAVE mysql with the selected local engine's datasources.mysql config.")
     } else if (normalized == "mysql") {
       val target = mysqlTarget(path, "SAVE")
       MysqlSaveSource(target.dbtable, mysqlOptions(target.connection, target.dbtable, options))
     } else if (normalized == "doris") {
       if (options.nonEmpty) {
-        throw new CompileException("SAVE doris does not support SQL OPTIONS. Configure Spark Doris Catalog in HOCON catalogs.doris.")
+        throw new CompileException("SAVE doris does not support SQL OPTIONS. Configure Spark Doris Catalog in the selected local engine's catalogs.doris or Kyuubi/Spark engine config.")
       }
       val identifier = SparkOneSqlRender.renderMultipartIdentifier(s"doris.$path", "SAVE doris table")
       CatalogSaveSource(identifier, SaveTargetType.DorisCatalog, supportsPartitionBy = false)
@@ -84,7 +84,7 @@ final class DataSourceResolver(
       statementOptions: Seq[(String, String)]): Seq[(String, String)] = {
     val forbidden = Set("url", "driver", "user", "password", "dbtable", "query")
     statementOptions.find { case (key, _) => forbidden.contains(key.toLowerCase) }.foreach { case (key, _) =>
-      throw new CompileException(s"MySQL connection option '$key' must be configured in HOCON, not SQL OPTIONS")
+      throw new CompileException(s"MySQL connection option '$key' must be configured in the selected local engine's datasources.mysql, not SQL OPTIONS")
     }
 
     val base = mysqlConnectionOptions(connection)
@@ -117,7 +117,9 @@ final class DataSourceResolver(
 
   private def requiredMysqlProperty(connection: String, key: String): String = {
     optionalMysqlProperty(connection, key).getOrElse {
-      throw new CompileException(s"Missing HOCON config datasources.mysql.$connection.$key for MySQL datasource")
+      throw new CompileException(
+        s"Missing MySQL datasource config for connection '$connection' key '$key' in the selected local engine, " +
+          s"for example engines.local.datasources.mysql.$connection.$key")
     }
   }
 

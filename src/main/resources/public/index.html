@@ -16,6 +16,7 @@
   <main>
     <section class="pane">
       <div class="toolbar">
+        <label>Engine <select id="engine"></select></label>
         <button id="compile" hidden>Compile</button>
         <button class="primary" id="run">Run</button>
       </div>
@@ -36,7 +37,7 @@ select * from city_stats order by city;</textarea>
     <section class="pane">
       <div class="toolbar">
         <div class="status" id="summary">No result</div>
-        <label>Rows <input id="limit" type="number" min="1" max="10" value="10"></label>
+        <label class="rows-control">Rows <input id="limit" type="number" min="1" max="10" value="10"></label>
       </div>
       <div class="output" id="output"></div>
     </section>

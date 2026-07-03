@@ -5,8 +5,9 @@ const statusText = document.getElementById('status');
 const summary = document.getElementById('summary');
 const compileButton = document.getElementById('compile');
 const runButton = document.getElementById('run');
+const engineSelect = document.getElementById('engine');
 const editor = createEditor(script);
-const appConfig = { showCompiledSql: false, previewMaxRows: 10, defaultResultTab: 'schema' };
+const appConfig = { showCompiledSql: false, previewMaxRows: 10, defaultResultTab: 'schema', defaultEngine: 'local' };
 let limitTouched = false;
 
 loadConfig();
@@ -25,6 +26,8 @@ async function loadConfig() {
     compileButton.hidden = !appConfig.showCompiledSql;
     appConfig.previewMaxRows = normalizePositiveInteger(data.previewMaxRows, 10);
     appConfig.defaultResultTab = normalizeResultTab(data.defaultResultTab);
+    appConfig.defaultEngine = String(data.defaultEngine || 'local');
+    renderEngines(Array.isArray(data.engines) ? data.engines : []);
     limit.max = String(appConfig.previewMaxRows);
     if (!limitTouched || !limit.value || Number(limit.value) > appConfig.previewMaxRows) {
       limit.value = String(appConfig.previewMaxRows);
@@ -43,6 +46,7 @@ async function submit(path) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        engine: selectedEngine(),
         script: scope.script,
         limit: Number(limit.value || appConfig.previewMaxRows)
       })
@@ -64,6 +68,25 @@ function normalizePositiveInteger(value, fallback) {
 function normalizeResultTab(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return normalized === 'preview' ? 'preview' : 'schema';
+}
+
+function renderEngines(engines) {
+  engineSelect.innerHTML = '';
+  const available = engines.length ? engines : [{ id: 'local', label: 'Local' }];
+  for (const engine of available) {
+    const option = document.createElement('option');
+    option.value = engine.id;
+    option.textContent = engine.label || engine.id;
+    option.selected = engine.id === appConfig.defaultEngine;
+    engineSelect.appendChild(option);
+  }
+  engineSelect.hidden = available.length <= 1;
+  const label = engineSelect.closest('label');
+  if (label) label.hidden = available.length <= 1;
+}
+
+function selectedEngine() {
+  return engineSelect && engineSelect.value ? engineSelect.value : appConfig.defaultEngine;
 }
 
 function createEditor(textarea) {
@@ -116,6 +139,7 @@ function getScriptScope() {
 function setBusy(busy) {
   compileButton.disabled = busy;
   runButton.disabled = busy;
+  engineSelect.disabled = busy;
   statusText.textContent = busy ? 'Working' : 'Ready';
 }
 
@@ -257,6 +281,7 @@ async function loadPreview(table, pane) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         table,
+        engine: selectedEngine(),
         limit: Number(limit.value || appConfig.previewMaxRows)
       })
     });

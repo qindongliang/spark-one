@@ -120,15 +120,25 @@ label {
   gap: 6px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.rows-control {
   margin-left: auto;
 }
 
-input {
+input,
+select {
   width: 72px;
   height: 30px;
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0 8px;
+}
+
+select {
+  width: 128px;
+  background: #fff;
+  color: var(--text);
 }
 
 textarea {

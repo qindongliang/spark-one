@@ -16,33 +16,125 @@ preview {
   defaultTab = "schema"
 }
 
-spark {
-  master = "local[*]"
-  # local 模式会自动使用 127.0.0.1。
-  # 如果使用 YARN/client 模式，driverHost 应配置为 executor 可访问的地址。
-  # driverHost = "127.0.0.1"
-  # driverBindAddress = "127.0.0.1"
+engines {
+  # local 用于 IDEA / 本地开发调试；Kyuubi 用于远程 SQL gateway。
+  default = "local"
 
-  kerberos {
-    principal = "odep@HADOOP.COM"
-    keytab = "/Users/qindongliang/bigdata/odep.keytab"
+  local {
+    type = "local"
+    enabled = true
+    label = "Local"
+
+    spark {
+      master = "local[*]"
+      # local 模式会自动使用 127.0.0.1。
+      # 如果使用 YARN/client 模式，driverHost 应配置为 executor 可访问的地址。
+      # driverHost = "127.0.0.1"
+      # driverBindAddress = "127.0.0.1"
+
+      kerberos {
+        principal = "odep@HADOOP.COM"
+        keytab = "/Users/qindongliang/bigdata/odep.keytab"
+      }
+    }
+
+    hadoop {
+      confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
+      groupStaticOverrides = "odep=odep"
+      # confFiles = "/path/to/core-site.xml,/path/to/hdfs-site.xml"
+    }
+
+    hive {
+      enabled = true
+      confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
+      # confDir = "/Users/qindongliang/bigdata/hive/conf"
+    }
+
+    kerberos {
+      krb5Conf = "/etc/krb5.conf"
+    }
+
+    datasources.mysql {
+      # MySQL 连接统一放在 HOCON 中，SQL 里只引用连接名，例如 mysql.`analytics.users`。
+      analytics {
+        url = "jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+        driver = "com.mysql.cj.jdbc.Driver"
+        user = "root"
+        password = "change-me"
+
+        # 这里放 Spark JDBC reader/writer 通用参数；SQL 里的 options 可继续补充 batchsize、fetchsize 等非连接参数。
+        options {
+          fetchsize = 1000
+          batchsize = 1000
+        }
+      }
+    }
+
+    catalogs {
+      mysql {
+        # Spark JDBC Catalog 固定注册为 catalog 名 mysql。
+        # SQL 主路径：show namespaces in mysql; show tables in mysql.app; select * from mysql.app.table;
+        # Spark JDBC Catalog 会把 mysql.app 中的 app 作为 JDBC schemaPattern 传给 DatabaseMetaData。
+        # MySQL Connector/J 默认把 database 视为 catalog；这里必须设置 databaseTerm=SCHEMA，
+        # 才能让 show tables in mysql.app 按 MySQL database 正确过滤。
+        # 这是原生 catalog 浏览/查询能力；load/save mysql 仍走上面的 datasources.mysql adapter。
+        url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+        driver = "com.mysql.cj.jdbc.Driver"
+        user = "root"
+        password = "change-me"
+
+        options {
+          fetchsize = 1000
+        }
+      }
+
+      doris {
+        # Spark Doris Catalog 固定注册为 catalog 名 doris。
+        # SQL 主路径：show namespaces in doris; select * from doris.db.table;
+        fenodes = "127.0.0.1:8030"
+        queryPort = 9030
+        user = "root"
+        password = "change-me"
+
+        # 这里放 Spark Doris Catalog 参数，例如 doris.request.retries、doris.read.mode 等。
+        options {
+          doris.request.retries = 3
+        }
+      }
+    }
+
+    jars {
+      # 等价于 spark-submit --packages / spark.jars.packages。
+      # packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
+      # MySQL 连接器也可以用 packages 引入，例如：
+      # packages = "com.mysql:mysql-connector-j:8.4.0"
+      # Doris 4.x / Spark 3.5 可引入：
+      # packages = "org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
+      # 等价于 spark-submit --jars / spark.jars，用于依赖类 JAR。
+      # jars = "/path/to/provider.jar,/path/to/another-provider.jar"
+      # 等价于 spark-submit --files / spark.files，用于普通文件，不用于依赖类 JAR。
+      # files = "/path/to/app.conf,/path/to/dict.txt"
+      # packages 解析时使用的额外 Maven 仓库。
+      # repositories = "https://repo1.maven.org/maven2"
+    }
   }
-}
 
-hadoop {
-  confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
-  groupStaticOverrides = "odep=odep"
-  # confFiles = "/path/to/core-site.xml,/path/to/hdfs-site.xml"
-}
+  kyuubi {
+    type = "kyuubi"
+    enabled = false
+    label = "Kyuubi"
+    url = "jdbc:kyuubi://127.0.0.1:10009/default"
+    # user = "odep"
+    # password = "change-me"
+    # driver = "org.apache.kyuubi.jdbc.KyuubiHiveDriver"
 
-hive {
-  enabled = true
-  confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
-  # confDir = "/Users/qindongliang/bigdata/hive/conf"
-}
-
-kerberos {
-  krb5Conf = "/etc/krb5.conf"
+    # 这里放 Kyuubi JDBC 连接属性，例如 Kerberos 客户端参数：
+    # options {
+    #   kyuubiClientPrincipal = "odep@HADOOP.COM"
+    #   kyuubiClientKeytab = "/Users/qindongliang/bigdata/odep.keytab"
+    #   kyuubiServerPrincipal = "kyuubi/host@HADOOP.COM"
+    # }
+  }
 }
 
 save {
@@ -66,7 +158,7 @@ save {
   # 该开关只允许通过启动配置打开，不允许被 SQL 或 SET 覆盖。
   allowNativeDropTable = false
   # 全局保护 overwrite 边界路径。命中后不允许被 SQL 参数或 SET 覆盖。
-  # 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
+  # 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体目录。
   # 例如配置 "/public/odep/user" 后，"/public/odep/user" 会被拦截，
   # "/public/odep/user/userA" 可以写。
   # 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
@@ -76,68 +168,4 @@ save {
   #   "/user",
   #   "/tmp",
   # ]
-}
-
-datasources.mysql {
-  # MySQL 连接统一放在 HOCON 中，SQL 里只引用连接名，例如 mysql.`analytics.users`。
-  analytics {
-    url = "jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
-    driver = "com.mysql.cj.jdbc.Driver"
-    user = "root"
-    password = "change-me"
-
-    # 这里放 Spark JDBC reader/writer 通用参数；SQL 里的 options 可继续补充 batchsize、fetchsize 等非连接参数。
-    options {
-      fetchsize = 1000
-      batchsize = 1000
-    }
-  }
-}
-
-catalogs {
-  mysql {
-    # Spark JDBC Catalog 固定注册为 catalog 名 mysql。
-    # SQL 主路径：show namespaces in mysql; show tables in mysql.app; select * from mysql.app.table;
-    # Spark JDBC Catalog 会把 mysql.app 中的 app 作为 JDBC schemaPattern 传给 DatabaseMetaData。
-    # MySQL Connector/J 默认把 database 视为 catalog；这里必须设置 databaseTerm=SCHEMA，
-    # 才能让 show tables in mysql.app 按 MySQL database 正确过滤。
-    # 这是原生 catalog 浏览/查询能力；load/save mysql 仍走上面的 datasources.mysql adapter。
-    url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
-    driver = "com.mysql.cj.jdbc.Driver"
-    user = "root"
-    password = "change-me"
-
-    options {
-      fetchsize = 1000
-    }
-  }
-
-  doris {
-    # Spark Doris Catalog 固定注册为 catalog 名 doris。
-    # SQL 主路径：show namespaces in doris; select * from doris.db.table;
-    fenodes = "127.0.0.1:8030"
-    queryPort = 9030
-    user = "root"
-    password = "change-me"
-
-    # 这里放 Spark Doris Catalog 参数，例如 doris.request.retries、doris.read.mode 等。
-    options {
-      doris.request.retries = 3
-    }
-  }
-}
-
-jars {
-  # 等价于 spark-submit --packages / spark.jars.packages。
-  # packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
-  # MySQL 连接器也可以用 packages 引入，例如：
-  # packages = "com.mysql:mysql-connector-j:8.4.0"
-  # Doris 4.x / Spark 3.5 可引入：
-  # packages = "org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
-  # 等价于 spark-submit --jars / spark.jars，用于依赖类 JAR。
-  # jars = "/path/to/provider.jar,/path/to/another-provider.jar"
-  # 等价于 spark-submit --files / spark.files，用于普通文件，不用于依赖类 JAR。
-  # files = "/path/to/app.conf,/path/to/dict.txt"
-  # packages 解析时使用的额外 Maven 仓库。
-  # repositories = "https://repo1.maven.org/maven2"
 }
