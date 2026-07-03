@@ -150,10 +150,7 @@ final class KyuubiJdbcEngine(
   }
 
   override def close(): Unit = runLock.synchronized {
-    if (connectionRef != null) {
-      connectionRef.close()
-      connectionRef = null
-    }
+    closeConnection()
   }
 
   private def execute(
@@ -271,17 +268,27 @@ final class KyuubiJdbcEngine(
   }
 
   private def withStatement[T](body: Statement => T): T = {
-    val statement = connection.createStatement()
+    withStatement(body, retryOnReconnect = true)
+  }
+
+  private def withStatement[T](body: Statement => T, retryOnReconnect: Boolean): T = {
+    var statement: Statement = null
+    val hadConnection = connectionRef != null
     try {
+      statement = connection.createStatement()
       body(statement)
     } catch {
+      case NonFatal(e) if retryOnReconnect && hadConnection && shouldReconnect(e) =>
+        logger.warn(s"Kyuubi connection for engine $id is stale, reconnecting once: ${errorMessage(e)}")
+        closeConnection()
+        withStatement(body, retryOnReconnect = false)
       case NonFatal(e) =>
-        if (connectionRef != null && !connectionRef.isValid(1)) {
-          close()
+        if (shouldReconnect(e)) {
+          closeConnection()
         }
         throw e
     } finally {
-      statement.close()
+      closeStatement(statement)
     }
   }
 
@@ -296,6 +303,49 @@ final class KyuubiJdbcEngine(
       logger.info(s"Connected to Kyuubi engine $id at ${redactJdbcUrl(config.url)}")
     }
     connectionRef
+  }
+
+  private def closeConnection(): Unit = {
+    val current = connectionRef
+    connectionRef = null
+    if (current != null) {
+      try {
+        current.close()
+      } catch {
+        case NonFatal(e) =>
+          logger.warn(s"Failed to close Kyuubi connection for engine $id: ${errorMessage(e)}")
+      }
+    }
+  }
+
+  private def closeStatement(statement: Statement): Unit = {
+    if (statement != null) {
+      try {
+        statement.close()
+      } catch {
+        case NonFatal(e) =>
+          logger.warn(s"Failed to close Kyuubi statement for engine $id: ${errorMessage(e)}")
+          if (shouldReconnect(e)) {
+            closeConnection()
+          }
+      }
+    }
+  }
+
+  private def shouldReconnect(error: Throwable): Boolean = {
+    def loop(current: Throwable): Boolean = {
+      if (current == null) false
+      else {
+        val message = errorMessage(current).toLowerCase
+        message.contains("could not send message") ||
+        message.contains("connection reset") ||
+        message.contains("broken pipe") ||
+        message.contains("invalid session") ||
+        (message.contains("session") && message.contains("closed")) ||
+        loop(current.getCause)
+      }
+    }
+    loop(error)
   }
 
   private def elapsedMs(started: Long): Long = {

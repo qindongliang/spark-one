@@ -167,16 +167,21 @@ engines {
     enabled = true
     label = "Kyuubi"
     url = "jdbc:kyuubi://kyuubi-host:10009/default"
-    user = "odep"
+
+    # 默认不传 user。业务执行身份以 Kyuubi engine 侧配置为准。
+    # 只有 Kyuubi Server 开启客户端认证时，才配置 user/password/options。
+    # user = "sparkone"
     # password = "change-me"
     # options {
-    #   kyuubiClientPrincipal = "odep@HADOOP.COM"
-    #   kyuubiClientKeytab = "/path/to/odep.keytab"
+    #   kyuubiClientPrincipal = "sparkone@HADOOP.COM"
+    #   kyuubiClientKeytab = "/path/to/sparkone.keytab"
     #   kyuubiServerPrincipal = "kyuubi/kyuubi-host@HADOOP.COM"
     # }
   }
 }
 ```
+
+SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户。统一执行身份应放在 Kyuubi Server/engine 配置中，例如本地单用户测试可在 Kyuubi 侧设置 `kyuubi.engine.share.level=SERVER`、`kyuubi.engine.doAs.enabled=false`，并由 `spark.kerberos.principal`、`spark.kerberos.keytab` 决定 Spark engine 登录身份。
 
 Kyuubi 交互说明：
 

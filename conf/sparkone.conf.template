@@ -123,15 +123,18 @@ engines {
     type = "kyuubi"
     enabled = false
     label = "Kyuubi"
-    url = "jdbc:kyuubi://127.0.0.1:10009/default"
-    # user = "odep"
+    url = "jdbc:kyuubi://192.168.202.187:10009/default"
+
+    # 默认不传 user，业务执行身份以 Kyuubi engine 侧配置为准。
+    # 只有 Kyuubi Server 开启客户端认证时，才配置 user/password/options。
+    # user = "sparkone"
     # password = "change-me"
     # driver = "org.apache.kyuubi.jdbc.KyuubiHiveDriver"
 
-    # 这里放 Kyuubi JDBC 连接属性，例如 Kerberos 客户端参数：
+    # 这里放 Kyuubi JDBC 客户端认证属性，不用于决定 Spark engine 执行用户：
     # options {
-    #   kyuubiClientPrincipal = "odep@HADOOP.COM"
-    #   kyuubiClientKeytab = "/Users/qindongliang/bigdata/odep.keytab"
+    #   kyuubiClientPrincipal = "sparkone@HADOOP.COM"
+    #   kyuubiClientKeytab = "/path/to/sparkone.keytab"
     #   kyuubiServerPrincipal = "kyuubi/host@HADOOP.COM"
     # }
   }

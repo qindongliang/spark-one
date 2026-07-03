@@ -274,7 +274,7 @@ final class SparkOneServerConfigTest {
     assertEquals("true", properties("sparkone.engine.local.enabled"))
     assertEquals("kyuubi", properties("sparkone.engine.kyuubi.type"))
     assertEquals("false", properties("sparkone.engine.kyuubi.enabled"))
-    assertEquals("jdbc:kyuubi://127.0.0.1:10009/default", properties("sparkone.engine.kyuubi.kyuubi.url"))
+    assertEquals("jdbc:kyuubi://192.168.202.187:10009/default", properties("sparkone.engine.kyuubi.kyuubi.url"))
     assertEquals("false", properties("sparkone.save.mysql.overwrite.enabled"))
     assertEquals("false", properties("sparkone.save.doris.overwrite.enabled"))
     assertEquals("jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",
