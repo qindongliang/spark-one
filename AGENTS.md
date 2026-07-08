@@ -2,7 +2,26 @@
 
 默认用中文解释。
 
-这是一个 SQL-first 的 SparkOne MVP。进入项目后先读：
+这是一个 SQL-first 的 SparkOne MVP。项目目标是以 SparkOne + Kyuubi 打造新一代数据计算平台：SparkOne 保持轻量 SQL/DSL 编译与提交入口，Kyuubi 承接远程 Spark SQL gateway 和多运行环境接入，底层语义尽量贴近 Spark 原生 SQL。
+
+演进原则：
+
+- 借鉴旧平台的 SQL 体验、数据平台入口、作业提交链路和工程经验，但不照搬重运行时。
+- 弃用旧实现里笨重、强耦合、运行时职责混杂、与 Spark SQL 原生语义不够适配的部分。
+- 新能力优先落在 Spark 原生 SQL、Spark catalog、Kyuubi engine 配置和薄 DSL 编译层，不把 SparkOne 做成新的大而全计算引擎。
+
+本地参考项目：
+
+- `references/kyuubi`：Kyuubi 原生源码，是后续远程 SQL gateway、会话、认证、引擎接入的首要参考。
+- `references/spark`：Spark 原生源码，是 Spark SQL 语法、parser、catalog、执行语义的首要参考。
+- `references/rms`：旧平台登录与跳转入口；核心链路是从 RMS 进入 ODEP Web 数据平台。
+- `references/odep-web`：旧计算平台前端，可参考交互、页面组织、用户工作流和 SQL 编辑体验。
+- `references/odep-system`：旧计算平台后端服务，可参考平台服务边界、任务提交链路，以及通过 MLSQL 提交 Spark 计算任务的对接方式。
+- `references/mlsql`：旧平台包装 Spark 服务的 SQL 引擎；只吸收有价值的 SQL 使用体验，不复刻其重 session/job/auth/runtime 混合结构。
+
+旧平台链路可理解为：`rms -> odep-web -> odep-system -> mlsql -> spark`，也就是从 RMS 登录跳转到 ODEP Web，再由 ODEP System 访问 MLSQL 提交 Spark 计算任务。SparkOne 的目标不是复制这条链路，而是把其中有价值的数据平台体验收敛到更轻、更贴近 Spark SQL 原生协议的 `sparkone -> kyuubi -> spark` 路线。
+
+进入项目后先读：
 
 - 架构与边界：[docs/architecture.md](docs/architecture.md)
 - 编译器与 ANTLR：[docs/compiler.md](docs/compiler.md)
