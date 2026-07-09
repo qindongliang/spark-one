@@ -1123,6 +1123,77 @@ select * from mysql_overwritten_result order by city;
 - `save overwrite ... as mysql` 需要先用 HOCON 打开 `save.allowMysqlOverwrite = true`，再用单条 SQL 的 `sparkoneOverwrite="allow"` 显式确认；SparkOne 不会对 MySQL 表做备份。
 - `load` 会注册临时视图；普通 `Run` 默认只展示 schema，不自动拉取数据。需要看样例数据时，在该结果的 Preview tab 里点 `Preview`，预览行数受 `preview.maxRows` 和页面 `Rows` 共同限制。需要更精确抽样时，仍建议在后续 `select * from mysql_seed limit 10` 中显式限制。
 
+## 测试 Kyuubi sparkone_mysql Provider
+
+这组用例只用于 SparkOne 选择 Kyuubi engine 时。它不读取 `engines.local.datasources.mysql`，MySQL 连接信息来自 Kyuubi/Spark engine 侧的 `spark.sql.catalog.<catalog>.*`。
+
+前置检查：
+
+- Kyuubi/Spark engine 已配置 `spark.sql.catalog.mysql=org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog` 以及 `spark.sql.catalog.mysql.url/user/password/driver`。
+- `sparkone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar` 已放入 Kyuubi/Spark engine classpath，例如 `spark.jars`。
+- SparkOne 页面右上角选择 Kyuubi engine。
+
+在编辑器里执行：
+
+```sql
+load mysql.`mysql.Dworks.cloud_host_info`
+options partitionColumn="id"
+and lowerBound="1"
+and upperBound="100000"
+and numPartitions="4"
+and fetchsize="10000"
+as orders_big;
+
+select count(*) from orders_big;
+```
+
+预期 Kyuubi operation log 中先出现临时视图注册：
+
+```sql
+CREATE OR REPLACE TEMPORARY VIEW orders_big
+USING sparkone_mysql
+OPTIONS (
+  catalog 'mysql',
+  dbtable 'Dworks.cloud_host_info',
+  partitionColumn 'id',
+  lowerBound '1',
+  upperBound '100000',
+  numPartitions '4',
+  fetchsize '10000'
+)
+```
+
+然后 `select count(*) from orders_big` 触发真正读取。验证分区参数是否生效：
+
+```sql
+EXPLAIN FORMATTED
+SELECT count(*) FROM orders_big;
+```
+
+物理计划里应能看到：
+
+```text
+Scan JDBCRelation(Dworks.cloud_host_info) [numPartitions=4]
+```
+
+再看 Spark engine 的 Spark UI。local/client 模式通常是 `http://127.0.0.1:4040/jobs/`；YARN/Kubernetes/cluster 模式看 Spark application tracking URL。对 `select count(*) from orders_big`，负责 JDBC scan 的 stage 应有 `4/4` tasks。看到 `1/1 skipped` 的辅助 job 不代表分区没生效，通常是 AQE、聚合收尾或结果复用。
+
+如果执行 `load` 后立刻在 Kyuubi log 里看到：
+
+```sql
+SELECT * FROM `orders_big` LIMIT 101
+```
+
+这是 SparkOne 页面预览，不是 `load` 自己全量查询。原因通常是 `preview.defaultTab = "preview"`，或者点击了结果区的 Preview tab。`101` 表示请求 100 行再多取 1 行判断是否截断；实际上限受 `preview.maxRows` 和页面 `Rows` 控制。
+
+注意：
+
+- `load mysql.\`mysql.Dworks.cloud_host_info\`` 中第一个 `mysql` 是 Kyuubi/Spark engine 侧 catalog 名，不是 SparkOne local HOCON 的连接名。
+- 不带大表参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成 catalog SQL；带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时才编译成 `USING sparkone_mysql`。
+- SQL options 禁止传 `url/user/password/driver/dbtable/query`；这些敏感配置留在 Kyuubi/Spark engine 侧。
+- `lowerBound/upperBound` 只决定 Spark JDBC 分区步长，不做业务过滤。业务过滤写 `where "..."`，例如 `where "biz_date = '2026-07-07'"`。
+- `numPartitions` 会增加对 MySQL 的并发连接和 IO 压力。验证通过后再按 MySQL 监控、Spark task 耗时和源表索引情况调大。
+
 ## 使用 SparkOne Save DSL
 
 文件类 save 当前只支持 `save overwrite`。它会转成 Spark SQL 的 `INSERT OVERWRITE DIRECTORY`。

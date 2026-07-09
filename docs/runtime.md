@@ -23,8 +23,8 @@ Javalin HTTP service
 
 ```bash
 sdk env
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.conf"
+mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
+mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.conf"
 ```
 
 默认地址：
@@ -36,8 +36,8 @@ http://127.0.0.1:7070
 指定端口：
 
 ```bash
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args=7071
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--port 7071"
+mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args=7071
+mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--port 7071"
 ```
 
 本地加载外部数据源 provider：
@@ -189,13 +189,20 @@ Kyuubi 交互说明：
 - Kyuubi JDBC 协议兼容 HiveServer2，但连接的是 Kyuubi Server，不是把请求转发给 HiveServer2。
 - 预览数据来自 JDBC `ResultSet`，和 Kyuubi Spark engine 是 client/cluster、运行在 YARN/Kubernetes/Standalone 无直接绑定。
 - Kyuubi 模式下临时视图存在于 JDBC session 对应的远端 Spark engine 中；SparkOne 会复用服务进程内的 Kyuubi connection，以支持同一会话内的 `load ... as t` 后续 preview。
-- `load/save mysql` 当前依赖 SparkOne 本地 DataFrame adapter，Kyuubi 模式暂不支持；远程建议使用 Spark catalog SQL 或 Kyuubi/Spark 侧已配置好的 datasource/catalog。
+- `load mysql` 在 Kyuubi 模式下优先使用 `mysql.\`catalog.db.table\`` 语义，连接信息来自 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`。无分片参数时编译成远端 catalog SQL；带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时编译成 `USING sparkone_mysql`，由 provider 在 Spark engine 内复用 catalog 连接配置。`save mysql` 仍不支持 Kyuubi adapter，远程写入建议使用明确的 catalog SQL 或 Kyuubi/Spark 侧写入能力。
 - Kyuubi 模式无法执行 local 的文件目录备份流程；`save overwrite` 仍会遵守 SparkOne 的显式确认/deny 开关，实际提交和权限边界由 Kyuubi/Spark/Hadoop 侧负责。
+
+Kyuubi/Spark UI：
+
+- Kyuubi Server Web UI 和 Spark engine UI 是两件事。源码或本地二进制包没有用 `./build/dist --web-ui ...` 打包时，Kyuubi Web UI 可能显示 `The Web UI is currently unavailable`；这不影响 Kyuubi JDBC、REST，也不影响 Spark engine 的 Spark UI。
+- Spark UI 属于 Kyuubi 拉起的 Spark engine。local/client 模式常见地址是 `http://127.0.0.1:4040`；如果 engine 跑在 YARN/Kubernetes/cluster 模式，应从 Kyuubi engine 日志、YARN application、Kubernetes driver service 或 Spark tracking URL 进入。
+- 验证 `sparkone_mysql` 大表读取参数时，看 Spark UI 的 Jobs/Stages 和 SQL/DataFrame 页更直接。`select count(*) from orders_big` 对应的 JDBC scan stage 如果有 `4/4` tasks，并且 `EXPLAIN FORMATTED SELECT count(*) FROM orders_big` 里出现 `Scan JDBCRelation(...) [numPartitions=4]`，即可证明 `numPartitions=4` 已进入 Spark JDBC reader。
 
 结果预览：
 
 - `preview.maxRows`：每条 statement 默认最多预览多少行，默认 `10`。服务端会把请求里的 `limit` clamp 到 `1..preview.maxRows`，页面输入不能放大这个上限。
-- `load ... as t` 执行后默认返回临时视图 `t` 的 schema，不自动 collect 数据；需要预览数据时调用 `/api/preview`，请求体为 `{"table":"t","limit":10}`。
+- `load ... as t` 执行后会注册临时视图 `t`。模板配置默认 `preview.defaultTab = "schema"`，此时 Run 只展示 schema；如果本地配置改成 `preview`，或者用户点击结果区 Preview tab，前端会调用 `/api/preview`，请求体为 `{"table":"t","limit":10}`。
+- Kyuubi operation log 中的 `SELECT * FROM \`t\` LIMIT 101` 通常来自 SparkOne 预览请求，不是 `load` 语句本身在全量读取。`101` 是预览行数加 1，用于判断是否截断。
 
 当前限制：
 

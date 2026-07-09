@@ -1,6 +1,6 @@
 package ai.sparkone.runtime
 
-import ai.sparkone.sql.{CompileException, CompiledStatement, LoadTargetType, SaveTargetType, SetValueType, SparkOneCompiler, SparkSqlValidator}
+import ai.sparkone.sql.{CompileException, CompiledStatement, DataSourceResolver, LoadTargetType, MysqlLoadMode, MysqlLoadProfile, SaveTargetType, SetValueType, SparkOneCompiler, SparkSqlValidator}
 import org.slf4j.LoggerFactory
 
 import java.sql.{Connection, DriverManager, ResultSet, ResultSetMetaData, Statement}
@@ -43,7 +43,8 @@ object EngineCapabilities {
     kyuubiExternalEngineConfig = true,
     compileDiagnostics = Seq(
       "Kyuubi engine does not read engines.local catalog, datasource, or jars config; configure catalogs and provider jars in Kyuubi/Spark engine.",
-      "SparkOne load/save mysql adapter is local-only; use Spark JDBC Catalog SQL or Kyuubi/Spark-side datasource configuration."))
+      "Kyuubi load mysql can use mysql.`catalog.db.table`; big-table options require sparkone_mysql provider in Kyuubi/Spark engine.",
+      "SparkOne save mysql adapter is local-only; use remote catalog SQL or Kyuubi/Spark-side datasource configuration."))
 }
 
 final case class EngineInfo(id: String, label: String, engineType: String, capabilities: EngineCapabilities)
@@ -119,13 +120,21 @@ final class KyuubiJdbcEngine(
     val id: String,
     val label: String,
     config: KyuubiJdbcConfig,
-    compiler: SparkOneCompiler = new SparkOneCompiler(new SparkSqlValidator))
+    mysqlLoadProfiles: Map[String, MysqlLoadProfile] = Map.empty,
+    compilerOverride: Option[SparkOneCompiler] = None)
   extends SparkOneEngine {
 
   override val engineType: String = "kyuubi"
   override val capabilities: EngineCapabilities = EngineCapabilities.Kyuubi
 
   private val logger = LoggerFactory.getLogger(getClass)
+  private val compiler = compilerOverride.getOrElse {
+    new SparkOneCompiler(
+      new SparkSqlValidator,
+      new DataSourceResolver(
+        mysqlLoadMode = MysqlLoadMode.KyuubiProfile,
+        mysqlLoadProfiles = mysqlLoadProfiles))
+  }
   private val runLock = new AnyRef
   private val nativeSqlSafetyGuard = new NativeSqlSafetyGuard
   private val saveSafetyGuard = new RemoteSaveSafetyGuard

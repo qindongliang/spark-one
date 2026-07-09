@@ -28,7 +28,7 @@
 
 | 功能 | local | Kyuubi |
 | --- | --- | --- |
-| `load mysql` adapter | 支持 Spark JDBC reader，连接信息来自 `engines.local.datasources.mysql`。 | 不支持；建议使用 Spark JDBC Catalog 或远端已配置 catalog SQL。 |
+| `load mysql` adapter | 支持 Spark JDBC reader，连接信息来自 `engines.local.datasources.mysql`。 | 支持 `mysql.\`catalog.db.table\``：无分片参数走远端 catalog SQL；带分片参数走 `sparkone_mysql` provider，并复用 Kyuubi/Spark engine 侧 `spark.sql.catalog.<catalog>.*`。 |
 | `save mysql` adapter | 支持 Spark JDBC writer，受 MySQL overwrite 安全开关控制。 | 不支持；建议使用远端 catalog SQL 或显式 Spark SQL。 |
 | 文件 overwrite 备份 | 支持 `rename`、`trash` 和失败回滚。 | 不支持；远端提交和权限边界由 Kyuubi/Spark/Hadoop 负责。 |
 | 目标表存在性预检查 | 可通过 `spark.catalog.tableExists` 或本地 JDBC reader 检查。 | 当前主要依赖远端 SQL 执行时报错。 |
@@ -38,9 +38,10 @@
 
 | 优化 | 状态 |
 | --- | --- |
-| `/api/compile` 做 engine-aware 校验 | 已落地。Compile 会按请求 engine 编译；Kyuubi 会提前拒绝 local-only 的 `load/save mysql` adapter。 |
+| `/api/compile` 做 engine-aware 校验 | 已落地。Compile 会按请求 engine 编译；Kyuubi 支持 `mysql.\`catalog.db.table\``，并会提前拒绝不支持的 `save mysql` adapter。 |
 | `/api/config` 暴露 engine capabilities | 已落地。前端可读取 `mysqlAdapter`、`fileSafeBackup`、`externalCatalogConfiguredBySparkOne` 等能力边界。 |
 | Kyuubi compile diagnostics | 已落地第一版。Compile 成功时返回 Kyuubi 配置归属提示，说明 catalog/provider jars 需要在 Kyuubi/Spark engine 侧配置。 |
+| Kyuubi-safe MySQL catalog load | 已落地。Kyuubi `load mysql.\`catalog.db.table\`` 不读取 SparkOne 本地 MySQL 密钥；大表 provider 只传 catalog/table/where/partition 参数。 |
 
 ## 后续优先级
 

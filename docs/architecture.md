@@ -18,11 +18,11 @@ SparkOne DSL + native Spark SQL script
 
 主要代码：
 
-- `src/main/scala/ai/sparkone/sql/SparkOneCompiler.scala`
-- `src/main/scala/ai/sparkone/sql/SparkSqlValidator.scala`
-- `src/main/scala/ai/sparkone/runtime/SparkOneRuntime.scala`
-- `src/main/scala/ai/sparkone/runtime/SparkOneEngine.scala`
-- `src/main/scala/ai/sparkone/server/SparkOneServer.scala`
+- `sparkone-server/src/main/scala/ai/sparkone/sql/SparkOneCompiler.scala`
+- `sparkone-server/src/main/scala/ai/sparkone/sql/SparkSqlValidator.scala`
+- `sparkone-server/src/main/scala/ai/sparkone/runtime/SparkOneRuntime.scala`
+- `sparkone-server/src/main/scala/ai/sparkone/runtime/SparkOneEngine.scala`
+- `sparkone-server/src/main/scala/ai/sparkone/server/SparkOneServer.scala`
 
 推荐继续演进的方向：
 

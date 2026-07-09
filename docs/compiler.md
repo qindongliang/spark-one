@@ -75,7 +75,7 @@ group by city;
 
 ANTLR 文件：
 
-- `src/main/antlr4/ai/sparkone/sql/parser/SparkOneDsl.g4`
+- `sparkone-server/src/main/antlr4/ai/sparkone/sql/parser/SparkOneDsl.g4`
 
 ANTLR 注意事项：
 

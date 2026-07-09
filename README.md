@@ -3,6 +3,14 @@
 SparkOne SQL is a SQL-first MVP inspired by MLSQL. It keeps the custom DSL
 small and delegates Spark SQL syntax to Spark itself.
 
+## Modules
+
+Import the repository root `pom.xml` in IDEA. The root project is a Maven
+aggregator and exposes two modules:
+
+- `sparkone-server`: SparkOne Web/API/compiler/runtime.
+- `sparkone-mysql-provider`: Spark datasource provider jar for Kyuubi/Spark engine.
+
 ## Compiler Strategy
 
 SparkOne only parses its own thin commands with ANTLR:
@@ -49,8 +57,8 @@ options in `.mvn/jvm.config`. More startup methods are documented in
 ```bash
 sdk env
 mvn test
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.conf"
+mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
+mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.conf"
 ```
 
 Open:
@@ -64,8 +72,8 @@ SQL 编辑器测试方法见 [`docs/editor-testing.md`](docs/editor-testing.md)�
 Use another port:
 
 ```bash
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args=7071
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.conf --port 7071"
+mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args=7071
+mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.conf --port 7071"
 ```
 
 Compile only:

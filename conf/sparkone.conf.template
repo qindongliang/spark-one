@@ -137,6 +137,38 @@ engines {
     #   kyuubiClientKeytab = "/path/to/sparkone.keytab"
     #   kyuubiServerPrincipal = "kyuubi/host@HADOOP.COM"
     # }
+
+    # Kyuubi MySQL load 首选直接复用远端 Spark JDBC Catalog，例如：
+    #   load mysql.`mysql_A.Dworks.orders` as orders;
+    #   load mysql.`mysql_A.Dworks.big_orders` options partitionColumn="id" ... as big_orders;
+    #
+    # MySQL url/user/password 必须放在 Kyuubi/Spark engine 侧，例如 spark.sql.catalog.mysql_A.*。
+    # 带 partitionColumn/lowerBound/upperBound/numPartitions/fetchsize 的大表 load 会编译为
+    # USING sparkone_mysql，Kyuubi/Spark engine 侧需要把 sparkone-mysql-provider jar 放进 classpath。
+    #
+    # 兼容/治理增强：仍可使用 SparkOne 侧 mysqlLoadProfiles 做别名、白名单和调参上限。
+    #
+    # 兼容 alias catalog 策略：适合浏览、过滤和轻量读取，编译为 SELECT * FROM mysql_A.Dworks.orders。
+    # mysqlLoadProfiles.sales {
+    #   strategy = "catalog"
+    #   catalog = "mysql_A"
+    #   namespace = "Dworks"
+    #   allowedTables = ["orders", "users"]
+    # }
+    #
+    # 兼容 alias provider 策略：适合大表读取。Kyuubi/Spark engine 侧需要提供 sparkone_mysql provider，
+    # 由 provider 根据 profile/remoteProfile 读取远端 SparkConf/catalog 中的连接信息。
+    # 新主线直接使用 load mysql.`mysql_A.Dworks.orders`，不需要 remoteProfile。
+    # SparkOne 只传 dbtable、whereClauseBase64、partitionColumn/lowerBound/upperBound/numPartitions/fetchsize。
+    # mysqlLoadProfiles.sales_big {
+    #   strategy = "provider"
+    #   provider = "sparkone_mysql"
+    #   remoteProfile = "mysql_A"
+    #   namespace = "Dworks"
+    #   maxNumPartitions = 32
+    #   defaultFetchSize = 10000
+    #   allowedTables = ["orders"]
+    # }
   }
 }
 

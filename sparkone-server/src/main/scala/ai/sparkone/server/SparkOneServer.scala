@@ -202,6 +202,7 @@ private final case class ServerOptions(port: Option[Int], properties: Map[String
 
 private object ServerOptions {
   private val DefaultConfigFile = "conf/sparkone.conf"
+  private val DefaultConfigFiles = Seq(DefaultConfigFile, s"../$DefaultConfigFile")
 
   def parse(args: Array[String]): ServerOptions = {
     val arguments = args.toSeq
@@ -229,10 +230,8 @@ private object ServerOptions {
 
     if (explicitFiles.nonEmpty) {
       explicitFiles.toSeq
-    } else if (Files.isRegularFile(Paths.get(DefaultConfigFile))) {
-      Seq(DefaultConfigFile)
     } else {
-      Seq.empty
+      DefaultConfigFiles.find(path => Files.isRegularFile(Paths.get(path))).toSeq
     }
   }
 
@@ -418,7 +417,7 @@ private[server] object SparkOneHoconConfig {
         string(config, "driver").map(s"$prefix.kyuubi.driver" -> _)).flatten ++
         stringMap(config, "options").map { case (key, value) =>
           s"$prefix.kyuubi.option.$key" -> value
-        }
+        } ++ kyuubiMysqlLoadProfileProperties(prefix, config)
 
     val local =
       if (string(config, "type").exists(_.equalsIgnoreCase("kyuubi"))) Seq.empty
@@ -508,6 +507,28 @@ private[server] object SparkOneHoconConfig {
       stringMap(config, "options").map { case (key, value) =>
         s"$prefix.option.$key" -> value
       }).toMap
+  }
+
+  private def kyuubiMysqlLoadProfileProperties(prefix: String, config: Config): Seq[(String, String)] = {
+    if (!config.hasPath("mysqlLoadProfiles")) Seq.empty
+    else {
+      config.getConfig("mysqlLoadProfiles").root().keySet().asScala.flatMap { name =>
+        val profile = config.getConfig(s"mysqlLoadProfiles.$name")
+        val profilePrefix = s"$prefix.kyuubi.mysqlLoadProfile.$name"
+        Seq(
+          string(profile, "strategy").map(s"$profilePrefix.strategy" -> _),
+          string(profile, "catalog").map(s"$profilePrefix.catalog" -> _),
+          string(profile, "namespace").orElse(string(profile, "defaultNamespace")).map(s"$profilePrefix.namespace" -> _),
+          string(profile, "provider").map(s"$profilePrefix.provider" -> _),
+          string(profile, "remoteProfile").map(s"$profilePrefix.remoteProfile" -> _),
+          int(profile, "maxNumPartitions").map(value => s"$profilePrefix.maxNumPartitions" -> value.toString),
+          int(profile, "defaultFetchSize").map(value => s"$profilePrefix.defaultFetchSize" -> value.toString),
+          stringList(profile, "allowedTables")
+            .map(values => values.map(_.trim).filter(_.nonEmpty).mkString("\n"))
+            .filter(_.nonEmpty)
+            .map(s"$profilePrefix.allowedTables" -> _)).flatten
+      }.toSeq
+    }
   }
 
   private def localCatalogProperties(prefix: String, config: Config): Seq[(String, String)] = {

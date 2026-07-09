@@ -35,7 +35,7 @@ engines {
 export KRB5CCNAME=/tmp/krb5cc_$(id -u)
 kinit -kt /Users/qindongliang/bigdata/odep.keytab odep@HADOOP.COM
 
-mvn exec:java \
+mvn -pl sparkone-server exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
   -Dexec.args="--conf conf/sparkone.conf"
 ```
@@ -72,7 +72,7 @@ engines {
 ```
 
 ```bash
-mvn exec:java \
+mvn -pl sparkone-server exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
   -Dexec.args="--conf conf/sparkone.conf"
 ```
@@ -80,7 +80,7 @@ mvn exec:java \
 或者使用类似 Spark 的程序参数：
 
 ```bash
-mvn exec:java \
+mvn -pl sparkone-server exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
   -Dexec.args="--hive-enabled \
     --hadoop-conf-dir /Users/qindongliang/bigdata/hadoop/etc/hadoop \

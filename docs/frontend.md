@@ -4,9 +4,9 @@
 
 文件：
 
-- `src/main/resources/public/index.html`
-- `src/main/resources/public/style.css`
-- `src/main/resources/public/app.js`
+- `sparkone-server/src/main/resources/public/index.html`
+- `sparkone-server/src/main/resources/public/style.css`
+- `sparkone-server/src/main/resources/public/app.js`
 
 服务端挂载：
 

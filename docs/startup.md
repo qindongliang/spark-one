@@ -12,19 +12,26 @@ ai.sparkone.server.SparkOneServer
 http://127.0.0.1:7070
 ```
 
+## IDEA
+
+用 IDEA 导入仓库根目录的 `pom.xml`。根 POM 是 Maven aggregator，会自动识别：
+
+- `sparkone-server`
+- `sparkone-mysql-provider`
+
 ## Maven
 
 基础启动：
 
 ```bash
 sdk env
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
+mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
 ```
 
 指定端口：
 
 ```bash
-mvn exec:java \
+mvn -pl sparkone-server exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
   -Dexec.args="--port 7071"
 ```
@@ -40,13 +47,13 @@ cp conf/sparkone.conf.template conf/sparkone.conf
 默认启动会自动读取 `conf/sparkone.conf`：
 
 ```bash
-mvn exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
+mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
 ```
 
 也可以显式指定配置文件：
 
 ```bash
-mvn exec:java \
+mvn -pl sparkone-server exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
   -Dexec.args="--conf conf/sparkone.conf"
 ```
@@ -54,7 +61,7 @@ mvn exec:java \
 临时覆盖端口：
 
 ```bash
-mvn exec:java \
+mvn -pl sparkone-server exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
   -Dexec.args="--conf conf/sparkone.conf --port 7071"
 ```
@@ -95,7 +102,7 @@ SIMPLE authentication is not enabled. Available: [TOKEN, KERBEROS]
 
 日志配置：
 
-- 默认使用 `src/main/resources/log4j2.xml`。
+- 默认使用 `sparkone-server/src/main/resources/log4j2.xml`。
 - Console appender 输出到 `SYSTEM_OUT`，IDEA 中普通 INFO/WARN 日志不应再因为 stderr 被整体渲染成红色。
 - 日志级别可通过 `conf/sparkone.conf` 的 `server.logLevel = "warn"` 或启动参数 `--log-level warn` 调整。
 
@@ -250,7 +257,7 @@ select * from mysql.app.some_table limit 10;
 也可以不使用 HOCON，直接传程序参数：
 
 ```bash
-mvn exec:java \
+mvn -pl sparkone-server exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
   -Dexec.args="--hive-enabled \
     --hadoop-conf-dir /Users/qindongliang/bigdata/hadoop/etc/hadoop \

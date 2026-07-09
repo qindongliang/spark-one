@@ -1,6 +1,6 @@
 # Dependencies
 
-核心版本见 `pom.xml`：
+核心版本见根目录 `pom.xml`：
 
 - Scala: `2.12.19`
 - Spark SQL / Hive: `3.5.7`
@@ -54,7 +54,7 @@ Shade jar：
 - 使用 Spark 3.5 自带的 Log4j2 体系。
 - 显式固定 `slf4j-api` 到 `2.0.7`，匹配 Spark 的 `log4j-slf4j2-impl`。
 - 不额外引入 Logback 或 `slf4j-simple`，避免日志后端冲突。
-- 默认配置在 `src/main/resources/log4j2.xml`，Console 输出到 `SYSTEM_OUT`，避免 IDEA 把普通 INFO 日志当作 stderr 渲染成红色。
+- 默认配置在 `sparkone-server/src/main/resources/log4j2.xml`，Console 输出到 `SYSTEM_OUT`，避免 IDEA 把普通 INFO 日志当作 stderr 渲染成红色。
 
 Hive 依赖：
 

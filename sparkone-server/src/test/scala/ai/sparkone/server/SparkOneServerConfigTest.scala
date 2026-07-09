@@ -3,7 +3,7 @@ package ai.sparkone.server
 import org.junit.Assert._
 import org.junit.Test
 
-import java.nio.file.Files
+import java.nio.file.{Files, Paths}
 
 final class SparkOneServerConfigTest {
   private val LocalPrefix = "sparkone.engine.local.local.property"
@@ -262,8 +262,52 @@ final class SparkOneServerConfigTest {
   }
 
   @Test
+  def loadsKyuubiMysqlLoadProfilesFromHocon(): Unit = {
+    val file = Files.createTempFile("sparkone-kyuubi-mysql-load-profile-", ".conf")
+    Files.write(file,
+      """engines.kyuubi {
+        |  type = "kyuubi"
+        |  enabled = true
+        |  url = "jdbc:kyuubi://host:10009/default"
+        |
+        |  mysqlLoadProfiles.sales {
+        |    strategy = "provider"
+        |    catalog = "mysql_A"
+        |    namespace = "Dworks"
+        |    provider = "sparkone_mysql"
+        |    remoteProfile = "mysql_A"
+        |    allowedTables = ["orders", "users"]
+        |    maxNumPartitions = 32
+        |    defaultFetchSize = 10000
+        |  }
+        |}
+        |""".stripMargin.getBytes("UTF-8"))
+
+    try {
+      val properties = ServerConfigFile.load(file.toString)
+      val prefix = "sparkone.engine.kyuubi.kyuubi.mysqlLoadProfile.sales"
+
+      assertEquals("provider", properties(s"$prefix.strategy"))
+      assertEquals("mysql_A", properties(s"$prefix.catalog"))
+      assertEquals("Dworks", properties(s"$prefix.namespace"))
+      assertEquals("sparkone_mysql", properties(s"$prefix.provider"))
+      assertEquals("mysql_A", properties(s"$prefix.remoteProfile"))
+      assertEquals("orders\nusers", properties(s"$prefix.allowedTables"))
+      assertEquals("32", properties(s"$prefix.maxNumPartitions"))
+      assertEquals("10000", properties(s"$prefix.defaultFetchSize"))
+    } finally {
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
   def loadsCommittedHoconTemplate(): Unit = {
-    val properties = ServerConfigFile.load("conf/sparkone.conf.template")
+    val template = Seq(
+      Paths.get("conf/sparkone.conf.template"),
+      Paths.get("../conf/sparkone.conf.template"))
+      .find(Files.isRegularFile(_))
+      .getOrElse(throw new IllegalStateException("Cannot find conf/sparkone.conf.template"))
+    val properties = ServerConfigFile.load(template.toString)
 
     assertEquals("127.0.0.1", properties("sparkone.host"))
     assertEquals("local[*]", properties(s"$LocalPrefix.spark.master"))

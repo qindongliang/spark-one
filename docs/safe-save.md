@@ -175,7 +175,7 @@ save {
 也可以用启动参数临时覆盖：
 
 ```bash
-mvn exec:java \
+mvn -pl sparkone-server exec:java \
   -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
   -Dexec.args="--save-overwrite-policy requireExplicit --save-overwrite-backup rename --save-overwrite-backup-path /tmp/sparkone_back"
 ```
