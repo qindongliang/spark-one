@@ -1333,7 +1333,7 @@ options sparkoneOverwrite="allow";
 - `trash`：写入前移动到 Hadoop Trash，不做自动恢复。
 - `none`：不备份，直接交给 Spark 覆盖，生产环境不建议使用。
 
-更多 Safe Save 测试案例见 [safe-save.md](safe-save.md)。
+更多 Safe Save 测试案例见 [../data/safe-save.md](../data/safe-save.md)。
 
 当前不支持：
 
@@ -1483,7 +1483,7 @@ load hive.`default.some_table` as t;
 select * from t limit 20;
 ```
 
-如果遇到认证、权限、NameNode 或 Hive metastore 错误，优先检查启动配置，而不是 SQL 编辑器本身。相关配置见 [hadoop-hive.md](hadoop-hive.md) 和 [startup.md](startup.md)。
+如果遇到认证、权限、NameNode 或 Hive metastore 错误，优先检查启动配置，而不是 SQL 编辑器本身。相关配置见 [../data/hadoop-hive.md](../data/hadoop-hive.md) 和 [../ops/startup.md](../ops/startup.md)。
 
 ## Excel 测试
 

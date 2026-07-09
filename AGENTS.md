@@ -23,18 +23,15 @@
 
 进入项目后先读：
 
-- 架构与边界：[docs/architecture.md](docs/architecture.md)
-- 编译器与 ANTLR：[docs/compiler.md](docs/compiler.md)
-- 依赖与环境：[docs/dependencies.md](docs/dependencies.md)
-- 数据源扩展：[docs/datasources.md](docs/datasources.md)
-- HDFS 与 Hive 对接：[docs/hadoop-hive.md](docs/hadoop-hive.md)
-- Safe Save 保护：[docs/safe-save.md](docs/safe-save.md)
-- 应用启动方法：[docs/startup.md](docs/startup.md)
-- SQL 编辑器测试：[docs/editor-testing.md](docs/editor-testing.md)
-- 运行与部署：[docs/runtime.md](docs/runtime.md)
-- 前端页面：[docs/frontend.md](docs/frontend.md)
-- 提交与 PR 规范：[docs/commits.md](docs/commits.md)
-- 本地参考仓库：[docs/references.md](docs/references.md)
+- 文档索引：[docs/README.md](docs/README.md)
+- 架构与边界：[docs/core/architecture.md](docs/core/architecture.md)
+- 编译器与 ANTLR：[docs/core/compiler.md](docs/core/compiler.md)
+- 执行引擎概览：[docs/engines/overview.md](docs/engines/overview.md)
+- Local 引擎：[docs/engines/local.md](docs/engines/local.md)
+- Kyuubi 引擎：[docs/engines/kyuubi.md](docs/engines/kyuubi.md)
+- 数据源扩展：[docs/data/datasources.md](docs/data/datasources.md)
+- 应用启动方法：[docs/ops/startup.md](docs/ops/startup.md)
+- SQL 编辑器测试：[docs/ui/editor-testing.md](docs/ui/editor-testing.md)
 
 关键约束：
 
@@ -62,4 +59,4 @@
 - 提交信息默认使用中文类型前缀：`功能：`、`修复：`、`重构：`、`更新：`、`清理：`。
 - 每次提交聚焦一个逻辑变更，例如 DSL/compiler、runtime、前端、配置、文档或测试。
 - commit 正文按主题分段说明改动原因和影响，不写验证命令；验证信息放最终回复或 PR 描述。
-- 详细规范见 [docs/commits.md](docs/commits.md)。
+- 详细规范见 [docs/ops/commits.md](docs/ops/commits.md)。

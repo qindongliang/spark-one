@@ -12,6 +12,12 @@ ai.sparkone.server.SparkOneServer
 http://127.0.0.1:7070
 ```
 
+引擎细节不要继续堆在启动文档里：
+
+- Local engine 配置见 [../engines/local.md](../engines/local.md)。
+- Kyuubi engine 配置见 [../engines/kyuubi.md](../engines/kyuubi.md)。
+- 通用 API、preview 和限制见 [../engines/overview.md](../engines/overview.md)。
+
 ## IDEA
 
 用 IDEA 导入仓库根目录的 `pom.xml`。根 POM 是 Maven aggregator，会自动识别：
@@ -274,7 +280,7 @@ export KRB5CCNAME=/tmp/krb5cc_$(id -u)
 kinit -kt /Users/qindongliang/bigdata/odep.keytab odep@HADOOP.COM
 ```
 
-更多 HDFS/Hive 说明见 [hadoop-hive.md](hadoop-hive.md)。
+更多 HDFS/Hive 说明见 [../data/hadoop-hive.md](../data/hadoop-hive.md)。
 
 ## Preview
 
@@ -317,7 +323,7 @@ options sparkoneOverwrite="allow";
 
 配置 `/public/odep/user` 后，`/public/odep/user` 本身和它的上级目录会被拦截，`/public/odep/user/userA` 这类具体业务目录可以写。
 
-完整测试案例见 [safe-save.md](safe-save.md)。
+完整测试案例见 [../data/safe-save.md](../data/safe-save.md)。
 
 ## Smoke Test
 

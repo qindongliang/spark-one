@@ -52,7 +52,7 @@ select * from city_stats order by city;
 
 Use the SDKMAN environment first. Spark on Java 17 also needs the JVM module
 options in `.mvn/jvm.config`. More startup methods are documented in
-[`docs/startup.md`](docs/startup.md).
+[`docs/ops/startup.md`](docs/ops/startup.md).
 
 ```bash
 sdk env
@@ -67,7 +67,7 @@ Open:
 http://127.0.0.1:7070
 ```
 
-SQL 编辑器测试方法见 [`docs/editor-testing.md`](docs/editor-testing.md)。
+SQL 编辑器测试方法见 [`docs/ui/editor-testing.md`](docs/ui/editor-testing.md)。
 
 Use another port:
 
