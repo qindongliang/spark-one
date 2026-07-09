@@ -239,6 +239,31 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesMysqlLoadPartitionColumnOnlyForRuntimeAutoBounds(): Unit = {
+    withSystemProperties(Map(
+      "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
+      "sparkone.datasource.mysql.analytics.user" -> "reader",
+      "sparkone.datasource.mysql.analytics.password" -> "secret")) {
+      val statement = compiler.compile(
+        """load mysql.`analytics.big_orders`
+          |where "biz_date = '2026-06-10' and status = 'PAID'"
+          |options partitionColumn="id"
+          |as big_orders_paid;
+          |""".stripMargin).head
+
+      val expectedDbtable =
+        "(select * from big_orders where biz_date = '2026-06-10' and status = 'PAID') as sparkone_mysql_load"
+      assertEquals(Some(expectedDbtable), statement.load.flatMap(_.options.get("dbtable")))
+      assertEquals(Some("id"), statement.load.flatMap(_.options.get("partitionColumn")))
+      assertFalse(statement.load.exists(_.options.contains("lowerBound")))
+      assertFalse(statement.load.exists(_.options.contains("upperBound")))
+      assertFalse(statement.load.exists(_.options.contains("numPartitions")))
+      assertFalse(statement.load.exists(_.options.contains("fetchsize")))
+      assertFalse(statement.sql.contains("secret"))
+    }
+  }
+
+  @Test
   def rejectsLoadWhereForNonMysqlSources(): Unit = {
     try {
       compiler.compile("""load parquet.`/tmp/users` where "id > 0" as users;""")

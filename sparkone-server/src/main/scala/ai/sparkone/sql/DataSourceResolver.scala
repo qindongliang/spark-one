@@ -162,15 +162,31 @@ final class DataSourceResolver(
       throw new CompileException(s"Kyuubi MySQL load option '$key' must be specified only once.")
     }
     val optionMap = normalized.toMap
-    val partitionKeys = Set("partitionColumn", "lowerBound", "upperBound", "numPartitions")
-    val presentPartitionKeys = optionMap.keySet.intersect(partitionKeys)
-    if (presentPartitionKeys.nonEmpty && presentPartitionKeys != partitionKeys) {
-      throw new CompileException("Kyuubi MySQL partition load requires partitionColumn, lowerBound, upperBound, and numPartitions together.")
+    val hasPartitionColumn = optionMap.contains("partitionColumn")
+    val hasLowerBound = optionMap.contains("lowerBound")
+    val hasUpperBound = optionMap.contains("upperBound")
+    if (hasLowerBound != hasUpperBound) {
+      throw new CompileException("Kyuubi MySQL partition load requires lowerBound and upperBound together.")
+    }
+    if ((hasLowerBound || optionMap.contains("numPartitions")) && !hasPartitionColumn) {
+      throw new CompileException("Kyuubi MySQL partition load requires partitionColumn when lowerBound, upperBound, or numPartitions is specified.")
     }
     optionMap.get("partitionColumn").foreach { value =>
       SparkOneSqlRender.requireIdentifier(value, "Kyuubi MySQL partitionColumn")
     }
-    optionMap.get("numPartitions").foreach { value =>
+    val withDefaultNumPartitions =
+      if (hasPartitionColumn && !optionMap.contains("numPartitions")) {
+        normalized :+ ("numPartitions" -> defaultNumPartitions(profile))
+      } else {
+        normalized
+      }
+    val withDefaultFetchSize =
+      if (hasPartitionColumn && !optionMap.contains("fetchsize")) {
+        withDefaultNumPartitions :+ ("fetchsize" -> profile.flatMap(_.defaultFetchSize).getOrElse("10000"))
+      } else {
+        withDefaultNumPartitions
+      }
+    withDefaultFetchSize.toMap.get("numPartitions").foreach { value =>
       val count = positiveInt(value, "numPartitions")
       profile.flatMap(_.maxNumPartitions).foreach { max =>
         if (count > max) {
@@ -179,8 +195,8 @@ final class DataSourceResolver(
         }
       }
     }
-    optionMap.get("fetchsize").foreach(value => positiveInt(value, "fetchsize"))
-    normalized
+    withDefaultFetchSize.toMap.get("fetchsize").foreach(value => positiveInt(value, "fetchsize"))
+    withDefaultFetchSize
   }
 
   private def withDefaultFetchSize(
@@ -188,6 +204,10 @@ final class DataSourceResolver(
       profile: MysqlLoadProfile): Seq[(String, String)] = {
     if (options.exists(_._1 == "fetchsize")) options
     else profile.defaultFetchSize.map(value => options :+ ("fetchsize" -> value)).getOrElse(options)
+  }
+
+  private def defaultNumPartitions(profile: Option[MysqlLoadProfile]): String = {
+    profile.flatMap(_.maxNumPartitions).map(max => math.min(10, max).toString).getOrElse("10")
   }
 
   private def positiveInt(value: String, label: String): Int = {

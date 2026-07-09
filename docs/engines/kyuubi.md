@@ -42,7 +42,7 @@ SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户。统�
 - 外部 Spark datasource provider jar 应放在 Kyuubi/Spark engine classpath，不放在 SparkOne 主包里。
 - `load mysql` 在 Kyuubi 模式下优先使用 `mysql.\`catalog.db.table\`` 语义，连接信息来自 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`。
 - 无分片参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成远端 catalog SQL。
-- 带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时，编译成 `USING sparkone_mysql`，由 provider 在 Spark engine 内复用 catalog 连接配置。
+- 带 `partitionColumn` 或其他受控大表读取参数时，编译成 `USING sparkone_mysql`，由 provider 在 Spark engine 内复用 catalog 连接配置；只写 `partitionColumn` 时会在远端自动查询 `lowerBound/upperBound`，`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。
 - `save mysql` 仍不支持 Kyuubi adapter，远程写入建议使用明确的 catalog SQL 或 Kyuubi/Spark 侧写入能力。
 
 更完整的数据源语义见 [../data/datasources.md](../data/datasources.md)。
@@ -51,7 +51,7 @@ SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户。统�
 
 - Kyuubi Server Web UI 和 Spark engine UI 是两件事。源码或本地二进制包没有用 `./build/dist --web-ui ...` 打包时，Kyuubi Web UI 可能显示 `The Web UI is currently unavailable`；这不影响 Kyuubi JDBC、REST，也不影响 Spark engine 的 Spark UI。
 - Spark UI 属于 Kyuubi 拉起的 Spark engine。local/client 模式常见地址是 `http://127.0.0.1:4040`；如果 engine 跑在 YARN/Kubernetes/cluster 模式，应从 Kyuubi engine 日志、YARN application、Kubernetes driver service 或 Spark tracking URL 进入。
-- 验证 `sparkone_mysql` 大表读取参数时，看 Spark UI 的 Jobs/Stages 和 SQL/DataFrame 页更直接。`select count(*) from orders_big` 对应的 JDBC scan stage 如果有 `4/4` tasks，并且 `EXPLAIN FORMATTED SELECT count(*) FROM orders_big` 里出现 `Scan JDBCRelation(...) [numPartitions=4]`，即可证明 `numPartitions=4` 已进入 Spark JDBC reader。
+- 验证 `sparkone_mysql` 大表读取参数时，看 Spark UI 的 Jobs/Stages 和 SQL/DataFrame 页更直接。只写 `partitionColumn` 时默认 `numPartitions=10`；`select count(*) from orders_big` 对应的 JDBC scan stage 如果有 `10/10` tasks，并且 `EXPLAIN FORMATTED SELECT count(*) FROM orders_big` 里出现 `Scan JDBCRelation(...) [numPartitions=10]`，即可证明分区参数已进入 Spark JDBC reader。
 
 ## 依赖
 

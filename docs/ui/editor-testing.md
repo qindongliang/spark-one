@@ -873,61 +873,45 @@ SELECT 'LOAD MYSQL' AS sparkone_action, 'sparkone_mysql_seed AS mysql_seed' AS s
 
 如果 MySQL 表有自增主键 `id`，并且数据量约 3000 万行，不要使用默认单分区 JDBC 读取。默认读取通常只有一个 JDBC 任务在拉全表，吞吐低，也容易把单个 executor task、MySQL 连接或网络打满。推荐用自增主键做 Spark JDBC 分区列，让 Spark 并发发起多个范围查询。
 
-先在 MySQL 侧确认主键范围和数据量：
-
-```sql
-select min(id) as min_id, max(id) as max_id, count(*) as row_count
-from big_orders;
-```
-
-确认 `id` 是主键或至少有索引：
+先在 MySQL 侧确认分区列有索引：
 
 ```sql
 show index from big_orders;
 ```
 
-在 SparkOne 编辑器里读取大表：
+在 SparkOne 编辑器里读取大表，推荐只提供 `partitionColumn`：
 
 ```sql
 load mysql.`analytics.big_orders`
 options partitionColumn="id"
-and lowerBound="1"
-and upperBound="30000000"
-and numPartitions="24"
-and fetchsize="10000"
 as big_orders_30m;
 
 select count(*) as row_count from big_orders_30m;
 ```
 
-如果 `id` 最大值已经明显超过 3000 万，就把 `upperBound` 改成上面 `max(id)` 查到的值，例如：
+SparkOne 会在执行侧自动查询：
 
-```sql
-load mysql.`analytics.big_orders`
-options partitionColumn="id"
-and lowerBound="1"
-and upperBound="48291377"
-and numPartitions="32"
-and fetchsize="10000"
-as big_orders_30m;
-```
+- 不带 `where` 时：`SELECT MIN(id), MAX(id) FROM big_orders`
+- 带 `where` 时：`SELECT MIN(id), MAX(id) FROM (select * from big_orders where ...) as sparkone_mysql_load`
+
+如果确实需要覆盖默认并发，可以显式写 `numPartitions`；默认是 `10`。`fetchsize` 默认是 `10000`，通常不需要每次写。
 
 参数含义：
 
 - `partitionColumn="id"`：用 `id` 这一列切分 JDBC 读取任务。Spark 要求它是 numeric、date 或 timestamp 类型；MySQL 自增主键最适合，前提是有索引。
-- `lowerBound` / `upperBound`：用于计算每个分区的步长。它们不是过滤条件，不会只读取这个范围内的数据；如果要限制业务数据范围，需要在后续 SQL 里显式写 `where id between ...`。
-- `numPartitions`：并发 JDBC 分区数，也近似等于同时打到 MySQL 的查询连接数上限。3000 万行可以从 `16` 或 `24` 起步；如果 MySQL、网络和 Spark executor 都有余量，再试 `32`。不要盲目开到很大，否则会把 MySQL 连接池、buffer pool 或磁盘 IO 打满。
-- `fetchsize`：每次 JDBC round trip 拉取的行数。大表读取建议从 `5000` 到 `10000` 试起；太小会增加网络往返，太大可能增加单 task 内存压力。
+- `lowerBound` / `upperBound`：默认自动查询；它们只用于计算每个分区的步长，不是过滤条件。
+- `numPartitions`：并发 JDBC 分区数，也近似等于同时打到 MySQL 的查询连接数上限。默认 `10`，大表可结合源库压力显式调到 `16`、`24` 或 `32`。
+- `fetchsize`：每次 JDBC round trip 拉取的行数。默认 `10000`；太小会增加网络往返，太大可能增加单 task 内存压力。
 
 调参建议：
 
-- 先估算单分区数据量：`30000000 / 24` 约 125 万行/分区；如果单行很宽，优先降低 `numPartitions` 或只选择必要列。
+- 先估算单分区数据量：默认 `30000000 / 10` 约 300 万行/分区；如果单行很宽，优先只选择必要列，或结合源库压力调整 `numPartitions`。
 - 用 Spark UI 看 task 是否均衡；如果少数 task 特别慢，通常是 `id` 分布有大空洞或热点范围，需要重新选择更均匀的分区列，或按日期/主键范围分批读取。
 - 用 MySQL 监控观察并发连接数、慢查询、磁盘 IO 和 buffer pool 命中率；Spark 侧更快不代表源库能承受。
 - 如果 MySQL Connector/J 实际没有按 `fetchsize` 流式拉取，可在 HOCON 的 JDBC URL 中评估加入 `useCursorFetch=true`，并用 executor 内存和 MySQL 连接状态验证效果。
 - 大表抽样查看时不要直接 `select *`；先用 `select * from big_orders_30m where id between 1 and 1000 order by id` 或 `limit 100`。
 
-Spark JDBC 参数语义以 [Spark 3.5.7 JDBC 官方文档](https://spark.apache.org/docs/3.5.7/sql-data-sources-jdbc.html) 为准：`partitionColumn`、`lowerBound`、`upperBound`、`numPartitions` 必须成组使用；上下界只用于分区步长，不负责过滤数据。
+Spark JDBC 底层仍要求 `partitionColumn/lowerBound/upperBound/numPartitions` 成组传入。SparkOne 的优化是在执行侧自动补齐 `lowerBound/upperBound`，并提供默认 `numPartitions=10`。
 
 带 `where` 过滤条件的读取：
 
@@ -942,10 +926,6 @@ SparkOne 因此不开放 SQL 侧 `query=`。`load mysql.\`analytics.table\`` 仍
 load mysql.`analytics.big_orders`
 where "biz_date = '2026-06-10' and status = 'PAID'"
 options partitionColumn="id"
-and lowerBound="1"
-and upperBound="30000000"
-and numPartitions="24"
-and fetchsize="10000"
 as big_orders_paid;
 ```
 
@@ -955,7 +935,7 @@ as big_orders_paid;
 (select * from big_orders where biz_date = '2026-06-10' and status = 'PAID') as sparkone_mysql_load
 ```
 
-再继续传 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize`。这样既能让 MySQL 先做业务过滤，又保留 Spark JDBC 的并行范围读取能力。
+SparkOne 会基于这个子查询自动查询 `MIN(id), MAX(id)`，再传给 Spark JDBC reader。这样既能让 MySQL 先做业务过滤，又保留 Spark JDBC 的并行范围读取能力。
 
 如果过滤后还要做列裁剪或二次加工，继续接 `view`：
 
@@ -976,7 +956,7 @@ from paid_order_amounts;
 
 - `load mysql ... where "..."` 只支持 MySQL 特殊 source；Hive/Doris catalog 也支持 `load ... where "..."`，文件类 provider 暂不支持这个扩展。
 - `where` 后必须是引号包住的一段 MySQL 条件表达式，不写 `where` 关键字本身，例如 `where "status = 'PAID'"`。
-- `partitionColumn/lowerBound/upperBound/numPartitions` 只负责并行切分；业务过滤写在 `where "..."` 里。
+- `partitionColumn/lowerBound/upperBound/numPartitions` 只负责并行切分；业务过滤写在 `where "..."` 里。通常只需要手写 `partitionColumn`。
 - 尽量写简单谓词，例如 `=`、`between`、`>=`、`<`、`in (...)`，并使用 MySQL 表上已有索引列，例如 `id`、`biz_date`、`status`。
 - 避免在过滤列上写复杂函数或表达式，例如 `date_format(biz_date, ...) = ...`，这类条件更难下推，也更难命中 MySQL 索引。
 - 如果过滤逻辑非常复杂，优先在 MySQL 侧建 view，或在源表侧准备按业务条件切好的中间表，再用 `load mysql.\`analytics.some_view_or_table\`` 读取。
@@ -1017,22 +997,18 @@ order by id;
 
 这意味着过滤发生在 MySQL 层；Spark 读取的是这个子查询的结果。
 
-3. 只写分区参数：不做业务过滤，但按 `id` 范围并发读取。
+3. 只写分区列：不做业务过滤，但按 `id` 范围并发读取。
 
 ```sql
 load mysql.`analytics.sparkone_mysql_orders_demo`
 options partitionColumn="id"
-and lowerBound="1"
-and upperBound="8"
-and numPartitions="4"
-and fetchsize="1000"
 as orders_partitioned;
 
 select count(*) as row_count
 from orders_partitioned;
 ```
 
-预期：读取 8 行。`lowerBound/upperBound` 只用于计算 Spark JDBC 分区步长，不会过滤掉边界外的数据；业务过滤必须写 `where "..."`。
+预期：读取 8 行。执行侧会自动查询 `id` 的上下界，并使用默认 `numPartitions=10`、`fetchsize=10000`；业务过滤必须写 `where "..."`。
 
 4. 同时写 `where` 和分区参数：MySQL 侧先按子查询过滤，Spark JDBC 再按 `id` 并发读取子查询结果。
 
@@ -1040,10 +1016,6 @@ from orders_partitioned;
 load mysql.`analytics.sparkone_mysql_orders_demo`
 where "status = 'PAID'"
 options partitionColumn="id"
-and lowerBound="1"
-and upperBound="8"
-and numPartitions="4"
-and fetchsize="1000"
 as orders_paid_partitioned;
 
 select id, city, amount, status, biz_date
@@ -1057,7 +1029,7 @@ order by id;
 (select * from sparkone_mysql_orders_demo where status = 'PAID') as sparkone_mysql_load
 ```
 
-同时仍会传 `partitionColumn=id`、`lowerBound=1`、`upperBound=8`、`numPartitions=4` 给 Spark JDBC reader。
+同时仍会传 `partitionColumn=id`，并在执行侧按过滤后的子查询自动补齐上下界和默认分区参数。
 
 测试 `save append` 写入 MySQL：
 
@@ -1138,10 +1110,6 @@ select * from mysql_overwritten_result order by city;
 ```sql
 load mysql.`mysql.Dworks.cloud_host_info`
 options partitionColumn="id"
-and lowerBound="1"
-and upperBound="100000"
-and numPartitions="4"
-and fetchsize="10000"
 as orders_big;
 
 select count(*) from orders_big;
@@ -1156,9 +1124,7 @@ OPTIONS (
   catalog 'mysql',
   dbtable 'Dworks.cloud_host_info',
   partitionColumn 'id',
-  lowerBound '1',
-  upperBound '100000',
-  numPartitions '4',
+  numPartitions '10',
   fetchsize '10000'
 )
 ```
@@ -1173,10 +1139,10 @@ SELECT count(*) FROM orders_big;
 物理计划里应能看到：
 
 ```text
-Scan JDBCRelation(Dworks.cloud_host_info) [numPartitions=4]
+Scan JDBCRelation(Dworks.cloud_host_info) [numPartitions=10]
 ```
 
-再看 Spark engine 的 Spark UI。local/client 模式通常是 `http://127.0.0.1:4040/jobs/`；YARN/Kubernetes/cluster 模式看 Spark application tracking URL。对 `select count(*) from orders_big`，负责 JDBC scan 的 stage 应有 `4/4` tasks。看到 `1/1 skipped` 的辅助 job 不代表分区没生效，通常是 AQE、聚合收尾或结果复用。
+再看 Spark engine 的 Spark UI。local/client 模式通常是 `http://127.0.0.1:4040/jobs/`；YARN/Kubernetes/cluster 模式看 Spark application tracking URL。对 `select count(*) from orders_big`，负责 JDBC scan 的 stage 应有 `10/10` tasks。看到 `1/1 skipped` 的辅助 job 不代表分区没生效，通常是 AQE、聚合收尾或结果复用。
 
 如果执行 `load` 后立刻在 Kyuubi log 里看到：
 
@@ -1189,7 +1155,7 @@ SELECT * FROM `orders_big` LIMIT 101
 注意：
 
 - `load mysql.\`mysql.Dworks.cloud_host_info\`` 中第一个 `mysql` 是 Kyuubi/Spark engine 侧 catalog 名，不是 SparkOne local HOCON 的连接名。
-- 不带大表参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成 catalog SQL；带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时才编译成 `USING sparkone_mysql`。
+- 不带大表参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成 catalog SQL；带 `partitionColumn` 或其他大表读取参数时编译成 `USING sparkone_mysql`。
 - SQL options 禁止传 `url/user/password/driver/dbtable/query`；这些敏感配置留在 Kyuubi/Spark engine 侧。
 - `lowerBound/upperBound` 只决定 Spark JDBC 分区步长，不做业务过滤。业务过滤写 `where "..."`，例如 `where "biz_date = '2026-07-07'"`。
 - `numPartitions` 会增加对 MySQL 的并发连接和 IO 压力。验证通过后再按 MySQL 监控、Spark task 耗时和源表索引情况调大。

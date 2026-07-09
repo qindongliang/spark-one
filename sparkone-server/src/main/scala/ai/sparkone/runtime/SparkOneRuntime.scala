@@ -170,7 +170,7 @@ final class SparkOneRuntime(
   private def executeMysqlLoad(metadata: LoadStatementMetadata): DataFrame = {
     spark.read
       .format("jdbc")
-      .options(metadata.options)
+      .options(MysqlJdbcLoadOptions.enrich(metadata.options))
       .load()
       .createOrReplaceTempView(metadata.table)
     spark.table(metadata.table)

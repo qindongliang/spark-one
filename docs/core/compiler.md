@@ -65,6 +65,7 @@ group by city;
 - `save ... as hive` 是 catalog 表写入语义，编译成 `INSERT INTO/OVERWRITE TABLE db.table SELECT * FROM source`。
 - `save ... partitionBy col1, col2` 只用于 catalog 表写入，编译成 Spark SQL 动态分区 `PARTITION (col1, col2)`。
 - `load/save mysql` 是薄 runtime adapter：连接信息从 HOCON 读取，编译展示安全占位 SQL，执行时使用 Spark JDBC reader/writer。
+- `load mysql ... options partitionColumn="id"` 会在执行侧自动查询 `lowerBound/upperBound`；`where` 存在时按过滤后数据取边界，不存在时按原表取边界。`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。
 - `load doris` 是 Spark Doris Catalog 语法糖：`load doris.\`db.table\` as t` 编译成 `CREATE ... AS SELECT * FROM doris.db.table`；追加 `where "..."` 时编译成 `SELECT * FROM doris.db.table WHERE ...`。
 - `save ... as doris` 是 Spark Doris Catalog 表写入语义，编译成 `INSERT INTO/OVERWRITE TABLE doris.db.table SELECT * FROM source`。
 - `save overwrite ... as doris` 默认还需要启动级 `save.allowDorisOverwrite = true` 和单条 `options sparkoneOverwrite="allow"` 双重确认；`partitionBy` 不用于 Doris Catalog 写入。

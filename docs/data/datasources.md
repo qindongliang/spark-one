@@ -108,10 +108,6 @@ as orders;
 load mysql.`analytics.Dworks.big_orders`
 where "biz_date = '2026-06-10' and status = 'PAID'"
 options partitionColumn="id"
-and lowerBound="1"
-and upperBound="30000000"
-and numPartitions="24"
-and fetchsize="10000"
 as orders_big;
 ```
 
@@ -132,12 +128,18 @@ OPTIONS (
   dbtable 'Dworks.big_orders',
   whereClauseBase64 '...',
   partitionColumn 'id',
-  lowerBound '1',
-  upperBound '30000000',
-  numPartitions '24',
+  numPartitions '10',
   fetchsize '10000'
 )
 ```
+
+只写 `partitionColumn` 时，`lowerBound` 和 `upperBound` 会在真正创建 JDBC relation 前自动查询：
+
+- 带 `where` 时，对过滤后的子查询执行 `MIN(partitionColumn), MAX(partitionColumn)`。
+- 不带 `where` 时，对原表执行 `MIN(partitionColumn), MAX(partitionColumn)`。
+- `numPartitions` 默认 `10`，`fetchsize` 默认 `10000`；SQL 里仍可显式覆盖。
+- 如果过滤后没有数据，SparkOne 会降级为单分区 JDBC 读取，不再传 `partitionColumn/lowerBound/upperBound/numPartitions`。
+- local engine 会在 SparkOne 服务端日志记录 bounds 查询 SQL 和最终 JDBC 读取参数；Kyuubi engine 会由远端 `sparkone_mysql` provider 记录 `sparkone_mysql diagnostic: bounds query sql=...` 和 `sparkone_mysql diagnostic: effective jdbc options...`。日志不包含 `url/user/password`。如果 Kyuubi operation log 仍只显示 `CREATE TEMPORARY VIEW ...`，请确认 Kyuubi/Spark engine 已部署重新打包后的 `sparkone-mysql-provider` jar，并查看 Spark engine driver 日志。
 
 `sparkone_mysql` provider jar 由 `sparkone-mysql-provider` 模块生成，应部署到 Kyuubi/Spark engine classpath，例如：
 
@@ -162,10 +164,6 @@ provider 在 Spark engine 内读取 `spark.sql.catalog.analytics.*`，再转成 
 ```sql
 load mysql.`mysql.Dworks.cloud_host_info`
 options partitionColumn="id"
-and lowerBound="1"
-and upperBound="100000"
-and numPartitions="4"
-and fetchsize="10000"
 as orders_big;
 
 select count(*) from orders_big;
@@ -180,9 +178,7 @@ OPTIONS (
   catalog 'mysql',
   dbtable 'Dworks.cloud_host_info',
   partitionColumn 'id',
-  lowerBound '1',
-  upperBound '100000',
-  numPartitions '4',
+  numPartitions '10',
   fetchsize '10000'
 )
 ```
@@ -207,10 +203,10 @@ SELECT count(*) FROM orders_big;
 生效时物理计划应包含类似信息：
 
 ```text
-Scan JDBCRelation(Dworks.cloud_host_info) [numPartitions=4]
+Scan JDBCRelation(Dworks.cloud_host_info) [numPartitions=10]
 ```
 
-Spark UI 中执行 `select count(*) from orders_big` 后，应在 Jobs/Stages 里看到负责 JDBC scan 的 stage 有 `4/4` 个 tasks。看到 `4/4` task 的 job，就能说明这次 count 触发了 4 个 JDBC 分区读取任务。另一个 `1/1 skipped` 的 job 多半是 AQE、聚合收尾或复用结果造成的辅助 job，不用把它当成分区数失效。
+Spark UI 中执行 `select count(*) from orders_big` 后，应在 Jobs/Stages 里看到负责 JDBC scan 的 stage 有 `10/10` 个 tasks。看到 `10/10` task 的 job，就能说明这次 count 触发了 10 个 JDBC 分区读取任务。另一个 `1/1 skipped` 的 job 多半是 AQE、聚合收尾或复用结果造成的辅助 job，不用把它当成分区数失效。
 
 更多排查入口：
 
@@ -220,7 +216,7 @@ Spark UI 中执行 `select count(*) from orders_big` 后，应在 Jobs/Stages �
 
 常见注意事项：
 
-- `partitionColumn/lowerBound/upperBound/numPartitions` 必须成组使用；SparkOne 会在编译阶段拦截缺项。
+- 推荐只写 `partitionColumn`，让 SparkOne 自动查询 `lowerBound/upperBound`，并使用默认 `numPartitions=10`、`fetchsize=10000`。如果手工写边界，`lowerBound/upperBound` 必须成对出现。
 - `lowerBound` 和 `upperBound` 只用于计算分区步长，不是业务过滤条件。需要过滤数据时用 `load mysql ... where "..."` 或后续 SQL 的 `where`。
 - `numPartitions` 近似等于并发 JDBC 读取任务数，也意味着对 MySQL 的并发压力会上升。先从较小值验证，再结合 MySQL 连接数、慢查询、IO 和 Spark task 耗时调大。
 - `partitionColumn` 应选择 numeric/date/timestamp 类型，最好是有索引且分布相对均匀的列。自增主键适合起步验证，但如果主键范围空洞很大，task 耗时可能明显不均衡。

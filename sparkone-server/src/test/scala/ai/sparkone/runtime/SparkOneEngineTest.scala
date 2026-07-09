@@ -104,6 +104,58 @@ final class SparkOneEngineTest {
   }
 
   @Test
+  def kyuubiCompileMysqlCatalogPathWithPartitionColumnOnlyUsesProviderDefaults(): Unit = {
+    val engine = kyuubiEngine()
+
+    try {
+      val statements = engine.compile(
+        """load mysql.`analytics.Dworks.big_orders`
+          |where "biz_date = '2026-06-10' and status = 'PAID'"
+          |options partitionColumn="id"
+          |as big_orders_paid;
+          |""".stripMargin)
+
+      val sql = statements.head.sql
+      assertTrue(sql.startsWith("CREATE OR REPLACE TEMPORARY VIEW big_orders_paid USING sparkone_mysql OPTIONS"))
+      assertTrue(sql.contains("catalog 'analytics'"))
+      assertTrue(sql.contains("dbtable 'Dworks.big_orders'"))
+      assertTrue(sql.contains("whereClauseBase64 'Yml6X2RhdGUgPSAnMjAyNi0wNi0xMCcgYW5kIHN0YXR1cyA9ICdQQUlEJw=='"))
+      assertTrue(sql.contains("partitionColumn 'id'"))
+      assertTrue(sql.contains("numPartitions '10'"))
+      assertTrue(sql.contains("fetchsize '10000'"))
+      assertFalse(sql.contains("lowerBound"))
+      assertFalse(sql.contains("upperBound"))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiCompileMysqlCatalogPathWithPartitionColumnOnlyWithoutWhereStillUsesProviderDefaults(): Unit = {
+    val engine = kyuubiEngine()
+
+    try {
+      val statements = engine.compile(
+        """load mysql.`analytics.Dworks.big_orders`
+          |options partitionColumn="id"
+          |as big_orders_paid;
+          |""".stripMargin)
+
+      val sql = statements.head.sql
+      assertTrue(sql.contains("catalog 'analytics'"))
+      assertTrue(sql.contains("dbtable 'Dworks.big_orders'"))
+      assertTrue(sql.contains("partitionColumn 'id'"))
+      assertTrue(sql.contains("numPartitions '10'"))
+      assertTrue(sql.contains("fetchsize '10000'"))
+      assertFalse(sql.contains("whereClauseBase64"))
+      assertFalse(sql.contains("lowerBound"))
+      assertFalse(sql.contains("upperBound"))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
   def kyuubiCompileRejectsMysqlSaveAdapterBeforeRun(): Unit = {
     val engine = kyuubiEngine()
 
