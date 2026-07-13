@@ -76,4 +76,4 @@ engines {
 - 启动方式：[../ops/startup.md](../ops/startup.md)
 - HDFS/Hive/Kerberos：[../data/hadoop-hive.md](../data/hadoop-hive.md)
 - 数据源配置：[../data/datasources.md](../data/datasources.md)
-- Safe Save：[../data/safe-save.md](../data/safe-save.md)
+- 写入安全：[../data/safe-save.md](../data/safe-save.md)

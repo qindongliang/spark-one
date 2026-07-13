@@ -51,6 +51,6 @@ Local 和 Kyuubi 的目标不是实现完全一样的运行时能力，而是让
 
 ## 当前限制
 
-- SparkOne 仍是 SQL-first MVP，不提供多租户、权限、任务队列、session 池。
+- SparkOne 仍是 SQL-first MVP；当前只提供开发态逻辑租户和 Kyuubi JDBC session 隔离，不提供生产认证、完整权限系统或任务队列。
 - Local 只适合作为开发测试台。
 - Kyuubi 侧的执行身份、engine 生命周期、connector classpath、catalog 密钥和集群资源调度都由 Kyuubi/Spark/Hadoop 环境负责。

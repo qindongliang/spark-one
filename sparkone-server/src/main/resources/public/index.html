@@ -9,18 +9,34 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <h1>SparkOne SQL</h1>
-    <div class="status" id="status">Ready</div>
-  </header>
-  <main>
-    <section class="pane">
-      <div class="toolbar">
-        <label>Engine <select id="engine"></select></label>
-        <button id="compile" hidden>Compile</button>
-        <button class="primary" id="run">Run</button>
+  <section class="login-screen" id="login-screen" hidden>
+    <form class="login-form" id="login-form">
+      <h1>SparkOne SQL</h1>
+      <label for="username">Username</label>
+      <div class="login-fields">
+        <input id="username" name="username" maxlength="64" autocomplete="username" required>
+        <button class="primary" type="submit">Continue</button>
       </div>
-      <textarea id="script" spellcheck="false">view users as
+      <div class="login-error" id="login-error" role="alert"></div>
+    </form>
+  </section>
+  <div class="workspace" id="workspace" hidden>
+    <header>
+      <h1>SparkOne SQL</h1>
+      <div class="header-actions">
+        <span class="current-user" id="current-user"></span>
+        <button id="logout" type="button">Log out</button>
+        <div class="status" id="status">Ready</div>
+      </div>
+    </header>
+    <main>
+      <section class="pane">
+        <div class="toolbar">
+          <label>Engine <select id="engine"></select></label>
+          <button id="compile" hidden>Compile</button>
+          <button class="primary" id="run">Run</button>
+        </div>
+        <textarea id="script" spellcheck="false">view users as
 select * from values
   ('beijing', 1),
   ('shanghai', 2),
@@ -33,15 +49,16 @@ from users
 group by city;
 
 select * from city_stats order by city;</textarea>
-    </section>
-    <section class="pane">
-      <div class="toolbar">
-        <div class="status" id="summary">No result</div>
-        <label class="rows-control">Rows <input id="limit" type="number" min="1" max="10" value="10"></label>
-      </div>
-      <div class="output" id="output"></div>
-    </section>
-  </main>
+      </section>
+      <section class="pane">
+        <div class="toolbar">
+          <div class="status" id="summary">No result</div>
+          <label class="rows-control">Rows <input id="limit" type="number" min="1" max="10" value="10"></label>
+        </div>
+        <div class="output" id="output"></div>
+      </section>
+    </main>
+  </div>
   <script src="/webjars/codemirror/5.65.19/lib/codemirror.js"></script>
   <script src="/webjars/codemirror/5.65.19/mode/sql/sql.js"></script>
   <script src="/app.js"></script>

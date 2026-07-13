@@ -1,10 +1,17 @@
 package ai.sparkone.runtime
 
+import ai.sparkone.identity.TenantContext
 import ai.sparkone.sql.{CompileException, MysqlLoadProfile, MysqlLoadProfileStrategy}
 import org.junit.Assert._
 import org.junit.Test
 
+import java.lang.reflect.{InvocationHandler, Method, Proxy}
+import java.sql.{Connection, ResultSet, ResultSetMetaData, Statement}
+import scala.collection.mutable.ArrayBuffer
+
 final class SparkOneEngineTest {
+  private val tenant = TenantContext.development("test-user")
+
   @Test
   def engineInfosExposeCapabilities(): Unit = {
     withSystemProperties(Map(
@@ -18,12 +25,10 @@ final class SparkOneEngineTest {
         val infos = registry.infos.map(info => info.id -> info).toMap
 
         assertTrue(infos("local").capabilities.mysqlAdapter)
-        assertTrue(infos("local").capabilities.fileSafeBackup)
         assertTrue(infos("local").capabilities.externalCatalogConfiguredBySparkOne)
         assertFalse(infos("local").capabilities.kyuubiExternalEngineConfig)
 
         assertFalse(infos("kyuubi").capabilities.mysqlAdapter)
-        assertFalse(infos("kyuubi").capabilities.fileSafeBackup)
         assertFalse(infos("kyuubi").capabilities.externalCatalogConfiguredBySparkOne)
         assertTrue(infos("kyuubi").capabilities.kyuubiExternalEngineConfig)
       } finally {
@@ -33,11 +38,35 @@ final class SparkOneEngineTest {
   }
 
   @Test
+  def localAndKyuubiCompileRejectNativeCreateTable(): Unit = {
+    val local = new LocalSparkEngine(
+      "local",
+      "Local",
+      throw new AssertionError("compile must not initialize the local runtime"),
+      Map.empty)
+    val kyuubi = kyuubiEngine()
+
+    try {
+      Seq[SparkOneEngine](local, kyuubi).foreach { engine =>
+        try {
+          engine.compile(tenant, "create table default.target (id int) using parquet")
+          fail(s"Expected ${engine.id} compile to reject CREATE TABLE")
+        } catch {
+          case e: CompileException => assertTrue(e.getMessage.contains("native read-only SQL"))
+        }
+      }
+    } finally {
+      local.close()
+      kyuubi.close()
+    }
+  }
+
+  @Test
   def kyuubiCompileRejectsUnknownMysqlLoadProfileBeforeRun(): Unit = {
     val engine = kyuubiEngine()
 
     try {
-      engine.compile("load mysql.`analytics.users` as users;")
+      engine.compile(tenant, "load mysql.`analytics.users` as users;")
       fail("Expected CompileException")
     } catch {
       case e: CompileException =>
@@ -53,7 +82,7 @@ final class SparkOneEngineTest {
     val engine = kyuubiEngine()
 
     try {
-      val statements = engine.compile(
+      val statements = engine.compile(tenant,
         """load mysql.`analytics.Dworks.orders`
           |where "biz_date = '2026-07-07'"
           |as orders;
@@ -75,7 +104,7 @@ final class SparkOneEngineTest {
     val engine = kyuubiEngine()
 
     try {
-      val statements = engine.compile(
+      val statements = engine.compile(tenant,
         """load mysql.`analytics.Dworks.big_orders`
           |where "biz_date = '2026-06-10' and status = 'PAID'"
           |options partitionColumn="id"
@@ -108,7 +137,7 @@ final class SparkOneEngineTest {
     val engine = kyuubiEngine()
 
     try {
-      val statements = engine.compile(
+      val statements = engine.compile(tenant,
         """load mysql.`analytics.Dworks.big_orders`
           |where "biz_date = '2026-06-10' and status = 'PAID'"
           |options partitionColumn="id"
@@ -135,7 +164,7 @@ final class SparkOneEngineTest {
     val engine = kyuubiEngine()
 
     try {
-      val statements = engine.compile(
+      val statements = engine.compile(tenant,
         """load mysql.`analytics.Dworks.big_orders`
           |options partitionColumn="id"
           |as big_orders_paid;
@@ -160,7 +189,7 @@ final class SparkOneEngineTest {
     val engine = kyuubiEngine()
 
     try {
-      engine.compile(
+      engine.compile(tenant,
         """view users as select 1 as id;
           |save append users as mysql.`analytics.target_users`;
           |""".stripMargin)
@@ -168,6 +197,22 @@ final class SparkOneEngineTest {
     } catch {
       case e: CompileException =>
         assertTrue(e.getMessage.contains("Kyuubi engine does not support SparkOne save mysql adapter"))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiCompileRejectsMysqlOverwriteByFixedMatrix(): Unit = {
+    val engine = kyuubiEngine()
+
+    try {
+      engine.compile(tenant, "save overwrite users as mysql.`analytics.target_users`;")
+      fail("Expected CompileException")
+    } catch {
+      case e: CompileException =>
+        assertTrue(e.getMessage.contains("mysql"))
+        assertTrue(e.getMessage.contains("permanently denied"))
     } finally {
       engine.close()
     }
@@ -184,7 +229,7 @@ final class SparkOneEngineTest {
         allowedTables = Set("orders")).validate()))
 
     try {
-      val statements = engine.compile(
+      val statements = engine.compile(tenant,
         """load mysql.`sales.orders`
           |where "biz_date = '2026-07-07'"
           |as orders;
@@ -211,7 +256,7 @@ final class SparkOneEngineTest {
         namespace = Some("Dworks")).validate()))
 
     try {
-      engine.compile(
+      engine.compile(tenant,
         """load mysql.`sales.orders`
           |options partitionColumn="id"
           |and lowerBound="1"
@@ -242,7 +287,7 @@ final class SparkOneEngineTest {
         defaultFetchSize = Some("10000")).validate()))
 
     try {
-      val statements = engine.compile(
+      val statements = engine.compile(tenant,
         """load mysql.`sales.orders`
           |where "biz_date = '2026-07-07'"
           |options partitionColumn="id"
@@ -279,7 +324,7 @@ final class SparkOneEngineTest {
         maxNumPartitions = Some(2)).validate()))
 
     try {
-      engine.compile(
+      engine.compile(tenant,
         """load mysql.`sales.orders`
           |options partitionColumn="id"
           |and lowerBound="1"
@@ -306,13 +351,51 @@ final class SparkOneEngineTest {
         namespace = Some("Dworks")).validate()))
 
     try {
-      val statements = engine.compile("load mysql.`sales.other_db.orders` as orders;")
+      val statements = engine.compile(tenant, "load mysql.`sales.other_db.orders` as orders;")
       assertEquals(
         "CREATE OR REPLACE TEMPORARY VIEW orders AS SELECT * FROM sales.other_db.orders",
         statements.head.sql)
     } finally {
       engine.close()
     }
+  }
+
+  @Test
+  def kyuubiUsesOneJdbcSessionPerLogicalTenantWithFixedServiceCredentials(): Unit = {
+    val openedConnections = ArrayBuffer.empty[FakeJdbcConnection]
+    val openedConfigs = ArrayBuffer.empty[KyuubiJdbcConfig]
+    val config = KyuubiJdbcConfig(
+      url = "jdbc:kyuubi://host:10009/default",
+      user = Some("sparkone-service"),
+      password = Some("secret"),
+      driver = "unused-for-test",
+      properties = Map("kyuubiClientPrincipal" -> "sparkone@EXAMPLE.COM"))
+    val engine = new KyuubiJdbcEngine(
+      "kyuubi",
+      "Kyuubi",
+      config,
+      connectionFactory = suppliedConfig => {
+        openedConfigs += suppliedConfig
+        val fake = new FakeJdbcConnection
+        openedConnections += fake
+        fake.connection
+      })
+    val alice = TenantContext.development("alice")
+    val bob = TenantContext.development("bob")
+
+    try {
+      engine.previewTable(alice, "tenant_view", 10)
+      engine.previewTable(alice, "tenant_view", 10)
+      engine.previewTable(bob, "tenant_view", 10)
+
+      assertEquals(2, openedConnections.size)
+      assertTrue(openedConfigs.forall(_ == config))
+      assertTrue(openedConfigs.forall(_.user.contains("sparkone-service")))
+    } finally {
+      engine.close()
+    }
+
+    assertTrue(openedConnections.forall(_.closed))
   }
 
   @Test
@@ -356,5 +439,64 @@ final class SparkOneEngineTest {
         driver = "org.apache.kyuubi.jdbc.KyuubiHiveDriver",
         properties = Map.empty),
       mysqlLoadProfiles = mysqlLoadProfiles)
+  }
+
+  private final class FakeJdbcConnection {
+    @volatile var closed: Boolean = false
+
+    private val metadata = proxy(classOf[ResultSetMetaData]) { method =>
+      method.getName match {
+        case "getColumnCount" => Int.box(0)
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+
+    private def resultSet: ResultSet = proxy(classOf[ResultSet]) { method =>
+      method.getName match {
+        case "getMetaData" => metadata
+        case "next" => Boolean.box(false)
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+
+    private def statement: Statement = proxy(classOf[Statement]) { method =>
+      method.getName match {
+        case "executeQuery" => resultSet
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+
+    val connection: Connection = proxy(classOf[Connection]) { method =>
+      method.getName match {
+        case "createStatement" => statement
+        case "isClosed" => Boolean.box(closed)
+        case "close" =>
+          closed = true
+          null
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+  }
+
+  private def proxy[T](interfaceClass: Class[T])(body: Method => AnyRef): T = {
+    Proxy.newProxyInstance(
+      interfaceClass.getClassLoader,
+      Array(interfaceClass),
+      new InvocationHandler {
+        override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef = body(method)
+      }).asInstanceOf[T]
+  }
+
+  private def defaultValue(returnType: Class[_]): AnyRef = {
+    if (!returnType.isPrimitive || returnType == java.lang.Void.TYPE) null
+    else if (returnType == java.lang.Boolean.TYPE) Boolean.box(false)
+    else if (returnType == java.lang.Byte.TYPE) Byte.box(0.toByte)
+    else if (returnType == java.lang.Short.TYPE) Short.box(0.toShort)
+    else if (returnType == java.lang.Integer.TYPE) Int.box(0)
+    else if (returnType == java.lang.Long.TYPE) Long.box(0L)
+    else if (returnType == java.lang.Float.TYPE) Float.box(0f)
+    else if (returnType == java.lang.Double.TYPE) Double.box(0d)
+    else if (returnType == java.lang.Character.TYPE) Char.box(0.toChar)
+    else null
   }
 }

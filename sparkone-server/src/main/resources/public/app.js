@@ -6,17 +6,92 @@ const summary = document.getElementById('summary');
 const compileButton = document.getElementById('compile');
 const runButton = document.getElementById('run');
 const engineSelect = document.getElementById('engine');
-const editor = createEditor(script);
+const loginScreen = document.getElementById('login-screen');
+const loginForm = document.getElementById('login-form');
+const loginError = document.getElementById('login-error');
+const usernameInput = document.getElementById('username');
+const workspace = document.getElementById('workspace');
+const currentUser = document.getElementById('current-user');
+const logoutButton = document.getElementById('logout');
 const appConfig = { showCompiledSql: false, previewMaxRows: 10, defaultResultTab: 'schema', defaultEngine: 'local' };
+let editor = null;
 let limitTouched = false;
 
-loadConfig();
+restoreSession();
 
 compileButton.addEventListener('click', () => submit('/api/compile'));
 runButton.addEventListener('click', () => submit('/api/run'));
+loginForm.addEventListener('submit', login);
+logoutButton.addEventListener('click', logout);
 limit.addEventListener('input', () => {
   limitTouched = true;
 });
+
+async function restoreSession() {
+  try {
+    const res = await fetch('/api/session');
+    const data = await res.json();
+    if (data.authenticated) {
+      showWorkspace(data.username);
+      return;
+    }
+  } catch (err) {
+    showLogin(String(err));
+    return;
+  }
+  showLogin();
+}
+
+async function login(event) {
+  event.preventDefault();
+  loginError.textContent = '';
+  const submitButton = loginForm.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: usernameInput.value })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.authenticated) {
+      loginError.textContent = data.error || 'Login failed.';
+      return;
+    }
+    showWorkspace(data.username);
+  } catch (err) {
+    loginError.textContent = String(err);
+  } finally {
+    submitButton.disabled = false;
+  }
+}
+
+async function logout() {
+  logoutButton.disabled = true;
+  try {
+    await fetch('/api/logout', { method: 'POST' });
+  } finally {
+    logoutButton.disabled = false;
+    showLogin();
+  }
+}
+
+function showWorkspace(username) {
+  loginScreen.hidden = true;
+  workspace.hidden = false;
+  currentUser.textContent = String(username || '');
+  loginError.textContent = '';
+  if (!editor) editor = createEditor(script);
+  loadConfig();
+}
+
+function showLogin(error) {
+  workspace.hidden = true;
+  loginScreen.hidden = false;
+  currentUser.textContent = '';
+  loginError.textContent = error || '';
+  usernameInput.focus();
+}
 
 async function loadConfig() {
   try {
@@ -52,6 +127,10 @@ async function submit(path) {
       })
     });
     const data = await res.json();
+    if (res.status === 401) {
+      showLogin(data.error || 'Login required.');
+      return;
+    }
     render(data, path, scope);
   } catch (err) {
     render({ success: false, error: String(err) }, path, scope);
@@ -296,6 +375,10 @@ async function loadPreview(table, pane) {
       })
     });
     const data = await res.json();
+    if (res.status === 401) {
+      showLogin(data.error || 'Login required.');
+      return;
+    }
     pane.innerHTML = '';
     if (!data.success) {
       pane.appendChild(errorBlock(data.error || 'Preview failed.'));

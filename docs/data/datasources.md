@@ -20,25 +20,25 @@ libsvm
 - `hive` 是 catalog 表语义：`load hive.\`db.table\` as t` 编译成 `CREATE OR REPLACE TEMPORARY VIEW t AS SELECT * FROM db.table`。
 - `load hive.\`db.table\` where "dt = date '2026-06-17'" as t` 会编译成 `SELECT * FROM db.table WHERE ...`；分区裁剪和谓词下推由 Spark/Hive 自身优化能力决定。
 - `save append t as hive.\`db.table\`` 编译成 `INSERT INTO TABLE db.table SELECT * FROM t`，要求目标表已存在。
-- `save overwrite t as hive.\`db.table\`` 编译成 `INSERT OVERWRITE TABLE db.table SELECT * FROM t`，要求目标表已存在，默认仍需要 `options sparkoneOverwrite="allow"` 显式确认。
+- `save overwrite t as hive.\`db.table\`` 由固定能力矩阵永久拒绝，不存在可放开的配置。
 - `partitionBy` 仅用于 catalog 表写入：`save append t as hive.\`db.table\` partitionBy dt` 编译成动态分区插入。
-- SparkOne 不复刻 MLSQL 的 `storage="hive"` / 数据湖替换逻辑；如果要创建表、指定存储格式或改表结构，优先使用 Spark 原生 `CREATE TABLE` / `ALTER TABLE`。
+- SparkOne 不复刻 MLSQL 的 `storage="hive"` / 数据湖替换逻辑，也不开放原生建表/改表语句；目标表由平台外 catalog 治理入口创建和维护。
 - `mysql` 是关系库特殊 source：`load mysql.\`analytics.users\` as users` 从 local 引擎的 `datasources.mysql.analytics` 读取连接，再用 Spark JDBC reader 注册临时视图。
 - `engines.local.catalogs.mysql` 是显式 Spark JDBC Catalog 配置：可用 `show namespaces in mysql` 查看 MySQL database，用 `show tables in mysql.app` 查看表，用 `select * from mysql.app.users` 做原生查询。MySQL JDBC URL 需要带 `databaseTerm=SCHEMA`，让 Spark 传入的 JDBC schemaPattern 对应 MySQL database。
-- MySQL catalog 只用于原生 SQL 浏览/查询；local 引擎下的 `datasources.mysql` 和 `catalogs.mysql` 不互相隐式复用。`load/save mysql` 仍走 SparkOne adapter，因此 SQL 侧仍不能覆盖 `url/user/password/driver/dbtable/query`，`load mysql ... where "..."` 的 JDBC 子查询和 `save overwrite` 安全策略也保持不变。
+- MySQL catalog 只用于原生 SQL 浏览/查询；local 引擎下的 `datasources.mysql` 和 `catalogs.mysql` 不互相隐式复用。`load/save mysql` 仍走 SparkOne adapter，因此 SQL 侧不能覆盖 `url/user/password/driver/dbtable/query`。
 - Kyuubi 引擎下的 `load mysql.\`catalog.db.table\`` 复用远端 Spark JDBC Catalog 配置，不读取 `engines.local.datasources.mysql`，也不允许 SQL 传 `url/user/password/driver/dbtable/query`。SparkOne 只传 catalog、表名、可选 `where` 和受控 partition 参数；真实 MySQL 连接信息必须放在 Kyuubi/Spark engine 侧。
 - `save append t as mysql.\`analytics.target_table\`` 用 Spark JDBC writer 追加写入 MySQL，要求目标表已存在。
-- `save overwrite t as mysql.\`analytics.target_table\`` 默认被 `save.allowMysqlOverwrite = false` 拦截。确需覆盖时，必须先在 HOCON 打开 `save.allowMysqlOverwrite = true`，再在单条语句里显式写 `options sparkoneOverwrite="allow"`；SparkOne 不对 MySQL 表做备份。
+- `save overwrite t as mysql.\`analytics.target_table\`` 由固定能力矩阵永久拒绝。
 - `doris` 是 Spark Doris Catalog 名：`select * from doris.db.users` 直接走 Spark 原生 catalog 解析。
 - `show namespaces in doris` 查看 Doris database；裸写 `show databases` 仍查看默认 Hive catalog。
 - `load doris.\`db.users\` as users` 是语法糖，编译成 `CREATE OR REPLACE TEMPORARY VIEW users AS SELECT * FROM doris.db.users`。
 - `load doris.\`db.users\` where "dt = date '2026-06-17'" as users` 会编译成 `SELECT * FROM doris.db.users WHERE ...`；是否源端下推由 Spark Doris Catalog / Connector 的谓词下推能力决定。
 - `save append t as doris.\`db.target\`` 编译成 `INSERT INTO TABLE doris.db.target SELECT * FROM t`，要求目标表已存在。
-- `save overwrite t as doris.\`db.target\`` 编译成 `INSERT OVERWRITE TABLE doris.db.target SELECT * FROM t`，要求目标表已存在，默认被 `save.allowDorisOverwrite = false` 拦截。确需覆盖时，必须先在 HOCON 打开 `save.allowDorisOverwrite = true`，再在单条语句里显式写 `options sparkoneOverwrite="allow"`；SparkOne 不对 Doris 表做备份。
+- `save overwrite t as doris.\`db.target\`` 由固定能力矩阵永久拒绝。
 - `save doris` 不支持 SQL 里的 Doris 连接 options，也不支持 `partitionBy`；连接和写入参数应放在 Spark Doris Catalog 配置中。
 - `save doris` 不改变 Doris 表模型语义：`DUPLICATE KEY` 会保留所有写入行，`AGGREGATE KEY` 会按 Key 聚合 Value 列，`UNIQUE KEY` 会按 Key UPSERT。重复 append 的最终查询效果由目标表 DDL 决定。
-- Hive/MySQL/Doris 的 `save append/overwrite` 都不会自动创建目标表。目标表、分区、索引、Doris key/distribution 等应由明确 DDL 先创建和治理。
-- Doris 聚合、写入优先使用 Spark 标准 SQL，例如 `select city, count(*) from doris.db.users group by city`、`insert into doris.db.target select ...`。
+- Hive/MySQL/Doris 的 `save append` 不会自动创建目标表。目标表、分区、索引、Doris key/distribution 等应由平台外 DDL 流程先创建和治理。
+- Doris 查询和聚合使用 Spark 标准 SQL，例如 `select city, count(*) from doris.db.users group by city`；写入必须使用 `save append ... as doris`，原生 `insert` 会被写入旁路保护拒绝。
 
 HOCON 数据源推荐按类型和连接名分层。local 进程内引擎的连接信息放在 `engines.local` 下，SQL 只引用连接名：
 
@@ -259,11 +259,10 @@ include "datasources/hive.conf"
 
 文件类 save：
 
-- 当前 MVP 的 `save overwrite table as provider.\`path\`` 仍编译成 Spark SQL `INSERT OVERWRITE DIRECTORY`。
-- 覆盖写由 SparkOne runtime 做统一保护，默认需要语句显式写 `sparkoneOverwrite="allow"`。
-- `sparkoneOverwrite` 是 `overwritePolicy = "requireExplicit"` 下的单条确认信号，会从 provider options 中剥离，不传给底层数据源；其他 `save { ... }` 策略参数必须写在 HOCON 中，不能用 SQL `options` 或 `SET` 覆盖。
-- 目标路径存在时默认采用 `rename` 备份到 `/tmp/sparkone_back`；失败时会尝试恢复备份。
-- 测试案例和全局开关说明见 [safe-save.md](safe-save.md)。
+- 已识别文件 provider 的相对路径会分类为当前逻辑租户的受控 HDFS workspace，基准目录是 `/public/sparkone/user/${username}`。
+- 绝对路径或包含 URI scheme/authority 的路径分类为 external path；external path overwrite 永久拒绝。
+- 文件 append 和受控 HDFS staging overwrite executor 尚未实现，因此当前即使能力矩阵允许也会在编译阶段 fail closed。
+- 完整矩阵、路径校验和本阶段测试见 [safe-save.md](safe-save.md)。
 
 外部 provider：
 

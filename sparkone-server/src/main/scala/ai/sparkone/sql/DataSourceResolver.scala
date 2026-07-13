@@ -58,11 +58,13 @@ final class DataSourceResolver(
     if (normalized == "jdbc") {
       throw new CompileException("SparkOne does not support SAVE jdbc. Use SAVE mysql with the selected local engine's datasources.mysql config.")
     } else if (normalized == "mysql") {
-      if (mysqlLoadMode == MysqlLoadMode.KyuubiProfile) {
-        throw new CompileException("Kyuubi engine does not support SparkOne save mysql adapter; use remote catalog SQL or a Kyuubi/Spark-side write path.")
-      }
       val target = mysqlTarget(path, "SAVE")
-      MysqlSaveSource(target.dbtable, mysqlOptions(target.connection, target.dbtable, options))
+      if (mysqlLoadMode == MysqlLoadMode.KyuubiProfile) {
+        validateMysqlConnectionOptions(options)
+        MysqlSaveSource(target.dbtable, Nil)
+      } else {
+        MysqlSaveSource(target.dbtable, mysqlOptions(target.connection, target.dbtable, options))
+      }
     } else if (normalized == "doris") {
       if (options.nonEmpty) {
         throw new CompileException("SAVE doris does not support SQL OPTIONS. Configure Spark Doris Catalog in the selected local engine's catalogs.doris or Kyuubi/Spark engine config.")
@@ -249,14 +251,19 @@ final class DataSourceResolver(
       connection: String,
       dbtable: String,
       statementOptions: Seq[(String, String)]): Seq[(String, String)] = {
-    val forbidden = Set("url", "driver", "user", "password", "dbtable", "query")
-    statementOptions.find { case (key, _) => forbidden.contains(key.toLowerCase) }.foreach { case (key, _) =>
-      throw new CompileException(s"MySQL connection option '$key' must be configured in the selected local engine's datasources.mysql, not SQL OPTIONS")
-    }
+    validateMysqlConnectionOptions(statementOptions)
 
     val base = mysqlConnectionOptions(connection)
     val merged = base ++ statementOptions.map { case (key, value) => key -> value } :+ ("dbtable" -> dbtable)
     merged
+  }
+
+  private def validateMysqlConnectionOptions(options: Seq[(String, String)]): Unit = {
+    val forbidden = Set("url", "driver", "user", "password", "dbtable", "query")
+    options.find { case (key, _) => forbidden.contains(key.toLowerCase) }.foreach { case (key, _) =>
+      throw new CompileException(
+        s"MySQL connection option '$key' must be configured outside SQL OPTIONS")
+    }
   }
 
   private def renderMysqlFilteredDbtable(dbtable: String, filter: String): String = {

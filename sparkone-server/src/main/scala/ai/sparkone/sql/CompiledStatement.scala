@@ -4,8 +4,19 @@ final case class CompiledStatement(
     source: String,
     sql: String,
     load: Option[LoadStatementMetadata] = None,
-    save: Option[SaveStatementMetadata] = None,
-    set: Option[SetStatementMetadata] = None)
+    writePlan: Option[WritePlan] = None,
+    set: Option[SetStatementMetadata] = None,
+    intent: StatementIntent = StatementIntent.NativeSql)
+
+sealed trait StatementIntent
+
+object StatementIntent {
+  case object NativeSql extends StatementIntent
+  case object Load extends StatementIntent
+  case object View extends StatementIntent
+  case object SetVariable extends StatementIntent
+  case object Save extends StatementIntent
+}
 
 final case class SetStatementMetadata(
     key: String,
@@ -18,15 +29,6 @@ final case class LoadStatementMetadata(
     path: String,
     options: Map[String, String],
     targetType: LoadTargetType = LoadTargetType.Provider)
-
-final case class SaveStatementMetadata(
-    mode: String,
-    table: String,
-    format: String,
-    path: String,
-    options: Map[String, String],
-    targetType: SaveTargetType = SaveTargetType.File,
-    targetOptions: Map[String, String] = Map.empty)
 
 sealed trait LoadTargetType
 
@@ -45,8 +47,6 @@ object SetValueType {
 sealed trait SaveTargetType
 
 object SaveTargetType {
-  case object File extends SaveTargetType
   case object Catalog extends SaveTargetType
   case object DorisCatalog extends SaveTargetType
-  case object Mysql extends SaveTargetType
 }

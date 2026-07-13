@@ -171,36 +171,3 @@ engines {
     # }
   }
 }
-
-save {
-  # 文件覆盖写风险较高，默认要求每条 save 语句显式确认，例如：
-  # options sparkoneOverwrite="allow"
-  overwritePolicy = "requireExplicit"
-  # 目标已存在时，先按备份策略处理旧目录；支持：rename、trash、none。
-  overwriteBackup = "rename"
-  # rename 备份根目录。不带 scheme 的路径会按 save 目标所在文件系统解析。
-  overwriteBackupPath = "/tmp/sparkone_back"
-  # 默认禁止 MySQL overwrite。该行为可能 truncate 或 drop/recreate 目标表，只有明确接受风险时再打开。
-  # 打开后，单条 save overwrite mysql 仍然需要 options sparkoneOverwrite="allow"。
-  allowMysqlOverwrite = false
-  # 默认禁止 Doris overwrite。Doris Catalog 的 INSERT OVERWRITE 是表级覆盖风险，只有明确接受风险时再打开。
-  # 打开后，单条 save overwrite doris 仍然需要 options sparkoneOverwrite="allow"。
-  allowDorisOverwrite = false
-  # 默认禁止原生 Spark SQL 的 INSERT OVERWRITE，避免绕过 SparkOne Safe Save。
-  # 历史脚本确实需要兼容时，再显式改为 true。
-  allowNativeInsertOverwrite = false
-  # 默认禁止原生 Spark SQL 的 DROP TABLE，避免误删 Hive/catalog 表。
-  # 该开关只允许通过启动配置打开，不允许被 SQL 或 SET 覆盖。
-  allowNativeDropTable = false
-  # 全局保护 overwrite 边界路径。命中后不允许被 SQL 参数或 SET 覆盖。
-  # 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体目录。
-  # 例如配置 "/public/odep/user" 后，"/public/odep/user" 会被拦截，
-  # "/public/odep/user/userA" 可以写。
-  # 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
-  # 不带 scheme 的路径会按 save 目标所在文件系统解析。
-  # overwriteProtectedPaths = [
-  #   "/",
-  #   "/user",
-  #   "/tmp",
-  # ]
-}

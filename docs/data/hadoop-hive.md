@@ -122,14 +122,9 @@ load hive.`default.some_table` as t;
 select * from t limit 10;
 ```
 
-验证 Hive 表写入：
+验证 Hive 表写入。请先通过平台外 Hive/catalog 管理入口创建 `default.sparkone_hive_test(id int, name string)`；下面只是在 SparkOne 中执行的 SQL：
 
 ```sql
-create table if not exists default.sparkone_hive_test (
-  id int,
-  name string
-) using parquet;
-
 view hive_write_test as
 select * from values
   (1, 'alice'),
@@ -141,14 +136,13 @@ save append hive_write_test as hive.`default.sparkone_hive_test`;
 select * from default.sparkone_hive_test limit 10;
 ```
 
-覆盖写需要显式确认：
+Hive Catalog overwrite 被固定能力矩阵永久拒绝：
 
 ```sql
-save overwrite hive_write_test as hive.`default.sparkone_hive_test`
-options sparkoneOverwrite="allow";
+save overwrite hive_write_test as hive.`default.sparkone_hive_test`;
 ```
 
-`save ... as hive` 会编译成 Spark 原生 `INSERT INTO/OVERWRITE TABLE`。它不做文件目录备份；建表、表格式和分区定义建议用 Spark 原生 `CREATE TABLE` 明确声明。
+该语句应在编译阶段失败。Hive 写入当前只允许 `save append`，并编译成内部受控的 `INSERT INTO TABLE`；建表、表格式和分区定义必须由平台外治理入口完成。
 
 常见认证错误：
 

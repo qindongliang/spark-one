@@ -1,5 +1,6 @@
 package ai.sparkone.sql
 
+import ai.sparkone.identity.TenantContext
 import ai.sparkone.sql.parser.{SparkOneDslLexer, SparkOneDslParser}
 import org.antlr.v4.runtime.{BaseErrorListener, CharStreams, CommonTokenStream, Parser, RecognitionException, Recognizer}
 
@@ -8,13 +9,26 @@ import scala.collection.mutable
 
 final class SparkOneCompiler(
     sqlValidator: SqlValidator = SqlValidator.Noop,
-    dataSourceResolver: DataSourceResolver = new DataSourceResolver()) {
+    dataSourceResolver: DataSourceResolver = new DataSourceResolver(),
+    writePlanner: WritePlanner = new WritePlanner,
+    statementPolicy: StatementPolicy = new StatementPolicy) {
   def compile(script: String): Seq[CompiledStatement] = {
-    compileWithVariables(script, Map.empty, allowUnresolvedVariables = true)
+    compile(SparkOneCompiler.CompilerTenant, script)
+  }
+
+  def compile(tenant: TenantContext, script: String): Seq[CompiledStatement] = {
+    compileWithVariables(tenant, script, Map.empty, allowUnresolvedVariables = true)
   }
 
   def compileStatementWithVariables(script: String, variables: Map[String, String]): CompiledStatement = {
-    val compiled = compileWithVariables(script, variables, allowUnresolvedVariables = false)
+    compileStatementWithVariables(SparkOneCompiler.CompilerTenant, script, variables)
+  }
+
+  def compileStatementWithVariables(
+      tenant: TenantContext,
+      script: String,
+      variables: Map[String, String]): CompiledStatement = {
+    val compiled = compileWithVariables(tenant, script, variables, allowUnresolvedVariables = false)
     if (compiled.size != 1) {
       throw new CompileException(s"Expected exactly one statement after variable substitution, got ${compiled.size}")
     }
@@ -28,6 +42,7 @@ final class SparkOneCompiler(
   }
 
   private def compileWithVariables(
+      tenant: TenantContext,
       script: String,
       initialVariables: Map[String, String],
       allowUnresolvedVariables: Boolean): Seq[CompiledStatement] = {
@@ -42,14 +57,22 @@ final class SparkOneCompiler(
       if (statements.size != 1) {
         throw new CompileException(s"Expected exactly one statement after variable substitution, got ${statements.size}")
       }
-      val compiled = compileParsedStatement(renderedSource, statements.head)
+      val compiled = compileParsedStatement(tenant, renderedSource, statements.head)
       sqlValidator.validate(compiled.sql)
+      val statement = CompiledStatement(
+        renderedSource,
+        compiled.sql,
+        compiled.load,
+        compiled.writePlan,
+        compiled.set,
+        compiled.intent)
+      statementPolicy.validate(statement)
       compiled.set.foreach { metadata =>
         if (metadata.valueType == SetValueType.Literal) {
           variables(metadata.key) = metadata.value
         }
       }
-      CompiledStatement(renderedSource, compiled.sql, compiled.load, compiled.save, compiled.set)
+      statement
     }
   }
 
@@ -64,15 +87,18 @@ final class SparkOneCompiler(
     parser.script()
   }
 
-  private def compileParsedStatement(script: String, statement: SparkOneDslParser.StatementContext): CompileResult = {
+  private def compileParsedStatement(
+      tenant: TenantContext,
+      script: String,
+      statement: SparkOneDslParser.StatementContext): CompileResult = {
     if (statement.loadStatement() != null) {
       compileLoad(statement.loadStatement())
     } else if (statement.saveStatement() != null) {
-      compileSave(statement.saveStatement())
+      compileSave(tenant, statement.saveStatement())
     } else if (statement.setStatement() != null) {
       compileSet(script, statement.setStatement())
     } else if (statement.viewStatement() != null) {
-      CompileResult(compileView(script, statement.viewStatement()))
+      CompileResult(compileView(script, statement.viewStatement()), intent = StatementIntent.View)
     } else {
       val sql = originalText(script, statement).trim
       rejectMalformedSparkOneDsl(sql)
@@ -92,7 +118,8 @@ final class SparkOneCompiler(
     }
     CompileResult(
       SparkOneSqlRender.renderSparkOneAction("SET", key),
-      set = Some(SetStatementMetadata(key, value, valueType)))
+      set = Some(SetStatementMetadata(key, value, valueType)),
+      intent = StatementIntent.SetVariable)
   }
 
   private def rejectLegacyDslWhere(sql: String): Unit = {
@@ -127,69 +154,41 @@ final class SparkOneCompiler(
       case ProviderLoadSource(provider, providerOptions) =>
         CompileResult(
           SparkOneSqlRender.renderCreateTempViewUsing(table, provider, providerOptions),
-          load = Some(LoadStatementMetadata(table, format, path, providerOptions.toMap)))
+          load = Some(LoadStatementMetadata(table, format, path, providerOptions.toMap)),
+          intent = StatementIntent.Load)
       case CatalogTableSource(identifier) =>
         CompileResult(
           SparkOneSqlRender.renderCreateTempViewAsSelect(table, identifier),
-          load = Some(LoadStatementMetadata(table, format, identifier, Map.empty)))
+          load = Some(LoadStatementMetadata(table, format, identifier, Map.empty)),
+          intent = StatementIntent.Load)
       case MysqlLoadSource(dbtable, jdbcOptions) =>
         CompileResult(
           SparkOneSqlRender.renderSparkOneAction("LOAD MYSQL", s"$dbtable AS $table"),
-          load = Some(LoadStatementMetadata(table, format, dbtable, jdbcOptions.toMap, LoadTargetType.Mysql)))
+          load = Some(LoadStatementMetadata(table, format, dbtable, jdbcOptions.toMap, LoadTargetType.Mysql)),
+          intent = StatementIntent.Load)
     }
   }
 
-  private def compileSave(save: SparkOneDslParser.SaveStatementContext): CompileResult = {
+  private def compileSave(tenant: TenantContext, save: SparkOneDslParser.SaveStatementContext): CompileResult = {
     val mode = Option(save.saveMode()).map(_.getText.toLowerCase).getOrElse("errorifexists")
     val table = SparkOneSqlRender.requireIdentifier(save.table.getText, "SAVE source table")
     val (format, path) = parseSource(save.source(), "SAVE")
     val options = parseOptions(save.optionClause())
     val partitionColumns = parsePartitionColumns(save.partitionClause())
-    val (runtimeOptions, providerOptions) = SaveControlOptions.partition(options)
-    val forbiddenStatementControls = runtimeOptions.collect {
-      case (key, _) if !key.equalsIgnoreCase(SaveControlOptions.Overwrite) => key
-    }
-    if (forbiddenStatementControls.nonEmpty) {
-      throw new CompileException(
-        s"SparkOne save option '${forbiddenStatementControls.head}' must be configured in HOCON save.*, not SQL OPTIONS")
-    }
-    val runtimeOptionMap = runtimeOptions.map { case (key, value) => key.toLowerCase -> value }.toMap
-
-    dataSourceResolver.resolveSave(format, path, providerOptions) match {
-      case ProviderSaveSource(provider) =>
-        if (mode != "overwrite") {
-          throw new CompileException(s"SAVE mode '$mode' is not supported for file/provider source '$format' yet")
-        }
-        if (partitionColumns.nonEmpty) {
-          throw new CompileException(s"SAVE partitionBy is only supported for catalog source in the MVP compiler")
-        }
-        CompileResult(
-          SparkOneSqlRender.renderInsertOverwriteDirectory(path, provider, providerOptions, table),
-          Some(SaveStatementMetadata(mode, table, format, path, runtimeOptionMap)))
-      case CatalogSaveSource(targetTable, targetType, supportsPartitionBy) =>
-        if (mode != "overwrite" && mode != "append") {
-          throw new CompileException(s"SAVE mode '$mode' is not supported for catalog source '$format'")
-        }
-        if (providerOptions.nonEmpty) {
-          throw new CompileException(s"SAVE to catalog source '$format' does not support provider OPTIONS yet")
-        }
-        if (partitionColumns.nonEmpty && !supportsPartitionBy) {
-          throw new CompileException(s"SAVE partitionBy is not supported for $format source")
-        }
-        CompileResult(
-          SparkOneSqlRender.renderInsertTable(mode, targetTable, table, partitionColumns),
-          Some(SaveStatementMetadata(mode, table, format, targetTable, runtimeOptionMap, targetType)))
-      case MysqlSaveSource(dbtable, jdbcOptions) =>
-        if (mode != "overwrite" && mode != "append") {
-          throw new CompileException(s"SAVE mode '$mode' is not supported for mysql source")
-        }
-        if (partitionColumns.nonEmpty) {
-          throw new CompileException("SAVE partitionBy is not supported for mysql source")
-        }
-        CompileResult(
-          SparkOneSqlRender.renderSparkOneAction("SAVE MYSQL", s"$table TO $dbtable"),
-          Some(SaveStatementMetadata(mode, table, format, dbtable, runtimeOptionMap, SaveTargetType.Mysql, jdbcOptions.toMap)))
-    }
+    val resolvedSource = dataSourceResolver.resolveSave(format, path, options)
+    val plan = writePlanner.plan(
+      tenant,
+      mode,
+      table,
+      format,
+      path,
+      options,
+      partitionColumns,
+      resolvedSource)
+    CompileResult(
+      WriteSqlRenderer.render(plan),
+      writePlan = Some(plan),
+      intent = StatementIntent.Save)
   }
 
   private def compileView(script: String, view: SparkOneDslParser.ViewStatementContext): String = {
@@ -256,11 +255,13 @@ final class SparkOneCompiler(
 
 private final case class CompileResult(
     sql: String,
-    save: Option[SaveStatementMetadata] = None,
+    writePlan: Option[WritePlan] = None,
     load: Option[LoadStatementMetadata] = None,
-    set: Option[SetStatementMetadata] = None)
+    set: Option[SetStatementMetadata] = None,
+    intent: StatementIntent = StatementIntent.NativeSql)
 
 private object SparkOneCompiler {
+  private val CompilerTenant = TenantContext.development("compiler")
   private val DslSource = """[A-Za-z_][A-Za-z0-9_]*\s*\.\s*`(?:``|[^`])*`"""
   private val LoadWithoutAsPattern =
     """(?is)^\s*load\s+([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*`((?:``|[^`])*)`(.*)$""".r
@@ -288,18 +289,6 @@ private object SparkOneCompiler {
 
 }
 
-object SaveControlOptions {
-  val Overwrite: String = "sparkoneOverwrite"
-  val OverwriteBackup: String = "sparkoneOverwriteBackup"
-  val OverwriteBackupPath: String = "sparkoneOverwriteBackupPath"
-
-  private val Names = Set(Overwrite, OverwriteBackup, OverwriteBackupPath).map(_.toLowerCase)
-
-  def partition(options: Seq[(String, String)]): (Seq[(String, String)], Seq[(String, String)]) = {
-    options.partition { case (key, _) => Names.contains(key.toLowerCase) }
-  }
-}
-
 private[sql] object SparkOneSqlRender {
   def renderCreateTempViewUsing(
       table: String,
@@ -315,17 +304,6 @@ private[sql] object SparkOneSqlRender {
 
   def renderCreateTempViewAsQuery(table: String, query: String): String = {
     s"CREATE OR REPLACE TEMPORARY VIEW $table AS $query"
-  }
-
-  def renderInsertOverwriteDirectory(
-      path: String,
-      provider: String,
-      options: Seq[(String, String)],
-      table: String): String = {
-    val optionSql =
-      if (options.isEmpty) ""
-      else s" OPTIONS (${renderOptions(options)})"
-    s"INSERT OVERWRITE DIRECTORY '${escapeSql(path)}' USING $provider$optionSql SELECT * FROM $table"
   }
 
   def renderInsertTable(

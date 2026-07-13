@@ -16,7 +16,7 @@ final class SparkOneCompilerTest {
         |from users
         |group by city;
         |
-        |save overwrite city_stats as parquet.`/tmp/city_stats`;
+        |select * from city_stats;
         |""".stripMargin
 
     val sql = compiler.compile(script).map(_.sql)
@@ -25,7 +25,7 @@ final class SparkOneCompilerTest {
       Seq(
         "CREATE OR REPLACE TEMPORARY VIEW users USING parquet OPTIONS (path '/tmp/users')",
         "CREATE OR REPLACE TEMPORARY VIEW city_stats AS select city, count(*) as cnt\nfrom users\ngroup by city",
-        "INSERT OVERWRITE DIRECTORY '/tmp/city_stats' USING parquet SELECT * FROM city_stats"),
+        "select * from city_stats"),
       sql)
   }
 
@@ -67,9 +67,9 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def leavesNativeSparkSetUntouched(): Unit = {
-    val sql = compiler.compile("set sparkone.save.overwrite.policy=allow;").head.sql
-    assertEquals("set sparkone.save.overwrite.policy=allow", sql)
+  def rejectsNativeSparkSet(): Unit = {
+    val error = tryCompile("set spark.sql.shuffle.partitions=8;")
+    assertTrue(error.getMessage.contains("native read-only SQL"))
   }
 
   @Test
@@ -338,7 +338,7 @@ final class SparkOneCompilerTest {
   @Test
   def rejectsWhereAsDslOptionClause(): Unit = {
     try {
-      compiler.compile("save overwrite users as parquet.`/tmp/users` where sparkoneOverwrite='allow';")
+      compiler.compile("save overwrite users as parquet.`/tmp/users` where header='true';")
       fail("Expected CompileException")
     } catch {
       case e: CompileException =>
@@ -376,106 +376,24 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def compilesExcelSaveWithProviderAlias(): Unit = {
-    val sql = compiler.compile("save overwrite users as excel.`/tmp/users.xlsx` options header=true;").head.sql
+  def rejectsFileOverwriteUntilManagedHdfsStagingExecutorExists(): Unit = {
+    val external = tryCompile("save overwrite users as excel.`/tmp/users.xlsx` options header=true;")
+    assertTrue(external.getMessage.contains("external-path"))
+    assertTrue(external.getMessage.contains("permanently denied"))
 
-    assertEquals(
-      "INSERT OVERWRITE DIRECTORY '/tmp/users.xlsx' USING excel OPTIONS " +
-        "(header 'true') SELECT * FROM users",
-      sql)
+    val managed = tryCompile("save overwrite users as parquet.`reports/daily`;")
+    assertTrue(managed.getMessage.contains("staging overwrite executor"))
   }
 
   @Test
-  def compilesSaveOverwriteAsParquet(): Unit = {
-    val sql = compiler.compile("save overwrite city_stats as parquet.`/tmp/city_stats`;").head.sql
-
-    assertEquals(
-      "INSERT OVERWRITE DIRECTORY '/tmp/city_stats' USING parquet SELECT * FROM city_stats",
-      sql)
-  }
-
-  @Test
-  def compilesSaveOverwriteWithOptions(): Unit = {
-    val sql = compiler.compile(
-      """save overwrite users as csv.`/tmp/users_csv`
-        |options header="true"
-        |and delimiter=","
-        |and compression="gzip";
-        |""".stripMargin).head.sql
-
-    assertEquals(
-      "INSERT OVERWRITE DIRECTORY '/tmp/users_csv' USING csv OPTIONS " +
-        "(header 'true', delimiter ',', compression 'gzip') SELECT * FROM users",
-      sql)
-  }
-
-  @Test
-  def stripsSparkOneOverwriteConfirmationFromProviderOptions(): Unit = {
-    val statement = compiler.compile(
-      """save overwrite users as csv.`/tmp/users_csv`
-        |options header="true"
-        |and sparkoneoverwrite="allow";
-        |""".stripMargin).head
-
-    assertEquals(
-      "INSERT OVERWRITE DIRECTORY '/tmp/users_csv' USING csv OPTIONS " +
-        "(header 'true') SELECT * FROM users",
-      statement.sql)
-    assertEquals(Some("allow"), statement.save.flatMap(_.options.get("sparkoneoverwrite")))
-  }
-
-  @Test
-  def rejectsSparkOneSaveConfigOptionsInStatement(): Unit = {
-    try {
-      compiler.compile(
-        """save overwrite users as csv.`/tmp/users_csv`
-          |options sparkoneOverwriteBackup="trash";
-          |""".stripMargin)
-      fail("Expected CompileException")
-    } catch {
-      case e: CompileException =>
-        assertTrue(e.getMessage.contains("HOCON save"))
-    }
-  }
-
-  @Test
-  def compilesSaveOverwriteWithLocalFilePath(): Unit = {
-    val sql = compiler.compile("save overwrite users as json.`file:///tmp/users_json`;").head.sql
-
-    assertEquals(
-      "INSERT OVERWRITE DIRECTORY 'file:///tmp/users_json' USING json SELECT * FROM users",
-      sql)
-  }
-
-  @Test
-  def compilesViewThenSavePipeline(): Unit = {
-    val sql = compiler.compile(
-      """view active_users as
-        |select *
-        |from users
-        |where status = 'active';
-        |
-        |save overwrite active_users as parquet.`/tmp/active_users`;
-        |""".stripMargin).map(_.sql)
-
-    assertEquals(
-      Seq(
-        "CREATE OR REPLACE TEMPORARY VIEW active_users AS select *\nfrom users\nwhere status = 'active'",
-        "INSERT OVERWRITE DIRECTORY '/tmp/active_users' USING parquet SELECT * FROM active_users"),
-      sql)
-  }
-
-  @Test
-  def leavesNativeCreateViewSqlUntouched(): Unit = {
-    val sql = compiler.compile(
+  def rejectsNativeCreateViewSql(): Unit = {
+    val error = tryCompile(
       """create or replace temporary view result_table as
         |select id as user_id, city
         |from users
-        |""".stripMargin).head.sql
+        |""".stripMargin)
 
-    assertEquals(
-      "create or replace temporary view result_table as\nselect id as user_id, city\nfrom users",
-      sql)
+    assertTrue(error.getMessage.contains("native read-only SQL"))
   }
 
   @Test
@@ -528,9 +446,9 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def leavesFormerTailAsTableSugarUntouched(): Unit = {
-    val sql = compiler.compile("select 1 as id as result_table;").head.sql
-    assertEquals("select 1 as id as result_table", sql)
+  def defaultCompilerRejectsFormerTailAsTableSugar(): Unit = {
+    val error = tryCompile("select 1 as id as result_table;")
+    assertTrue(error.getMessage.contains("Spark SQL parser rejected statement"))
   }
 
   @Test
@@ -581,9 +499,9 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def leavesPlainSparkSqlUntouched(): Unit = {
-    val sql = compiler.compile("create table t (id int) using parquet;").head.sql
-    assertEquals("create table t (id int) using parquet", sql)
+  def rejectsNativeCreateTable(): Unit = {
+    val error = tryCompile("create table t (id int) using parquet;")
+    assertTrue(error.getMessage.contains("native read-only SQL"))
   }
 
   @Test
@@ -602,8 +520,8 @@ final class SparkOneCompilerTest {
     val statement = compiler.compile("save append users as hive.`default.users`;").head
 
     assertEquals("INSERT INTO TABLE default.users SELECT * FROM users", statement.sql)
-    assertEquals(Some("append"), statement.save.map(_.mode))
-    assertEquals(Some(SaveTargetType.Catalog), statement.save.map(_.targetType))
+    assertEquals(Some(WriteMode.Append), statement.writePlan.map(_.mode))
+    assertEquals(Some(WriteTargetKind.HiveCatalog), statement.writePlan.map(_.target.kind))
   }
 
   @Test
@@ -619,13 +537,13 @@ final class SparkOneCompilerTest {
 
       assertEquals("SELECT 'SAVE MYSQL' AS sparkone_action, 'users TO user_stats' AS sparkone_target", statement.sql)
       assertFalse(statement.sql.contains("secret"))
-      assertEquals(Some("append"), statement.save.map(_.mode))
-      assertEquals(Some(SaveTargetType.Mysql), statement.save.map(_.targetType))
-      assertEquals(Some("user_stats"), statement.save.map(_.path))
-      assertEquals(Some("jdbc:mysql://host:3306/app"), statement.save.flatMap(_.targetOptions.get("url")))
-      assertEquals(Some("secret"), statement.save.flatMap(_.targetOptions.get("password")))
-      assertEquals(Some("user_stats"), statement.save.flatMap(_.targetOptions.get("dbtable")))
-      assertEquals(Some("500"), statement.save.flatMap(_.targetOptions.get("batchsize")))
+      assertEquals(Some(WriteMode.Append), statement.writePlan.map(_.mode))
+      assertEquals(Some(WriteTargetKind.Mysql), statement.writePlan.map(_.target.kind))
+      assertEquals(Some("user_stats"), statement.writePlan.map(_.target.identifier))
+      assertEquals(Some("jdbc:mysql://host:3306/app"), statement.writePlan.flatMap(_.target.connectionOptions.get("url")))
+      assertEquals(Some("secret"), statement.writePlan.flatMap(_.target.connectionOptions.get("password")))
+      assertEquals(Some("user_stats"), statement.writePlan.flatMap(_.target.connectionOptions.get("dbtable")))
+      assertEquals(Some("500"), statement.writePlan.flatMap(_.target.connectionOptions.get("batchsize")))
     }
   }
 
@@ -649,15 +567,10 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def compilesSaveOverwriteToHiveTableWithControlOptions(): Unit = {
-    val statement = compiler.compile(
-      """save overwrite users as hive.`default.users`
-        |options sparkoneOverwrite="allow";
-        |""".stripMargin).head
-
-    assertEquals("INSERT OVERWRITE TABLE default.users SELECT * FROM users", statement.sql)
-    assertEquals(Some("allow"), statement.save.flatMap(_.options.get("sparkoneoverwrite")))
-    assertEquals(Some(SaveTargetType.Catalog), statement.save.map(_.targetType))
+  def rejectsSaveOverwriteToHiveTablePermanently(): Unit = {
+    val error = tryCompile("save overwrite users as hive.`default.users`;")
+    assertTrue(error.getMessage.contains("hive-catalog"))
+    assertTrue(error.getMessage.contains("permanently denied"))
   }
 
   @Test
@@ -665,21 +578,16 @@ final class SparkOneCompilerTest {
     val statement = compiler.compile("save append users as doris.`dataagent.user_stats`;").head
 
     assertEquals("INSERT INTO TABLE doris.dataagent.user_stats SELECT * FROM users", statement.sql)
-    assertEquals(Some("append"), statement.save.map(_.mode))
-    assertEquals(Some("doris.dataagent.user_stats"), statement.save.map(_.path))
-    assertEquals(Some(SaveTargetType.DorisCatalog), statement.save.map(_.targetType))
+    assertEquals(Some(WriteMode.Append), statement.writePlan.map(_.mode))
+    assertEquals(Some("doris.dataagent.user_stats"), statement.writePlan.map(_.target.identifier))
+    assertEquals(Some(WriteTargetKind.DorisCatalog), statement.writePlan.map(_.target.kind))
   }
 
   @Test
-  def compilesSaveOverwriteToDorisCatalogTableWithControlOptions(): Unit = {
-    val statement = compiler.compile(
-      """save overwrite users as doris.`dataagent.user_stats`
-        |options sparkoneOverwrite="allow";
-        |""".stripMargin).head
-
-    assertEquals("INSERT OVERWRITE TABLE doris.dataagent.user_stats SELECT * FROM users", statement.sql)
-    assertEquals(Some("allow"), statement.save.flatMap(_.options.get("sparkoneoverwrite")))
-    assertEquals(Some(SaveTargetType.DorisCatalog), statement.save.map(_.targetType))
+  def rejectsSaveOverwriteToDorisCatalogTablePermanently(): Unit = {
+    val error = tryCompile("save overwrite users as doris.`dataagent.user_stats`;")
+    assertTrue(error.getMessage.contains("doris-catalog"))
+    assertTrue(error.getMessage.contains("permanently denied"))
   }
 
   @Test
@@ -739,11 +647,10 @@ final class SparkOneCompilerTest {
         |load hive.`default.source_users` as source_users;
         |load excel.`/tmp/users.xlsx` options header="true" as excel_users;
         |view city_stats as select city, count(*) as cnt from users group by city;
-        |save overwrite city_stats as parquet.`/tmp/city_stats`;
         |save append city_stats as hive.`default.city_stats` partitionBy dt;
         |""".stripMargin).map(_.sql)
 
-    assertEquals(6, sql.size)
+    assertEquals(5, sql.size)
   }
 
   @Test
@@ -769,6 +676,16 @@ final class SparkOneCompilerTest {
         case (key, Some(value)) => sys.props.put(key, value)
         case (key, None) => sys.props.remove(key)
       }
+    }
+  }
+
+  private def tryCompile(script: String): CompileException = {
+    try {
+      compiler.compile(script)
+      fail("Expected CompileException")
+      throw new AssertionError("unreachable")
+    } catch {
+      case e: CompileException => e
     }
   }
 }

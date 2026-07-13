@@ -1,12 +1,12 @@
 package ai.sparkone.server
 
+import ai.sparkone.identity.{DevelopmentSessionStore, TenantContext}
 import ai.sparkone.runtime.{PreviewConfig, SparkOneEngineRegistry}
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import io.javalin.Javalin
 import io.javalin.core.JavalinConfig
-import io.javalin.http.Context
-import io.javalin.http.RequestLogger
+import io.javalin.http.{Context, Cookie, RequestLogger, SameSite}
 import io.javalin.http.staticfiles.Location
 import org.slf4j.LoggerFactory
 import com.typesafe.config.{Config, ConfigException, ConfigFactory}
@@ -20,6 +20,8 @@ object SparkOneServer {
   private lazy val logger = LoggerFactory.getLogger(getClass)
   private val mapper = new ObjectMapper().registerModule(DefaultScalaModule)
   private val SimpleIdentifier = "^[A-Za-z_][A-Za-z0-9_]*$".r
+  private val SessionCookieName = "sparkone_session"
+  private val sessions = new DevelopmentSessionStore
   @volatile private var enginesRef: SparkOneEngineRegistry = _
 
   def main(args: Array[String]): Unit = {
@@ -50,6 +52,9 @@ object SparkOneServer {
       }
     }).start(host, port)
     app.get("/api/config", (ctx: Context) => handleConfig(ctx))
+    app.get("/api/session", (ctx: Context) => handleSession(ctx))
+    app.post("/api/login", (ctx: Context) => handleLogin(ctx))
+    app.post("/api/logout", (ctx: Context) => handleLogout(ctx))
     app.post("/api/compile", (ctx: Context) => handleCompile(ctx))
     app.post("/api/run", (ctx: Context) => handleRun(ctx))
     app.post("/api/preview", (ctx: Context) => handlePreview(ctx))
@@ -65,59 +70,126 @@ object SparkOneServer {
     json(ctx, uiConfig)
   }
 
-  private def handleCompile(ctx: Context): Unit = {
-    val request = readSqlRequest(ctx)
+  private def handleSession(ctx: Context): Unit = {
+    sessions.resolve(sessionToken(ctx)) match {
+      case Some(tenant) =>
+        json(ctx, Map(
+          "authenticated" -> true,
+          "username" -> tenant.username,
+          "identitySource" -> tenant.identitySource))
+      case None =>
+        json(ctx, Map("authenticated" -> false))
+    }
+  }
+
+  private def handleLogin(ctx: Context): Unit = {
     try {
-      val engine = engines.get(request.engine)
-      val statements = engine.compile(request.script).zipWithIndex.map { case (statement, index) =>
-        Map(
-          "index" -> (index + 1),
-          "source" -> statement.source,
-          "sql" -> statement.sql)
-      }
+      val node = mapper.readTree(ctx.body())
+      val username = Option(node.get("username")).filterNot(_.isNull).map(_.asText()).getOrElse("")
+      val previousToken = sessionToken(ctx)
+      val session = sessions.create(username)
+      sessions.remove(previousToken)
+      val cookie = new Cookie(SessionCookieName, session.token)
+      cookie.setPath("/")
+      cookie.setHttpOnly(true)
+      cookie.setSameSite(SameSite.LAX)
+      ctx.cookie(cookie)
+      logger.info(s"Development tenant login: username=${session.tenant.username}")
       json(ctx, Map(
         "success" -> true,
-        "engine" -> engine.id,
-        "diagnostics" -> engine.capabilities.compileDiagnostics,
-        "statements" -> statements))
+        "authenticated" -> true,
+        "username" -> session.tenant.username,
+        "identitySource" -> session.tenant.identitySource))
     } catch {
-      case e: Throwable =>
-        logger.warn("Failed to compile SQL request", e)
+      case e: IllegalArgumentException =>
+        logger.warn(s"Development tenant login rejected: ${errorMessage(e)}")
         json(ctx.status(400), Map("success" -> false, "error" -> errorMessage(e)))
+      case e: Throwable =>
+        logger.error("Failed to process development tenant login", e)
+        json(ctx.status(400), Map("success" -> false, "error" -> "Invalid login request"))
+    }
+  }
+
+  private def handleLogout(ctx: Context): Unit = {
+    sessions.remove(sessionToken(ctx))
+    ctx.removeCookie(SessionCookieName, "/")
+    json(ctx, Map("success" -> true, "authenticated" -> false))
+  }
+
+  private def handleCompile(ctx: Context): Unit = {
+    withTenant(ctx) { tenant =>
+      val request = readSqlRequest(ctx)
+      try {
+        val engine = engines.get(request.engine)
+        val statements = engine.compile(tenant, request.script).zipWithIndex.map { case (statement, index) =>
+          Map(
+            "index" -> (index + 1),
+            "source" -> statement.source,
+            "sql" -> statement.sql)
+        }
+        json(ctx, Map(
+          "success" -> true,
+          "engine" -> engine.id,
+          "diagnostics" -> engine.capabilities.compileDiagnostics,
+          "statements" -> statements))
+      } catch {
+        case e: Throwable =>
+          logger.warn(s"Failed to compile SQL request for tenant ${tenant.username}", e)
+          json(ctx.status(400), Map("success" -> false, "error" -> errorMessage(e)))
+      }
     }
   }
 
   private def handleRun(ctx: Context): Unit = {
-    val request = readSqlRequest(ctx)
-    try {
-      val engine = engines.get(request.engine)
-      val result = engine.run(request.script, request.limit)
-      json(ctx, Map(
-        "success" -> result.success,
-        "engine" -> engine.id,
-        "showCompiledSql" -> showCompiledSql,
-        "statements" -> result.statements))
-    } catch {
-      case e: Throwable =>
-        logger.warn("Failed to run SQL request", e)
-        json(ctx.status(400), Map("success" -> false, "error" -> errorMessage(e)))
+    withTenant(ctx) { tenant =>
+      val request = readSqlRequest(ctx)
+      try {
+        val engine = engines.get(request.engine)
+        val result = engine.run(tenant, request.script, request.limit)
+        json(ctx, Map(
+          "success" -> result.success,
+          "engine" -> engine.id,
+          "showCompiledSql" -> showCompiledSql,
+          "statements" -> result.statements))
+      } catch {
+        case e: Throwable =>
+          logger.warn(s"Failed to run SQL request for tenant ${tenant.username}", e)
+          json(ctx.status(400), Map("success" -> false, "error" -> errorMessage(e)))
+      }
     }
   }
 
   private def handlePreview(ctx: Context): Unit = {
-    try {
-      val request = readPreviewRequest(ctx)
-      val engine = engines.get(request.engine)
-      val result = engine.previewTable(request.table, request.limit)
-      json(ctx, Map(
-        "success" -> true,
-        "engine" -> engine.id,
-        "statement" -> result))
-    } catch {
-      case e: Throwable =>
-        logger.warn("Failed to preview table", e)
-        json(ctx.status(400), Map("success" -> false, "error" -> errorMessage(e)))
+    withTenant(ctx) { tenant =>
+      try {
+        val request = readPreviewRequest(ctx)
+        val engine = engines.get(request.engine)
+        val result = engine.previewTable(tenant, request.table, request.limit)
+        json(ctx, Map(
+          "success" -> true,
+          "engine" -> engine.id,
+          "statement" -> result))
+      } catch {
+        case e: Throwable =>
+          logger.warn(s"Failed to preview table for tenant ${tenant.username}", e)
+          json(ctx.status(400), Map("success" -> false, "error" -> errorMessage(e)))
+      }
     }
+  }
+
+  private def withTenant(ctx: Context)(body: TenantContext => Unit): Unit = {
+    sessions.resolve(sessionToken(ctx)) match {
+      case Some(tenant) => body(tenant)
+      case None =>
+        json(ctx.status(401), Map(
+          "success" -> false,
+          "authenticated" -> false,
+          "error" -> "Login required"))
+    }
+  }
+
+  private def sessionToken(ctx: Context): Option[String] = {
+    Option(ctx.cookie(SessionCookieName)).map(_.trim).filter(_.nonEmpty)
   }
 
   private def uiConfig: Map[String, Any] = {
@@ -290,12 +362,6 @@ private object ServerOptions {
             properties += localProperty("spark.kerberos.keytab") -> requireValue(arg)
           case "--krb5-conf" =>
             properties += localProperty("java.security.krb5.conf") -> requireValue(arg)
-          case "--save-overwrite-policy" =>
-            properties += "sparkone.save.overwrite.policy" -> requireValue(arg)
-          case "--save-overwrite-backup" =>
-            properties += "sparkone.save.overwrite.backup" -> requireValue(arg)
-          case "--save-overwrite-backup-path" =>
-            properties += "sparkone.save.overwrite.backup.path" -> requireValue(arg)
           case value if value.forall(_.isDigit) =>
             properties += "sparkone.port" -> value
             port = Some(value.toInt)
@@ -320,9 +386,6 @@ private object ServerOptions {
         case "--principal" => properties += localProperty("spark.kerberos.principal") -> value
         case "--keytab" => properties += localProperty("spark.kerberos.keytab") -> value
         case "--krb5-conf" => properties += localProperty("java.security.krb5.conf") -> value
-        case "--save-overwrite-policy" => properties += "sparkone.save.overwrite.policy" -> value
-        case "--save-overwrite-backup" => properties += "sparkone.save.overwrite.backup" -> value
-        case "--save-overwrite-backup-path" => properties += "sparkone.save.overwrite.backup.path" -> value
         case other => throw new IllegalArgumentException(s"Unknown server argument: $other")
       }
     }
@@ -367,7 +430,6 @@ private[server] object SparkOneHoconConfig {
       serverProperties(config),
       previewProperties(config),
       engineProperties(config),
-      saveProperties(config),
       passthroughProperties(config)).flatten.toMap
   }
 
@@ -444,21 +506,6 @@ private[server] object SparkOneHoconConfig {
       string(config, "spark.driverBindAddress").map(s"$prefix.spark.driver.bindAddress" -> _),
       string(config, "spark.kerberos.principal").map(s"$prefix.spark.kerberos.principal" -> _),
       string(config, "spark.kerberos.keytab").map(s"$prefix.spark.kerberos.keytab" -> _)).flatten
-  }
-
-  private def saveProperties(config: Config): Map[String, String] = {
-    Seq(
-      string(config, "save.overwritePolicy").map("sparkone.save.overwrite.policy" -> _),
-      string(config, "save.overwriteBackup").map("sparkone.save.overwrite.backup" -> _),
-      string(config, "save.overwriteBackupPath").map("sparkone.save.overwrite.backup.path" -> _),
-      stringList(config, "save.overwriteProtectedPaths")
-        .map(paths => paths.map(_.trim).filter(_.nonEmpty).mkString("\n"))
-        .filter(_.nonEmpty)
-        .map("sparkone.save.overwrite.protected.paths" -> _),
-      boolean(config, "save.allowMysqlOverwrite").map(value => "sparkone.save.mysql.overwrite.enabled" -> value.toString),
-      boolean(config, "save.allowDorisOverwrite").map(value => "sparkone.save.doris.overwrite.enabled" -> value.toString),
-      boolean(config, "save.allowNativeInsertOverwrite").map(value => "sparkone.save.native.insertOverwrite.enabled" -> value.toString),
-      boolean(config, "save.allowNativeDropTable").map(value => "sparkone.save.native.dropTable.enabled" -> value.toString)).flatten.toMap
   }
 
   private def localHadoopProperties(prefix: String, config: Config): Seq[(String, String)] = {

@@ -1,10 +1,12 @@
 package ai.sparkone.runtime
 
-import ai.sparkone.sql.{CompileException, CompiledStatement, DataSourceResolver, LoadTargetType, MysqlLoadMode, MysqlLoadProfile, SaveTargetType, SetValueType, SparkOneCompiler, SparkSqlValidator}
+import ai.sparkone.identity.TenantContext
+import ai.sparkone.sql.{CompileException, CompiledStatement, DataSourceResolver, LoadTargetType, MysqlLoadMode, MysqlLoadProfile, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType}
 import org.slf4j.LoggerFactory
 
 import java.sql.{Connection, DriverManager, ResultSet, ResultSetMetaData, Statement}
 import java.util.Properties
+import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 import scala.util.control.NonFatal
 
@@ -13,14 +15,13 @@ trait SparkOneEngine extends AutoCloseable {
   def label: String
   def engineType: String
   def capabilities: EngineCapabilities
-  def compile(script: String): Seq[CompiledStatement]
-  def run(script: String, limit: Int = PreviewConfig.current.maxRows): RunResult
-  def previewTable(table: String, limit: Int = PreviewConfig.current.maxRows): StatementResult
+  def compile(tenant: TenantContext, script: String): Seq[CompiledStatement]
+  def run(tenant: TenantContext, script: String, limit: Int = PreviewConfig.current.maxRows): RunResult
+  def previewTable(tenant: TenantContext, table: String, limit: Int = PreviewConfig.current.maxRows): StatementResult
 }
 
 final case class EngineCapabilities(
     mysqlAdapter: Boolean,
-    fileSafeBackup: Boolean,
     externalCatalogConfiguredBySparkOne: Boolean,
     sessionScopedTempViews: Boolean,
     kyuubiExternalEngineConfig: Boolean,
@@ -29,7 +30,6 @@ final case class EngineCapabilities(
 object EngineCapabilities {
   val Local: EngineCapabilities = EngineCapabilities(
     mysqlAdapter = true,
-    fileSafeBackup = true,
     externalCatalogConfiguredBySparkOne = true,
     sessionScopedTempViews = true,
     kyuubiExternalEngineConfig = false,
@@ -37,14 +37,13 @@ object EngineCapabilities {
 
   val Kyuubi: EngineCapabilities = EngineCapabilities(
     mysqlAdapter = false,
-    fileSafeBackup = false,
     externalCatalogConfiguredBySparkOne = false,
     sessionScopedTempViews = true,
     kyuubiExternalEngineConfig = true,
     compileDiagnostics = Seq(
       "Kyuubi engine does not read engines.local catalog, datasource, or jars config; configure catalogs and provider jars in Kyuubi/Spark engine.",
       "Kyuubi load mysql can use mysql.`catalog.db.table`; big-table options require sparkone_mysql provider in Kyuubi/Spark engine.",
-      "SparkOne save mysql adapter is local-only; use remote catalog SQL or Kyuubi/Spark-side datasource configuration."))
+      "SparkOne save mysql adapter is local-only; Kyuubi save mysql is unavailable."))
 }
 
 final case class EngineInfo(id: String, label: String, engineType: String, capabilities: EngineCapabilities)
@@ -61,19 +60,19 @@ final class LocalSparkEngine(
   private val compiler = new SparkOneCompiler(new SparkSqlValidator)
   @volatile private var delegateRef: SparkOneRuntime = _
 
-  override def compile(script: String): Seq[CompiledStatement] = {
+  override def compile(tenant: TenantContext, script: String): Seq[CompiledStatement] = {
     withLocalProperties {
-      compiler.compile(script)
+      compiler.compile(tenant, script)
     }
   }
 
-  override def run(script: String, limit: Int): RunResult = {
+  override def run(tenant: TenantContext, script: String, limit: Int): RunResult = {
     withLocalProperties {
-      delegate.run(script, limit)
+      delegate.run(tenant, script, limit)
     }
   }
 
-  override def previewTable(table: String, limit: Int): StatementResult = {
+  override def previewTable(tenant: TenantContext, table: String, limit: Int): StatementResult = {
     withLocalProperties {
       delegate.previewTable(table, limit)
     }
@@ -121,7 +120,8 @@ final class KyuubiJdbcEngine(
     val label: String,
     config: KyuubiJdbcConfig,
     mysqlLoadProfiles: Map[String, MysqlLoadProfile] = Map.empty,
-    compilerOverride: Option[SparkOneCompiler] = None)
+    compilerOverride: Option[SparkOneCompiler] = None,
+    connectionFactory: KyuubiJdbcConfig => Connection = KyuubiJdbcEngine.openConnection)
   extends SparkOneEngine {
 
   override val engineType: String = "kyuubi"
@@ -135,93 +135,101 @@ final class KyuubiJdbcEngine(
         mysqlLoadMode = MysqlLoadMode.KyuubiProfile,
         mysqlLoadProfiles = mysqlLoadProfiles))
   }
-  private val runLock = new AnyRef
-  private val nativeSqlSafetyGuard = new NativeSqlSafetyGuard
-  private val saveSafetyGuard = new RemoteSaveSafetyGuard
-  @volatile private var connectionRef: Connection = _
+  private val tenantSessions = TrieMap.empty[String, TenantJdbcSession]
 
-  override def compile(script: String): Seq[CompiledStatement] = {
-    compiler.compile(script).map { statement =>
+  override def compile(tenant: TenantContext, script: String): Seq[CompiledStatement] = {
+    compiler.compile(tenant, script).map { statement =>
       validateSupported(statement)
       statement
     }
   }
 
-  override def run(script: String, limit: Int): RunResult = runLock.synchronized {
-    val previewLimit = PreviewConfig.current.clampRows(Some(limit))
-    val sources = compiler.splitStatements(script)
-    val variables = mutable.LinkedHashMap[String, String]()
-    val results: Seq[StatementResult] = sources.zipWithIndex.map { case (source, offset) =>
+  override def run(tenant: TenantContext, script: String, limit: Int): RunResult = {
+    val session = tenantSession(tenant)
+    session.lock.synchronized {
+      val previewLimit = PreviewConfig.current.clampRows(Some(limit))
+      val sources = compiler.splitStatements(script)
+      val variables = mutable.LinkedHashMap[String, String]()
+      val results: Seq[StatementResult] = sources.zipWithIndex.map { case (source, offset) =>
+        val started = System.nanoTime()
+        var statement: Option[CompiledStatement] = None
+        try {
+          val compiledStatement = compiler.compileStatementWithVariables(tenant, source, variables.toMap)
+          statement = Some(compiledStatement)
+          validateSupported(compiledStatement)
+          execute(session, compiledStatement, variables, previewLimit, offset + 1, started)
+        } catch {
+          case e: Exception =>
+            val sourceSummary = statement.map(_.source).getOrElse(source)
+            val sqlSummary = statement.map(_.sql).getOrElse(source)
+            logger.error(
+              s"Kyuubi statement ${offset + 1} failed, engine=$id, tenant=${session.tenant.username}, " +
+                s"source=${summarizeSql(sourceSummary)}, " +
+                s"sql=${summarizeSql(sqlSummary)}, reason=${errorMessage(e)}",
+              e)
+            StatementResult(
+              index = offset + 1,
+              source = sourceSummary,
+              sql = sqlSummary,
+              success = false,
+              schema = Nil,
+              rows = Nil,
+              rowCount = 0,
+              truncated = false,
+              previewTable = None,
+              durationMs = elapsedMs(started),
+              error = Some(errorMessage(e)))
+        }
+      }
+
+      val success = results.forall(_.success)
+      val visibleResults =
+        if (success && results.nonEmpty && results.forall(_.previewTable.nonEmpty)) results.takeRight(1)
+        else results
+      RunResult(success, visibleResults)
+    }
+  }
+
+  override def previewTable(tenant: TenantContext, table: String, limit: Int): StatementResult = {
+    val session = tenantSession(tenant)
+    session.lock.synchronized {
       val started = System.nanoTime()
-      var statement: Option[CompiledStatement] = None
-      try {
-        val compiledStatement = compiler.compileStatementWithVariables(source, variables.toMap)
-        statement = Some(compiledStatement)
-        validateSupported(compiledStatement)
-        nativeSqlSafetyGuard.validate(compiledStatement)
-        saveSafetyGuard.validate(compiledStatement.save)
-        execute(compiledStatement, variables, previewLimit, offset + 1, started)
-      } catch {
-        case e: Exception =>
-          val sourceSummary = statement.map(_.source).getOrElse(source)
-          val sqlSummary = statement.map(_.sql).getOrElse(source)
-          logger.error(
-            s"Kyuubi statement ${offset + 1} failed, engine=$id, source=${summarizeSql(sourceSummary)}, " +
-              s"sql=${summarizeSql(sqlSummary)}, reason=${errorMessage(e)}",
-            e)
+      val previewLimit = PreviewConfig.current.clampRows(Some(limit))
+      val sql = s"SELECT * FROM `${table.replace("`", "``")}` LIMIT ${previewLimit + 1}"
+      withStatement(session) { statement =>
+        val resultSet = statement.executeQuery(sql)
+        try {
+          val result = collectResultSet(resultSet, previewLimit)
           StatementResult(
-            index = offset + 1,
-            source = sourceSummary,
-            sql = sqlSummary,
-            success = false,
-            schema = Nil,
-            rows = Nil,
-            rowCount = 0,
-            truncated = false,
-            previewTable = None,
+            index = 1,
+            source = table,
+            sql = sql,
+            success = true,
+            schema = result.schema,
+            rows = result.rows,
+            rowCount = result.rows.size,
+            truncated = result.truncated,
+            previewTable = Some(table),
             durationMs = elapsedMs(started),
-            error = Some(errorMessage(e)))
-      }
-    }
-
-    val success = results.forall(_.success)
-    val visibleResults =
-      if (success && results.nonEmpty && results.forall(_.previewTable.nonEmpty)) results.takeRight(1)
-      else results
-    RunResult(success, visibleResults)
-  }
-
-  override def previewTable(table: String, limit: Int): StatementResult = runLock.synchronized {
-    val started = System.nanoTime()
-    val previewLimit = PreviewConfig.current.clampRows(Some(limit))
-    val sql = s"SELECT * FROM `${table.replace("`", "``")}` LIMIT ${previewLimit + 1}"
-    withStatement { statement =>
-      val resultSet = statement.executeQuery(sql)
-      try {
-        val result = collectResultSet(resultSet, previewLimit)
-        StatementResult(
-          index = 1,
-          source = table,
-          sql = sql,
-          success = true,
-          schema = result.schema,
-          rows = result.rows,
-          rowCount = result.rows.size,
-          truncated = result.truncated,
-          previewTable = Some(table),
-          durationMs = elapsedMs(started),
-          error = None)
-      } finally {
-        resultSet.close()
+            error = None)
+        } finally {
+          resultSet.close()
+        }
       }
     }
   }
 
-  override def close(): Unit = runLock.synchronized {
-    closeConnection()
+  override def close(): Unit = {
+    tenantSessions.values.foreach { session =>
+      session.lock.synchronized {
+        closeConnection(session)
+      }
+    }
+    tenantSessions.clear()
   }
 
   private def execute(
+      session: TenantJdbcSession,
       statement: CompiledStatement,
       variables: mutable.Map[String, String],
       previewLimit: Int,
@@ -233,13 +241,13 @@ final class KyuubiJdbcEngine(
           case SetValueType.Literal =>
             metadata.value
           case SetValueType.Sql =>
-            firstValue(metadata.value).getOrElse("")
+            firstValue(session, metadata.value).getOrElse("")
         }
         variables(metadata.key) = value
         StatementResult(index, statement.source, statement.sql, success = true, Nil, Nil, 0,
           truncated = false, None, elapsedMs(started), None)
       case None =>
-        withStatement { jdbcStatement =>
+        withStatement(session) { jdbcStatement =>
           jdbcStatement.setMaxRows(previewLimit + 1)
           jdbcStatement.setFetchSize(previewLimit + 1)
           val hasResultSet = jdbcStatement.execute(statement.sql)
@@ -252,7 +260,7 @@ final class KyuubiJdbcEngine(
                 resultSet.close()
               }
             } else if (statement.load.nonEmpty) {
-              collectSchema(statement.load.get.table, previewLimit)
+              collectSchema(session, statement.load.get.table, previewLimit)
             } else {
               JdbcResult(Nil, Nil, truncated = false)
             }
@@ -279,15 +287,15 @@ final class KyuubiJdbcEngine(
         throw new CompileException("Kyuubi engine does not support SparkOne load mysql adapter yet; use catalog SQL or local engine")
       }
     }
-    statement.save.foreach { metadata =>
-      if (metadata.targetType == SaveTargetType.Mysql) {
-        throw new CompileException("Kyuubi engine does not support SparkOne save mysql adapter yet; use catalog SQL or local engine")
+    statement.writePlan.foreach { plan =>
+      if (plan.executionType == WriteExecutionType.MysqlAdapter) {
+        throw new CompileException("Kyuubi engine does not support SparkOne save mysql adapter; use the local engine for MySQL append")
       }
     }
   }
 
-  private def firstValue(sql: String): Option[String] = {
-    withStatement { statement =>
+  private def firstValue(session: TenantJdbcSession, sql: String): Option[String] = {
+    withStatement(session) { statement =>
       statement.setMaxRows(1)
       val resultSet = statement.executeQuery(sql)
       try {
@@ -298,9 +306,9 @@ final class KyuubiJdbcEngine(
     }
   }
 
-  private def collectSchema(table: String, previewLimit: Int): JdbcResult = {
+  private def collectSchema(session: TenantJdbcSession, table: String, previewLimit: Int): JdbcResult = {
     val sql = s"SELECT * FROM `${table.replace("`", "``")}` LIMIT 0"
-    withStatement { statement =>
+    withStatement(session) { statement =>
       statement.setMaxRows(previewLimit + 1)
       val resultSet = statement.executeQuery(sql)
       try {
@@ -335,47 +343,48 @@ final class KyuubiJdbcEngine(
     }
   }
 
-  private def withStatement[T](body: Statement => T): T = {
-    withStatement(body, retryOnReconnect = true)
+  private def withStatement[T](session: TenantJdbcSession)(body: Statement => T): T = {
+    withStatement(session, body, retryOnReconnect = true)
   }
 
-  private def withStatement[T](body: Statement => T, retryOnReconnect: Boolean): T = {
+  private def withStatement[T](
+      session: TenantJdbcSession,
+      body: Statement => T,
+      retryOnReconnect: Boolean): T = {
     var statement: Statement = null
-    val hadConnection = connectionRef != null
+    val hadConnection = session.connectionRef != null
     try {
-      statement = connection.createStatement()
+      statement = connection(session).createStatement()
       body(statement)
     } catch {
       case NonFatal(e) if retryOnReconnect && hadConnection && shouldReconnect(e) =>
-        logger.warn(s"Kyuubi connection for engine $id is stale, reconnecting once: ${errorMessage(e)}")
-        closeConnection()
-        withStatement(body, retryOnReconnect = false)
+        logger.warn(
+          s"Kyuubi connection for engine $id and tenant ${session.tenant.username} is stale, " +
+            s"reconnecting once: ${errorMessage(e)}")
+        closeConnection(session)
+        withStatement(session, body, retryOnReconnect = false)
       case NonFatal(e) =>
         if (shouldReconnect(e)) {
-          closeConnection()
+          closeConnection(session)
         }
         throw e
     } finally {
-      closeStatement(statement)
+      closeStatement(session, statement)
     }
   }
 
-  private def connection: Connection = {
-    if (connectionRef == null || connectionRef.isClosed) {
-      Class.forName(config.driver)
-      val properties = new Properties()
-      config.user.foreach(properties.setProperty("user", _))
-      config.password.foreach(properties.setProperty("password", _))
-      config.properties.foreach { case (key, value) => properties.setProperty(key, value) }
-      connectionRef = DriverManager.getConnection(config.url, properties)
-      logger.info(s"Connected to Kyuubi engine $id at ${redactJdbcUrl(config.url)}")
+  private def connection(session: TenantJdbcSession): Connection = {
+    if (session.connectionRef == null || session.connectionRef.isClosed) {
+      session.connectionRef = connectionFactory(config)
+      logger.info(
+        s"Connected logical tenant ${session.tenant.username} to Kyuubi engine $id at ${redactJdbcUrl(config.url)}")
     }
-    connectionRef
+    session.connectionRef
   }
 
-  private def closeConnection(): Unit = {
-    val current = connectionRef
-    connectionRef = null
+  private def closeConnection(session: TenantJdbcSession): Unit = {
+    val current = session.connectionRef
+    session.connectionRef = null
     if (current != null) {
       try {
         current.close()
@@ -386,7 +395,7 @@ final class KyuubiJdbcEngine(
     }
   }
 
-  private def closeStatement(statement: Statement): Unit = {
+  private def closeStatement(session: TenantJdbcSession, statement: Statement): Unit = {
     if (statement != null) {
       try {
         statement.close()
@@ -394,7 +403,7 @@ final class KyuubiJdbcEngine(
         case NonFatal(e) =>
           logger.warn(s"Failed to close Kyuubi statement for engine $id: ${errorMessage(e)}")
           if (shouldReconnect(e)) {
-            closeConnection()
+            closeConnection(session)
           }
       }
     }
@@ -433,6 +442,26 @@ final class KyuubiJdbcEngine(
     url.replaceAll("(?i)(password|pwd)=[^;]+", "$1=***")
   }
 
+  private def tenantSession(tenant: TenantContext): TenantJdbcSession = {
+    tenantSessions.getOrElseUpdate(tenant.username, new TenantJdbcSession(tenant))
+  }
+
+}
+
+private final class TenantJdbcSession(val tenant: TenantContext) {
+  val lock: AnyRef = new AnyRef
+  @volatile var connectionRef: Connection = _
+}
+
+private object KyuubiJdbcEngine {
+  def openConnection(config: KyuubiJdbcConfig): Connection = {
+    Class.forName(config.driver)
+    val properties = new Properties()
+    config.user.foreach(properties.setProperty("user", _))
+    config.password.foreach(properties.setProperty("password", _))
+    config.properties.foreach { case (key, value) => properties.setProperty(key, value) }
+    DriverManager.getConnection(config.url, properties)
+  }
 }
 
 private final case class JdbcResult(schema: Seq[FieldInfo], rows: Seq[Seq[String]], truncated: Boolean)
@@ -443,47 +472,3 @@ final case class KyuubiJdbcConfig(
     password: Option[String],
     driver: String,
     properties: Map[String, String])
-
-private final class RemoteSaveSafetyGuard {
-  private val logger = LoggerFactory.getLogger(getClass)
-
-  def validate(save: Option[ai.sparkone.sql.SaveStatementMetadata]): Unit = {
-    save.foreach { metadata =>
-      if (metadata.mode.equalsIgnoreCase("overwrite")) {
-        validateOverwrite(metadata)
-      }
-    }
-  }
-
-  private def validateOverwrite(metadata: ai.sparkone.sql.SaveStatementMetadata): Unit = {
-    metadata.targetType match {
-      case SaveTargetType.Mysql if !enabled("sparkone.save.mysql.overwrite.enabled") =>
-        throw new CompileException("SAVE overwrite mysql is disabled by SparkOne Safe Save policy")
-      case SaveTargetType.DorisCatalog if !enabled("sparkone.save.doris.overwrite.enabled") =>
-        throw new CompileException("SAVE overwrite doris is disabled by SparkOne Safe Save policy")
-      case _ =>
-    }
-
-    policy match {
-      case "deny" =>
-        logger.warn(s"Remote Safe Save: overwrite denied, target=${metadata.path}, format=${metadata.format}")
-        throw new CompileException("SAVE overwrite is disabled by SparkOne Safe Save policy")
-      case "requireexplicit" if !hasStatementConfirmation(metadata) =>
-        logger.warn(s"Remote Safe Save: overwrite requires confirmation, target=${metadata.path}, format=${metadata.format}")
-        throw new CompileException("SAVE overwrite requires options sparkoneOverwrite=\"allow\"")
-      case _ =>
-    }
-  }
-
-  private def hasStatementConfirmation(metadata: ai.sparkone.sql.SaveStatementMetadata): Boolean = {
-    metadata.options.get("sparkoneoverwrite").exists(_.equalsIgnoreCase("allow"))
-  }
-
-  private def policy: String = {
-    sys.props.getOrElse("sparkone.save.overwrite.policy", "requireExplicit").trim.toLowerCase
-  }
-
-  private def enabled(key: String): Boolean = {
-    sys.props.get(key).exists(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
-  }
-}

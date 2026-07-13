@@ -1,6 +1,7 @@
 package ai.sparkone.runtime
 
-import ai.sparkone.sql.{CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SaveStatementMetadata, SaveTargetType, SetStatementMetadata, SetValueType, SparkOneCompiler, SparkSqlValidator}
+import ai.sparkone.identity.TenantContext
+import ai.sparkone.sql.{CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SetStatementMetadata, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType, WriteMode, WritePlan, WriteTargetKind}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.UserGroupInformation
@@ -20,32 +21,34 @@ final class SparkOneRuntime(
 
   private val logger = LoggerFactory.getLogger(getClass)
   private val runLock = new AnyRef
-  private val saveOverwriteGuard = new SaveOverwriteGuard(spark)
-  private val nativeSqlSafetyGuard = new NativeSqlSafetyGuard
 
   def compile(script: String): Seq[String] = {
-    compiler.compile(script).map(_.sql)
+    compile(SparkOneRuntime.RuntimeTenant, script)
+  }
+
+  def compile(tenant: TenantContext, script: String): Seq[String] = {
+    compiler.compile(tenant, script).map(_.sql)
   }
 
   def run(
       script: String,
-      limit: Int = PreviewConfig.current.maxRows): RunResult = runLock.synchronized {
+      limit: Int = PreviewConfig.current.maxRows): RunResult = {
+    run(SparkOneRuntime.RuntimeTenant, script, limit)
+  }
+
+  def run(tenant: TenantContext, script: String, limit: Int): RunResult = runLock.synchronized {
     withDriverClassLoader {
       val previewLimit = PreviewConfig.current.clampRows(Some(limit))
       val sources = compiler.splitStatements(script)
       val variables = mutable.LinkedHashMap[String, String]()
       val results: Seq[StatementResult] = sources.zipWithIndex.map { case (source, offset) =>
         val started = System.nanoTime()
-        var preparation: Option[SaveOverwriteGuard.OverwritePreparation] = None
         var statement: Option[CompiledStatement] = None
         try {
-          val compiledStatement = compiler.compileStatementWithVariables(source, variables.toMap)
+          val compiledStatement = compiler.compileStatementWithVariables(tenant, source, variables.toMap)
           statement = Some(compiledStatement)
-          nativeSqlSafetyGuard.validate(compiledStatement)
-          preparation = saveOverwriteGuard.prepare(compiledStatement.save)
-          validateSaveTargetExists(compiledStatement.save)
+          validateWriteTargetExists(compiledStatement.writePlan)
           val dataFrame = execute(compiledStatement, variables)
-          preparation.foreach(_.commit())
           val shouldCollectRows = compiledStatement.load.isEmpty && compiledStatement.set.isEmpty
           val collected =
             if (shouldCollectRows) dataFrame.limit(previewLimit + 1).collect().toSeq
@@ -65,7 +68,6 @@ final class SparkOneRuntime(
             error = None)
         } catch {
           case e: Exception =>
-            preparation.foreach(_.rollback())
             val sourceSummary = statement.map(_.source).getOrElse(source)
             val sqlSummary = statement.map(_.sql).getOrElse(source)
             logger.error(
@@ -133,9 +135,9 @@ final class SparkOneRuntime(
       case Some(metadata) =>
         executeLoad(statement, metadata)
       case _ =>
-        statement.save match {
-          case Some(metadata) if metadata.targetType == SaveTargetType.Mysql =>
-            executeMysqlSave(metadata)
+        statement.writePlan match {
+          case Some(plan) if plan.executionType == WriteExecutionType.MysqlAdapter =>
+            executeMysqlSave(plan)
           case _ =>
             spark.sql(statement.sql)
         }
@@ -176,47 +178,49 @@ final class SparkOneRuntime(
     spark.table(metadata.table)
   }
 
-  private def executeMysqlSave(metadata: SaveStatementMetadata): DataFrame = {
-    val mode = metadata.mode.toLowerCase match {
-      case "append" => SaveMode.Append
-      case "overwrite" => SaveMode.Overwrite
-      case other => throw new CompileException(s"SAVE mode '$other' is not supported for mysql source")
+  private def executeMysqlSave(plan: WritePlan): DataFrame = {
+    val mode = plan.mode match {
+      case WriteMode.Append => SaveMode.Append
+      case WriteMode.Overwrite =>
+        throw new CompileException("SAVE overwrite is permanently denied for target type mysql")
     }
     val started = System.nanoTime()
     logger.info(
-      s"MySQL Save: start, mode=${metadata.mode}, source=${metadata.table}, target=${metadata.path}")
-    spark.table(metadata.table)
+      s"MySQL Save: start, tenant=${plan.tenant.username}, mode=${plan.mode.name}, " +
+        s"source=${plan.sourceTable}, target=${plan.target.identifier}")
+    spark.table(plan.sourceTable)
       .write
       .format("jdbc")
-      .options(metadata.targetOptions)
+      .options(plan.target.connectionOptions)
       .mode(mode)
       .save()
     logger.info(
-      s"MySQL Save: success, mode=${metadata.mode}, source=${metadata.table}, target=${metadata.path}, costMs=${elapsedMs(started)}")
-    actionResult("SAVE MYSQL", metadata.path, metadata.table)
+      s"MySQL Save: success, tenant=${plan.tenant.username}, mode=${plan.mode.name}, " +
+        s"source=${plan.sourceTable}, target=${plan.target.identifier}, costMs=${elapsedMs(started)}")
+    actionResult("SAVE MYSQL", plan.target.identifier, plan.sourceTable)
   }
 
-  private def validateSaveTargetExists(save: Option[SaveStatementMetadata]): Unit = {
-    save.foreach { metadata =>
-      metadata.targetType match {
-        case SaveTargetType.Catalog | SaveTargetType.DorisCatalog =>
-          if (!spark.catalog.tableExists(metadata.path)) {
+  private def validateWriteTargetExists(writePlan: Option[WritePlan]): Unit = {
+    writePlan.foreach { plan =>
+      plan.target.kind match {
+        case WriteTargetKind.HiveCatalog | WriteTargetKind.DorisCatalog =>
+          if (!spark.catalog.tableExists(plan.target.identifier)) {
             throw new CompileException(
-              s"SAVE target table does not exist: ${metadata.path}. " +
-                s"Create the target table explicitly before SAVE ${metadata.mode}.")
+              s"SAVE target table does not exist: ${plan.target.identifier}. " +
+                s"Create the target table explicitly before SAVE ${plan.mode.name}.")
           }
-        case SaveTargetType.Mysql =>
-          validateMysqlTargetExists(metadata)
-        case SaveTargetType.File =>
+        case WriteTargetKind.Mysql =>
+          validateMysqlTargetExists(plan)
+        case _ =>
       }
     }
   }
 
-  private def validateMysqlTargetExists(metadata: SaveStatementMetadata): Unit = {
+  private def validateMysqlTargetExists(plan: WritePlan): Unit = {
     try {
       spark.read
         .format("jdbc")
-        .options(metadata.targetOptions)
+        .options(plan.target.connectionOptions)
         .load()
         .limit(0)
         .collect()
@@ -224,11 +228,12 @@ final class SparkOneRuntime(
       case NonFatal(e) =>
         logger.warn(
           s"MySQL Save: target table existence check failed, " +
-            s"mode=${metadata.mode}, source=${metadata.table}, target=${metadata.path}, reason=${errorMessage(e)}",
+            s"tenant=${plan.tenant.username}, mode=${plan.mode.name}, source=${plan.sourceTable}, " +
+            s"target=${plan.target.identifier}, reason=${errorMessage(e)}",
           e)
         throw new CompileException(
-          s"SAVE target table does not exist or cannot be resolved: ${metadata.path}. " +
-            s"Create the target table explicitly before SAVE ${metadata.mode}.",
+          s"SAVE target table does not exist or cannot be resolved: ${plan.target.identifier}. " +
+            s"Create the target table explicitly before SAVE ${plan.mode.name}.",
           e)
     }
   }
@@ -281,221 +286,10 @@ final class SparkOneRuntime(
   }
 }
 
-private[runtime] final class NativeSqlSafetyGuard {
-  import NativeSqlSafetyGuard._
-
-  private val logger = LoggerFactory.getLogger(getClass)
-
-  def validate(statement: ai.sparkone.sql.CompiledStatement): Unit = {
-    if (statement.save.isEmpty && containsMysqlCatalogInsertOverwrite(statement.sql) &&
-        (!isNativeInsertOverwriteEnabled || !isMysqlOverwriteEnabled)) {
-      logger.warn(
-        s"Safe Save: native MySQL catalog INSERT OVERWRITE blocked, " +
-          s"allowNativeInsertOverwrite=${isNativeInsertOverwriteEnabled}, " +
-          s"allowMysqlOverwrite=${isMysqlOverwriteEnabled}, sql=${summarizeSql(statement.sql)}")
-      throw new CompileException(
-        "Native Spark SQL INSERT OVERWRITE for MySQL catalog is disabled by SparkOne Safe Save policy. " +
-          "Set both save.allowNativeInsertOverwrite = true and save.allowMysqlOverwrite = true in HOCON " +
-          "only when the deployment explicitly allows MySQL catalog overwrite.")
-    }
-    if (statement.save.isEmpty && containsInsertOverwrite(statement.sql) && !isNativeInsertOverwriteEnabled) {
-      logger.warn(
-        s"Safe Save: native INSERT OVERWRITE blocked, " +
-          s"allowNativeInsertOverwrite=false, sql=${summarizeSql(statement.sql)}")
-      throw new CompileException(
-        "Native Spark SQL INSERT OVERWRITE is disabled by SparkOne Safe Save policy. " +
-          "Use SparkOne DSL `save overwrite ...` so overwrite protection can run, " +
-          "or set save.allowNativeInsertOverwrite = true in HOCON for compatibility.")
-    }
-    if (statement.save.isEmpty && containsMysqlCatalogDropTable(statement.sql) && !isNativeDropTableEnabled) {
-      logger.warn(
-        s"Safe Save: native MySQL catalog DROP TABLE blocked, " +
-          s"allowNativeDropTable=false, sql=${summarizeSql(statement.sql)}")
-      throw new CompileException(
-        "Native Spark SQL DROP TABLE for MySQL catalog is disabled by SparkOne DDL safety policy. " +
-          "Set save.allowNativeDropTable = true in HOCON only when the deployment explicitly allows MySQL catalog drops.")
-    }
-    if (statement.save.isEmpty && containsDropTable(statement.sql) && !isNativeDropTableEnabled) {
-      logger.warn(
-        s"Safe Save: native DROP TABLE blocked, " +
-          s"allowNativeDropTable=false, sql=${summarizeSql(statement.sql)}")
-      throw new CompileException(
-        "Native Spark SQL DROP TABLE is disabled by SparkOne DDL safety policy. " +
-          "Set save.allowNativeDropTable = true in HOCON only when the deployment explicitly allows table drops.")
-    }
-  }
-
-  private def isNativeInsertOverwriteEnabled: Boolean = {
-    sys.props.get(AllowNativeInsertOverwriteKey)
-      .exists(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
-  }
-
-  private def isNativeDropTableEnabled: Boolean = {
-    sys.props.get(AllowNativeDropTableKey)
-      .exists(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
-  }
-
-  private def isMysqlOverwriteEnabled: Boolean = {
-    sys.props.get(AllowMysqlOverwriteKey)
-      .exists(value => Set("1", "true", "yes", "on").contains(value.trim.toLowerCase))
-  }
-
-  private def summarizeSql(sql: String): String = {
-    val normalized = sql.replaceAll("\\s+", " ").trim
-    if (normalized.length <= 240) normalized else normalized.take(237) + "..."
-  }
-}
-
-private object NativeSqlSafetyGuard {
-  private val AllowNativeInsertOverwriteKey = "sparkone.save.native.insertOverwrite.enabled"
-  private val AllowNativeDropTableKey = "sparkone.save.native.dropTable.enabled"
-  private val AllowMysqlOverwriteKey = "sparkone.save.mysql.overwrite.enabled"
-
-  private[runtime] def containsInsertOverwrite(sql: String): Boolean = {
-    val tokens = sqlKeywordTokens(sql).map(_.toLowerCase)
-    tokens.sliding(2).exists {
-      case Seq("insert", "overwrite") => true
-      case _ => false
-    }
-  }
-
-  private[runtime] def containsDropTable(sql: String): Boolean = {
-    val tokens = sqlKeywordTokens(sql).map(_.toLowerCase)
-    tokens.sliding(2).exists {
-      case Seq("drop", "table") => true
-      case _ => false
-    }
-  }
-
-  private[runtime] def containsMysqlCatalogInsertOverwrite(sql: String): Boolean = {
-    val tokens = sqlTokens(sql)
-    tokens.indices.exists { index =>
-      tokenText(tokens, index).contains("insert") &&
-        tokenText(tokens, index + 1).contains("overwrite") &&
-        firstTargetCatalog(tokens, index + 2, Set("table")).exists(_.equalsIgnoreCase("mysql"))
-    }
-  }
-
-  private[runtime] def containsMysqlCatalogDropTable(sql: String): Boolean = {
-    val tokens = sqlTokens(sql)
-    tokens.indices.exists { index =>
-      tokenText(tokens, index).contains("drop") &&
-        tokenText(tokens, index + 1).contains("table") &&
-        firstTargetCatalog(tokens, index + 2, Set.empty).exists(_.equalsIgnoreCase("mysql"))
-    }
-  }
-
-  private def firstTargetCatalog(tokens: Seq[SqlToken], start: Int, optionalKeywords: Set[String]): Option[String] = {
-    var index = start
-    while (tokenText(tokens, index).exists(value => optionalKeywords.contains(value.toLowerCase))) {
-      index += 1
-    }
-    if (tokenText(tokens, index).exists(_.equalsIgnoreCase("if")) &&
-        tokenText(tokens, index + 1).exists(_.equalsIgnoreCase("exists"))) {
-      index += 2
-    }
-    val first = tokenText(tokens, index)
-    first.filter(_ => tokenText(tokens, index + 1).contains("."))
-  }
-
-  private def sqlKeywordTokens(sql: String): Seq[String] = {
-    sqlTokens(sql).collect {
-      case SqlToken(value, quoted) if !quoted && value != "." => value
-    }
-  }
-
-  private def sqlTokens(sql: String): Seq[SqlToken] = {
-    val tokens = scala.collection.mutable.ArrayBuffer.empty[SqlToken]
-    var index = 0
-
-    while (index < sql.length) {
-      val current = sql.charAt(index)
-      if (current == '-' && hasNext(sql, index, '-')) {
-        index = skipLineComment(sql, index + 2)
-      } else if (current == '/' && hasNext(sql, index, '*')) {
-        index = skipBlockComment(sql, index + 2)
-      } else if (current == '\'' || current == '"') {
-        index = skipQuotedString(sql, index, current)
-      } else if (current == '`') {
-        val (identifier, next) = readBackquotedIdentifier(sql, index)
-        if (identifier.nonEmpty) tokens += SqlToken(identifier, quoted = true)
-        index = next
-      } else if (current == '.') {
-        tokens += SqlToken(".", quoted = false)
-        index += 1
-      } else if (current.isLetter || current == '_') {
-        val start = index
-        index += 1
-        while (index < sql.length && (sql.charAt(index).isLetterOrDigit || sql.charAt(index) == '_')) {
-          index += 1
-        }
-        tokens += SqlToken(sql.substring(start, index), quoted = false)
-      } else {
-        index += 1
-      }
-    }
-
-    tokens.toSeq
-  }
-
-  private def tokenText(tokens: Seq[SqlToken], index: Int): Option[String] = {
-    if (index >= 0 && index < tokens.length) Some(tokens(index).value) else None
-  }
-
-  private def hasNext(sql: String, index: Int, expected: Char): Boolean = {
-    index + 1 < sql.length && sql.charAt(index + 1) == expected
-  }
-
-  private def skipLineComment(sql: String, index: Int): Int = {
-    val end = sql.indexWhere(ch => ch == '\n' || ch == '\r', index)
-    if (end < 0) sql.length else end + 1
-  }
-
-  private def skipBlockComment(sql: String, index: Int): Int = {
-    val end = sql.indexOf("*/", index)
-    if (end < 0) sql.length else end + 2
-  }
-
-  private def skipQuotedString(sql: String, index: Int, quote: Char): Int = {
-    var cursor = index + 1
-    while (cursor < sql.length) {
-      val current = sql.charAt(cursor)
-      if (current == '\\') {
-        cursor += 2
-      } else if (current == quote) {
-        return cursor + 1
-      } else {
-        cursor += 1
-      }
-    }
-    sql.length
-  }
-
-  private def readBackquotedIdentifier(sql: String, index: Int): (String, Int) = {
-    val builder = new StringBuilder
-    var cursor = index + 1
-    while (cursor < sql.length) {
-      if (sql.charAt(cursor) == '`') {
-        if (hasNext(sql, cursor, '`')) {
-          builder.append('`')
-          cursor += 2
-        } else {
-          return builder.toString() -> (cursor + 1)
-        }
-      } else {
-        builder.append(sql.charAt(cursor))
-        cursor += 1
-      }
-    }
-    builder.toString() -> sql.length
-  }
-
-  private final case class SqlToken(value: String, quoted: Boolean)
-}
-
 object SparkOneRuntime {
   private lazy val logger = LoggerFactory.getLogger(getClass)
   private val HadoopStaticGroupOverrides = "hadoop.user.group.static.mapping.overrides"
+  private val RuntimeTenant = TenantContext.development("local-runtime")
 
   def local(): SparkOneRuntime = {
     val master = sys.props.getOrElse("spark.master", "local[*]")

@@ -34,8 +34,10 @@ SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户。统�
 - SparkOne 使用 Kyuubi 官方推荐的 JDBC driver，默认 URL 形如 `jdbc:kyuubi://host:10009/default`。
 - Kyuubi JDBC 协议兼容 HiveServer2，但连接的是 Kyuubi Server，不是把请求转发给 HiveServer2。
 - 预览数据来自 JDBC `ResultSet`，和 Kyuubi Spark engine 是 client/cluster、运行在 YARN/Kubernetes/Standalone 无直接绑定。
-- Kyuubi 模式下临时视图存在于 JDBC session 对应的远端 Spark engine 中；SparkOne 会复用服务进程内的 Kyuubi connection，以支持同一会话内的 `load ... as t` 后续 preview。
-- Kyuubi 模式无法执行 local 的文件目录备份流程；`save overwrite` 仍会遵守 SparkOne 的显式确认/deny 开关，实际提交和权限边界由 Kyuubi/Spark/Hadoop 侧负责。
+- Kyuubi 模式下临时视图存在于 JDBC session 对应的远端 Spark engine 中；SparkOne 按逻辑租户复用独立 connection，以支持同一租户 `load ... as t` 后续 preview，同时避免不同租户共享临时视图。
+- 逻辑租户不会覆盖 Kyuubi JDBC 的 `user/password/options`；连接仍使用启动配置中的固定服务账号，租户身份只进入 SparkOne 的权限决策上下文。
+- `save` 在提交 Kyuubi 前同样生成携带逻辑租户的 `WritePlan` 并执行固定能力矩阵；Hive、Doris、MySQL 和 external path overwrite 永久拒绝。
+- 受控 HDFS overwrite 的 staging executor 尚未开放，因此当前不会向 Kyuubi 提交文件 overwrite SQL。后续 executor 应在 SparkOne 核心执行层实现 workspace 解析和 staging 流程，不依赖 Kyuubi 切换 keytab 执行身份。
 
 ## 数据源归属
 
@@ -43,7 +45,7 @@ SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户。统�
 - `load mysql` 在 Kyuubi 模式下优先使用 `mysql.\`catalog.db.table\`` 语义，连接信息来自 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`。
 - 无分片参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成远端 catalog SQL。
 - 带 `partitionColumn` 或其他受控大表读取参数时，编译成 `USING sparkone_mysql`，由 provider 在 Spark engine 内复用 catalog 连接配置；只写 `partitionColumn` 时会在远端自动查询 `lowerBound/upperBound`，`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。
-- `save mysql` 仍不支持 Kyuubi adapter，远程写入建议使用明确的 catalog SQL 或 Kyuubi/Spark 侧写入能力。
+- `save mysql` 仍不支持 Kyuubi adapter。原生 catalog 写入也会被 SparkOne 的原生写保护拦截，当前 Kyuubi 路径不提供 MySQL 写入旁路。
 
 更完整的数据源语义见 [../data/datasources.md](../data/datasources.md)。
 

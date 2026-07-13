@@ -228,24 +228,6 @@ engines {
     }
   }
 }
-
-save {
-  overwritePolicy = "requireExplicit"
-  overwriteBackup = "rename"
-  overwriteBackupPath = "/tmp/sparkone_back"
-  allowMysqlOverwrite = false
-  allowDorisOverwrite = false
-  allowNativeInsertOverwrite = false
-  allowNativeDropTable = false
-  # 生产环境可打开全局保护 overwrite 的高危边界目录，命中后不能被 SQL 或 SET 覆盖。
-  # 规则：禁止覆盖这些路径本身以及它们的上级目录；允许覆盖其下更具体的业务目录。
-  # 支持整段通配符 "*"：例如 "/*" 保护所有一级目录，"/*/*" 保护所有一级和二级目录。
-  # overwriteProtectedPaths = [
-  #   "/",
-  #   "/user",
-  #   "/tmp",
-  # ]
-}
 ```
 
 MySQL catalog 单独配置在 `engines.local.catalogs.mysql`，不会从 `engines.local.datasources.mysql.analytics` 隐式生成：
@@ -295,35 +277,15 @@ preview {
 - `maxRows` 是每条 statement 的服务端预览行数上限；页面 `Rows` 和 API 请求里的 `limit` 只能调小，不能超过它。
 - `load ... as t` 执行后默认只展示 schema；页面点该结果的 Preview tab，或调用 `/api/preview`，才会预览刚注册的临时视图 `t`。
 
-## Save Overwrite Safety
+## Write Safety
 
-文件类 `save overwrite` 默认要求语句显式确认：
+写入权限由代码中的固定能力矩阵决定，不再提供全局 overwrite policy、文件备份、protected paths 或 MySQL/Doris overwrite 开关。Hive、Doris、MySQL 和 external path overwrite 永久拒绝，配置不能放开。
 
-```sql
-save overwrite result as parquet.`/tmp/result`
-options sparkoneOverwrite="allow";
-```
+受控 HDFS workspace 使用 `/public/sparkone/user/${username}`。DSL 只接受相对路径；文件 append 和 staging overwrite executor 尚未实现，因此当前继续在编译阶段 fail closed。
 
-全局策略在 HOCON 的 `save` 中配置：
+原生 SQL 只允许查询和只读检查命令。`CREATE/DROP/ALTER/INSERT` 等 DDL/DML 在 Compile 阶段永久拒绝，必须通过平台外流程治理表结构，并通过 SparkOne `save` 写入；不存在可以放开的 HOCON 配置。
 
-- `overwritePolicy = "requireExplicit"`：默认值，每条 overwrite 都要写 `sparkoneOverwrite="allow"`。
-- `overwritePolicy = "allow"`：全局允许覆盖。
-- `overwritePolicy = "deny"`：全局拒绝覆盖；单条语句的 `sparkoneOverwrite="allow"` 不能绕过。
-- `overwriteBackup = "rename"`：默认值，目标存在时先移动到 `overwriteBackupPath`。
-- `overwriteBackup = "trash"`：目标存在时先移动到 Hadoop Trash。
-- `overwriteBackup = "none"`：不做备份，直接覆盖。
-- `overwriteBackupPath = "/tmp/sparkone_back"`：`rename` 备份根目录；不带 scheme 时按目标文件系统解析。
-- `allowMysqlOverwrite = false`：默认禁止 `save overwrite ... as mysql`；确需覆盖时只从启动配置打开，并且单条语句仍要写 `sparkoneOverwrite="allow"`。
-- `allowDorisOverwrite = false`：默认禁止 `save overwrite ... as doris`；确需覆盖时只从启动配置打开，并且单条语句仍要写 `sparkoneOverwrite="allow"`。
-- `allowNativeInsertOverwrite = false`：默认禁止原生 Spark SQL `INSERT OVERWRITE`，避免绕过 SparkOne Safe Save。
-- `allowNativeDropTable = false`：默认禁止原生 Spark SQL `DROP TABLE`，避免误删 Hive/catalog 表；该开关只从启动配置读取。
-- `overwriteProtectedPaths = [...]`：全局保护 overwrite 边界路径，一行一个；支持 `/*`、`/*/*` 这类整段通配；命中后不允许被单条 SQL 或 `SET` 覆盖。
-
-`save { ... }` 下的策略参数只从启动 HOCON 或启动属性读取，不允许被页面里的 `SET sparkone.save...` 或单条 SQL `options` 覆盖。单条 SQL 里的 `sparkoneOverwrite="allow"` 只作为 `requireExplicit` 模式下的确认信号，不会传给底层 Spark provider，也不能绕过全局 `deny` 或 Doris/MySQL 覆盖写开关。
-
-配置 `/public/odep/user` 后，`/public/odep/user` 本身和它的上级目录会被拦截，`/public/odep/user/userA` 这类具体业务目录可以写。
-
-完整测试案例见 [../data/safe-save.md](../data/safe-save.md)。
+完整能力矩阵和测试案例见 [../data/safe-save.md](../data/safe-save.md)。
 
 ## Smoke Test
 

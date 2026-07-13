@@ -5,6 +5,7 @@
 ## Core
 
 - [架构与边界](core/architecture.md)：SparkOne、Kyuubi、Spark 的职责边界。
+- [身份与租户上下文](core/identity.md)：开发登录、TenantContext 和 Kyuubi JDBC session 隔离。
 - [编译器与 ANTLR](core/compiler.md)：薄 DSL 编译策略和 Spark SQL parser 边界。
 - [依赖与环境](core/dependencies.md)：Maven、Spark、ANTLR、provider 依赖原则。
 
@@ -19,7 +20,7 @@
 
 - [数据源扩展](data/datasources.md)：`load/save`、Hive、MySQL、Doris、外部 provider。
 - [HDFS 与 Hive 对接](data/hadoop-hive.md)：本地 Hadoop/Hive/Kerberos 配置与排障。
-- [Safe Save 保护](data/safe-save.md)：overwrite、DROP TABLE、保护路径和备份策略。
+- [写入安全](data/safe-save.md)：固定能力矩阵、`WritePlan`、受控 HDFS workspace 和原生写入旁路保护。
 
 ## UI
 

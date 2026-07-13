@@ -157,42 +157,6 @@ final class SparkOneServerConfigTest {
   }
 
   @Test
-  def loadsMysqlOverwriteSafetySwitchFromHocon(): Unit = {
-    val file = Files.createTempFile("sparkone-save-mysql-overwrite-", ".conf")
-    Files.write(file,
-      """save {
-        |  allowMysqlOverwrite = true
-        |}
-        |""".stripMargin.getBytes("UTF-8"))
-
-    try {
-      val properties = ServerConfigFile.load(file.toString)
-
-      assertEquals("true", properties("sparkone.save.mysql.overwrite.enabled"))
-    } finally {
-      Files.deleteIfExists(file)
-    }
-  }
-
-  @Test
-  def loadsDorisOverwriteSafetySwitchFromHocon(): Unit = {
-    val file = Files.createTempFile("sparkone-save-doris-overwrite-", ".conf")
-    Files.write(file,
-      """save {
-        |  allowDorisOverwrite = true
-        |}
-        |""".stripMargin.getBytes("UTF-8"))
-
-    try {
-      val properties = ServerConfigFile.load(file.toString)
-
-      assertEquals("true", properties("sparkone.save.doris.overwrite.enabled"))
-    } finally {
-      Files.deleteIfExists(file)
-    }
-  }
-
-  @Test
   def loadsPreviewConfigFromHocon(): Unit = {
     val file = Files.createTempFile("sparkone-preview-", ".conf")
     Files.write(file,
@@ -319,8 +283,6 @@ final class SparkOneServerConfigTest {
     assertEquals("kyuubi", properties("sparkone.engine.kyuubi.type"))
     assertEquals("false", properties("sparkone.engine.kyuubi.enabled"))
     assertEquals("jdbc:kyuubi://192.168.202.187:10009/default", properties("sparkone.engine.kyuubi.kyuubi.url"))
-    assertEquals("false", properties("sparkone.save.mysql.overwrite.enabled"))
-    assertEquals("false", properties("sparkone.save.doris.overwrite.enabled"))
     assertEquals("jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",
       properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.url"))
     assertEquals("1000", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.option.fetchsize"))
