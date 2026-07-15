@@ -142,7 +142,7 @@ Hive Catalog overwrite 被固定能力矩阵永久拒绝：
 save overwrite hive_write_test as hive.`default.sparkone_hive_test`;
 ```
 
-该语句应在编译阶段失败。Hive 写入当前只允许 `save append`，并编译成内部受控的 `INSERT INTO TABLE`；建表、表格式和分区定义必须由平台外治理入口完成。
+该语句应在编译阶段失败。Hive 写入当前只允许 `save append`；runtime 在校验源和目标列名集合后生成带显式目标列清单和源列投影的 `INSERT INTO TABLE`，兼容 Spark 3.3.x–3.5.x。建表、表格式和分区定义必须由平台外治理入口完成。
 
 常见认证错误：
 

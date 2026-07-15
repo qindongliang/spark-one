@@ -33,28 +33,41 @@ executionType
 处理顺序固定为：
 
 ```text
-SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> WriteSqlRenderer -> engine/runtime
+SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema preflight -> CatalogWriteSqlRenderer
 ```
 
 `tenant` 来自服务端登录 session。页面用户名登录只是开发测试阶段的逻辑租户选择；Kyuubi/Spark 仍使用启动配置中的固定 keytab 服务账号执行，租户身份只用于 SparkOne 权限决策和 workspace 计算。
 
 ## 当前阶段状态
 
-第二阶段已经实现：
+第二阶段及 3A 已经实现：
 
 - Hive、Doris、MySQL append 生成对应的 catalog SQL 或 runtime adapter 计划。
 - Hive、Doris、MySQL overwrite 在编译阶段永久拒绝。
 - 绝对路径、带 scheme 的路径以及本地/S3/OSS 等外部路径 overwrite 在编译阶段永久拒绝。
 - 未识别 provider 的 append 和 overwrite 均在编译阶段拒绝。
 - 每条语句携带 `StatementIntent`；原生 SQL 只允许查询和只读检查命令，其他 Spark command 在编译阶段默认拒绝。
+- Hive、Doris Catalog append 在 runtime 统一生成 `INSERT INTO TABLE target (目标列...) SELECT 源列...`，显式按目标列顺序投影，源列顺序不影响目标映射。
+- Hive、Doris Catalog append 要求源和目标列名集合完全一致；缺列、多列或重名列在写入前失败，类型兼容由 Spark Analyzer 校验。
+- Kyuubi 在 Catalog append 前依次检查目标 schema、源 schema，并对最终显式列 `INSERT` 执行 `EXPLAIN`；任何一步失败都不会提交写语句。
+- Catalog append 使用 Spark 3.3 已支持的 column list 语法，不做 Spark 版本分支；当前 Kyuubi 远端支持范围是 Spark 3.3.x–3.5.x。
+- Kyuubi `save` 写语句遇到连接异常时不会自动重试。错误会明确提示写入状态未知，需要人工核查目标后再决定是否重提。
 
-第二阶段尚未开放：
+当前尚未开放：
 
 - 文件 append executor。
 - 受控 HDFS staging overwrite executor。
-- append 的按列名映射和 schema 兼容检查。
+- MySQL append 的统一列集合和类型预检查；该项留在 3B。
 
 因此，矩阵中“允许”的文件 append 和受控 HDFS overwrite 当前仍会 fail closed，并明确提示对应 executor 尚未实现。这不是配置问题，不能通过 SQL option 或 HOCON 放开。
+
+Hive、Doris Catalog append 的受控执行顺序为：
+
+```text
+确认目标存在 -> 比较源/目标列名集合 -> 按目标顺序生成显式列 SQL -> 分析类型兼容 -> INSERT
+```
+
+Kyuubi 的前三步都是只读预检，可以在连接失效时重连一次；最后的 `INSERT` 永不自动重试。
 
 ## 受控 HDFS workspace
 
@@ -117,6 +130,13 @@ Hive、Doris、MySQL 目标表必须由平台外的 catalog/数据库治理入�
 save append source_view as hive.`default.target_table`;
 save append source_view as doris.`app.target_table`;
 save append source_view as mysql.`analytics.target_table`;
+```
+
+Hive、Doris 的 Compile 结果是无副作用的安全占位 SQL；Run 取得 schema 后生成类似下面的最终按列名写入 SQL：
+
+```sql
+INSERT INTO TABLE default.target_table (`city`, `cnt`) SELECT `city`, `cnt` FROM source_view;
+INSERT INTO TABLE doris.app.target_table (`city`, `cnt`) SELECT `city`, `cnt` FROM source_view;
 ```
 
 应在编译阶段永久拒绝：

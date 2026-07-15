@@ -1,7 +1,7 @@
 package ai.sparkone.runtime
 
 import ai.sparkone.identity.TenantContext
-import ai.sparkone.sql.{CompileException, CompiledStatement, DataSourceResolver, LoadTargetType, MysqlLoadMode, MysqlLoadProfile, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType}
+import ai.sparkone.sql.{CatalogWriteSqlRenderer, CompileException, CompiledStatement, DataSourceResolver, LoadTargetType, MysqlLoadMode, MysqlLoadProfile, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType, WriteMode, WritePlan}
 import org.slf4j.LoggerFactory
 
 import java.sql.{Connection, DriverManager, ResultSet, ResultSetMetaData, Statement}
@@ -157,7 +157,9 @@ final class KyuubiJdbcEngine(
           val compiledStatement = compiler.compileStatementWithVariables(tenant, source, variables.toMap)
           statement = Some(compiledStatement)
           validateSupported(compiledStatement)
-          execute(session, compiledStatement, variables, previewLimit, offset + 1, started)
+          val executableStatement = prepareWriteStatement(session, compiledStatement)
+          statement = Some(executableStatement)
+          execute(session, executableStatement, variables, previewLimit, offset + 1, started)
         } catch {
           case e: Exception =>
             val sourceSummary = statement.map(_.source).getOrElse(source)
@@ -247,37 +249,113 @@ final class KyuubiJdbcEngine(
         StatementResult(index, statement.source, statement.sql, success = true, Nil, Nil, 0,
           truncated = false, None, elapsedMs(started), None)
       case None =>
-        withStatement(session) { jdbcStatement =>
-          jdbcStatement.setMaxRows(previewLimit + 1)
-          jdbcStatement.setFetchSize(previewLimit + 1)
-          val hasResultSet = jdbcStatement.execute(statement.sql)
-          val collected =
-            if (hasResultSet) {
-              val resultSet = jdbcStatement.getResultSet
-              try {
-                collectResultSet(resultSet, previewLimit)
-              } finally {
-                resultSet.close()
+        try {
+          withStatement(session, retryOnReconnect = statement.writePlan.isEmpty) { jdbcStatement =>
+            jdbcStatement.setMaxRows(previewLimit + 1)
+            jdbcStatement.setFetchSize(previewLimit + 1)
+            val hasResultSet = jdbcStatement.execute(statement.sql)
+            val collected =
+              if (hasResultSet) {
+                val resultSet = jdbcStatement.getResultSet
+                try {
+                  collectResultSet(resultSet, previewLimit)
+                } finally {
+                  resultSet.close()
+                }
+              } else if (statement.load.nonEmpty) {
+                collectSchema(session, statement.load.get.table, previewLimit)
+              } else {
+                JdbcResult(Nil, Nil, truncated = false)
               }
-            } else if (statement.load.nonEmpty) {
-              collectSchema(session, statement.load.get.table, previewLimit)
-            } else {
-              JdbcResult(Nil, Nil, truncated = false)
-            }
 
-          StatementResult(
-            index = index,
-            source = statement.source,
-            sql = statement.sql,
-            success = true,
-            schema = collected.schema,
-            rows = collected.rows,
-            rowCount = collected.rows.size,
-            truncated = collected.truncated,
-            previewTable = statement.load.map(_.table),
-            durationMs = elapsedMs(started),
-            error = None)
+            StatementResult(
+              index = index,
+              source = statement.source,
+              sql = statement.sql,
+              success = true,
+              schema = collected.schema,
+              rows = collected.rows,
+              rowCount = collected.rows.size,
+              truncated = collected.truncated,
+              previewTable = statement.load.map(_.table),
+              durationMs = elapsedMs(started),
+              error = None)
+          }
+        } catch {
+          case NonFatal(e) if statement.writePlan.nonEmpty && shouldReconnect(e) =>
+            val target = statement.writePlan.map(_.target.identifier).getOrElse("unknown")
+            throw new CompileException(
+              s"SAVE connection was interrupted; write status is unknown and SparkOne did not retry. " +
+                s"Verify target before submitting again: $target",
+              e)
         }
+    }
+  }
+
+  private def prepareWriteStatement(
+      session: TenantJdbcSession,
+      statement: CompiledStatement): CompiledStatement = {
+    statement.writePlan match {
+      case Some(plan) if plan.executionType == WriteExecutionType.CatalogSql && plan.mode == WriteMode.Append =>
+        statement.copy(sql = prepareCatalogAppend(session, plan))
+      case _ => statement
+    }
+  }
+
+  private def prepareCatalogAppend(
+      session: TenantJdbcSession,
+      plan: WritePlan): String = {
+    val targetColumns = try {
+      queryColumnNames(session, s"SELECT * FROM ${plan.target.identifier} LIMIT 0")
+    } catch {
+      case NonFatal(e) if shouldReconnect(e) =>
+        throw new CompileException(
+          s"SAVE target preflight was interrupted before writing: ${plan.target.identifier}",
+          e)
+      case NonFatal(e) =>
+        throw new CompileException(
+          s"SAVE target table does not exist or cannot be resolved: ${plan.target.identifier}. " +
+            s"Create the target table explicitly before SAVE ${plan.mode.name}.",
+          e)
+    }
+
+    val sourceColumns = try {
+      queryColumnNames(session, s"SELECT * FROM ${plan.sourceTable} LIMIT 0")
+    } catch {
+      case NonFatal(e) if shouldReconnect(e) =>
+        throw new CompileException(
+          s"SAVE source preflight was interrupted before writing: ${plan.sourceTable}",
+          e)
+      case NonFatal(e) =>
+        throw new CompileException(
+          s"SAVE source table or view does not exist or cannot be resolved: ${plan.sourceTable}",
+          e)
+    }
+    val sql = CatalogWriteSqlRenderer.render(plan, sourceColumns, targetColumns)
+
+    try {
+      queryColumnNames(session, s"EXPLAIN $sql")
+    } catch {
+      case NonFatal(e) if shouldReconnect(e) =>
+        throw new CompileException(
+          s"SAVE schema preflight was interrupted before writing: ${plan.target.identifier}",
+          e)
+      case NonFatal(e) =>
+        throw new CompileException(
+          s"SAVE source schema is incompatible with target table: ${plan.target.identifier}",
+          e)
+    }
+    sql
+  }
+
+  private def queryColumnNames(session: TenantJdbcSession, sql: String): Seq[String] = {
+    withStatement(session) { statement =>
+      val resultSet = statement.executeQuery(sql)
+      try {
+        schemaInfo(resultSet.getMetaData).map(_.name)
+      } finally {
+        resultSet.close()
+      }
     }
   }
 
@@ -345,6 +423,12 @@ final class KyuubiJdbcEngine(
 
   private def withStatement[T](session: TenantJdbcSession)(body: Statement => T): T = {
     withStatement(session, body, retryOnReconnect = true)
+  }
+
+  private def withStatement[T](
+      session: TenantJdbcSession,
+      retryOnReconnect: Boolean)(body: Statement => T): T = {
+    withStatement(session, body, retryOnReconnect)
   }
 
   private def withStatement[T](

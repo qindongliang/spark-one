@@ -3,6 +3,7 @@ package ai.sparkone.sql
 import ai.sparkone.identity.TenantContext
 
 import java.net.URI
+import java.util.Locale
 import scala.util.Try
 
 final case class WritePlan(
@@ -78,6 +79,58 @@ object WriteCapabilityMatrix {
       throw new CompileException(
         s"SAVE ${plan.mode.name} is permanently denied for target type ${plan.target.kind.name}: ${plan.target.identifier}")
     }
+  }
+}
+
+object WriteSchemaPolicy {
+  def validateColumnNames(
+      sourceColumns: Seq[String],
+      targetColumns: Seq[String],
+      targetIdentifier: String): Unit = {
+    val normalizedSource = sourceColumns.map(_.toLowerCase(Locale.ROOT))
+    val normalizedTarget = targetColumns.map(_.toLowerCase(Locale.ROOT))
+    val hasDuplicateColumns =
+      normalizedSource.distinct.size != normalizedSource.size ||
+        normalizedTarget.distinct.size != normalizedTarget.size
+    val hasEmptyColumn = sourceColumns.exists(_.isEmpty) || targetColumns.exists(_.isEmpty)
+
+    if (sourceColumns.isEmpty || targetColumns.isEmpty ||
+        hasEmptyColumn || hasDuplicateColumns || normalizedSource.toSet != normalizedTarget.toSet) {
+      throw new CompileException(
+        s"SAVE source columns must match target columns by name: $targetIdentifier. " +
+          s"source=[${sourceColumns.mkString(", ")}], target=[${targetColumns.mkString(", ")}]")
+    }
+  }
+
+  def sourceColumnsInTargetOrder(
+      sourceColumns: Seq[String],
+      targetColumns: Seq[String],
+      targetIdentifier: String): Seq[String] = {
+    validateColumnNames(sourceColumns, targetColumns, targetIdentifier)
+    val sourceByName = sourceColumns.map(column => column.toLowerCase(Locale.ROOT) -> column).toMap
+    targetColumns.map(column => sourceByName(column.toLowerCase(Locale.ROOT)))
+  }
+}
+
+private[sparkone] object CatalogWriteSqlRenderer {
+  def render(
+      plan: WritePlan,
+      sourceColumns: Seq[String],
+      targetColumns: Seq[String]): String = {
+    if (plan.executionType != WriteExecutionType.CatalogSql || plan.mode != WriteMode.Append) {
+      throw new CompileException("Catalog SQL renderer only supports SAVE append plans")
+    }
+    val orderedSourceColumns = WriteSchemaPolicy.sourceColumnsInTargetOrder(
+      sourceColumns,
+      targetColumns,
+      plan.target.identifier)
+    SparkOneSqlRender.renderInsertTable(
+      plan.mode.name,
+      plan.target.identifier,
+      plan.sourceTable,
+      plan.partitionColumns,
+      targetColumns,
+      orderedSourceColumns)
   }
 }
 
@@ -184,11 +237,9 @@ private[sql] object WriteSqlRenderer {
 
   def render(plan: WritePlan): String = plan.executionType match {
     case CatalogSql =>
-      SparkOneSqlRender.renderInsertTable(
-        plan.mode.name,
-        plan.target.identifier,
-        plan.sourceTable,
-        plan.partitionColumns)
+      SparkOneSqlRender.renderSparkOneAction(
+        "SAVE CATALOG",
+        s"${plan.sourceTable} TO ${plan.target.identifier}")
     case MysqlAdapter =>
       SparkOneSqlRender.renderSparkOneAction(
         "SAVE MYSQL",

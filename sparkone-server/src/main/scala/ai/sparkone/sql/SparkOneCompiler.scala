@@ -310,7 +310,9 @@ private[sql] object SparkOneSqlRender {
       mode: String,
       targetTable: String,
       sourceTable: String,
-      partitionColumns: Seq[String]): String = {
+      partitionColumns: Seq[String],
+      targetColumns: Seq[String],
+      sourceColumns: Seq[String]): String = {
     val command = mode.toLowerCase match {
       case "overwrite" => "INSERT OVERWRITE TABLE"
       case "append" => "INSERT INTO TABLE"
@@ -318,8 +320,10 @@ private[sql] object SparkOneSqlRender {
     }
     val partitionSql =
       if (partitionColumns.isEmpty) ""
-      else s" PARTITION (${partitionColumns.mkString(", ")})"
-    s"$command $targetTable$partitionSql SELECT * FROM $sourceTable"
+      else s" PARTITION (${partitionColumns.map(quoteIdentifier).mkString(", ")})"
+    val targetColumnSql = targetColumns.map(quoteIdentifier).mkString(", ")
+    val sourceColumnSql = sourceColumns.map(quoteIdentifier).mkString(", ")
+    s"$command $targetTable$partitionSql ($targetColumnSql) SELECT $sourceColumnSql FROM $sourceTable"
   }
 
   def renderSparkOneAction(action: String, target: String): String = {
@@ -343,6 +347,10 @@ private[sql] object SparkOneSqlRender {
 
   private def escapeSql(value: String): String = {
     value.replace("'", "''")
+  }
+
+  private def quoteIdentifier(value: String): String = {
+    s"`${value.replace("`", "``")}`"
   }
 
   private def renderOptions(options: Seq[(String, String)]): String = {

@@ -554,9 +554,9 @@ load doris.`app.sparkone_doris_seed` as doris_seed;
 
 view doris_city_result as
 select
+  sum(cnt) as total_cnt,
   city,
-  count(*) as row_count,
-  sum(cnt) as total_cnt
+  count(*) as row_count
 from doris_seed
 group by city;
 
@@ -568,11 +568,11 @@ from doris.app.sparkone_doris_city_result
 order by city;
 ```
 
-预期可以看到 `beijing/shanghai/hangzhou` 的聚合结果。重复执行 append 会重复追加数据，这是 Doris 目标表和 Spark Doris Catalog append 写入的正常语义。
+预期可以看到 `beijing/shanghai/hangzhou` 的聚合结果。源视图列顺序为 `total_cnt, city, row_count`，与 Doris 目标表不同，用于验证按列名写入。重复执行 append 会重复追加数据，这是 Doris 目标表和 Spark Doris Catalog append 写入的正常语义。
 
 ### Doris 表模型对 save append 结果的影响
 
-SparkOne 的 `save append ... as doris` 只负责向目标表提交 `INSERT INTO TABLE doris.db.table SELECT ...`。最终查询效果由 Doris 目标表模型决定：
+SparkOne 的 `save append ... as doris` 会在 schema 预检后向目标表提交带显式目标列清单和源列投影的 `INSERT INTO TABLE doris.db.table (...) SELECT ...`。最终查询效果由 Doris 目标表模型决定：
 
 - `DUPLICATE KEY`：保留所有写入行，不去重、不聚合。
 - `AGGREGATE KEY`：按 Key 列聚合 Value 列，适合固定汇总指标。
@@ -1171,9 +1171,9 @@ Case 1：append 写入 Hive 表。
 ```sql
 view sparkone_hive_append_data as
 select * from values
-  ('beijing', 3L),
-  ('shanghai', 2L)
-as sparkone_hive_append_data(city, cnt);
+  (3L, 'beijing'),
+  (2L, 'shanghai')
+as sparkone_hive_append_data(cnt, city);
 
 save append sparkone_hive_append_data
 as hive.`default.sparkone_save_hive_append`;
@@ -1183,7 +1183,7 @@ from default.sparkone_save_hive_append
 order by city;
 ```
 
-预期：查询结果有 `beijing=3`、`shanghai=2` 两行。
+预期：查询结果有 `beijing=3`、`shanghai=2` 两行。源视图列顺序是 `cnt, city`，与目标表的 `city, cnt` 相反，用于确认 append 按列名而非位置写入。
 
 Case 2：Hive overwrite 永久拒绝。
 
@@ -1228,10 +1228,23 @@ order by dt, city;
 
 预期：查询结果有 3 行，并按 `dt` 写入两个动态分区。`partitionBy dt` 会编译成 Spark SQL 的 `PARTITION (dt)`，分区列必须在源视图字段中。
 
+Case 4：缺列时在写入前失败。
+
+```sql
+view sparkone_hive_missing_column as
+select 'should-not-write' as city;
+
+save append sparkone_hive_missing_column
+as hive.`default.sparkone_save_hive_append`;
+```
+
+预期：错误包含 `must match target columns by name`，目标表不会新增 `should-not-write` 数据。
+
 说明：
 
-- `save append ... as hive` 会编译成 Spark 原生 `INSERT INTO TABLE`。
+- `save append ... as hive` 会先编译成 `WritePlan`，Run 时根据目标 schema 生成 Spark 3.3+ 支持的显式 column list `INSERT INTO TABLE ... (...) SELECT ...`。
 - `save append ... as hive` 要求目标表已存在；SparkOne 不会自动创建 Hive 表，建表格式、分区定义和表结构由平台外 catalog 治理入口维护。
+- 源和目标列名集合必须完全一致；列顺序可以不同，缺列、多列、重名列或不兼容类型都会在真正写入前失败。
 - `partitionBy` 对应 Spark SQL 的动态分区 `PARTITION (...)`，分区列需要出现在源视图字段中。
 - Hive、Doris、MySQL overwrite 永久拒绝；完整矩阵见 [../data/safe-save.md](../data/safe-save.md)。
 

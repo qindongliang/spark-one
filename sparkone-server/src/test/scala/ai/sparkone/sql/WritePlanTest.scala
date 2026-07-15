@@ -29,6 +29,25 @@ final class WritePlanTest {
   }
 
   @Test
+  def catalogSchemaPolicyRequiresTheSameNonEmptyUniqueColumnNames(): Unit = {
+    WriteSchemaPolicy.validateColumnNames(
+      Seq("id", "Name"),
+      Seq("name", "ID"),
+      "default.target")
+
+    Seq(
+      Seq("id") -> Seq("id", "name"),
+      Seq("id", "ID") -> Seq("id", "name"),
+      Seq("") -> Seq(""),
+      Seq.empty[String] -> Seq.empty[String]).foreach { case (source, target) =>
+      val error = expectCompileException {
+        WriteSchemaPolicy.validateColumnNames(source, target, "default.target")
+      }
+      assertTrue(error.getMessage.contains("must match target columns by name"))
+    }
+  }
+
+  @Test
   def createsTenantScopedHiveAppendPlanBeforeRenderingSql(): Unit = {
     val plan = planner.plan(
       tenant,
@@ -49,8 +68,39 @@ final class WritePlanTest {
     assertEquals("default.target_table", plan.target.identifier)
     assertEquals(WriteExecutionType.CatalogSql, plan.executionType)
     assertEquals(
-      "INSERT INTO TABLE default.target_table PARTITION (dt) SELECT * FROM source_view",
+      "SELECT 'SAVE CATALOG' AS sparkone_action, 'source_view TO default.target_table' AS sparkone_target",
       WriteSqlRenderer.render(plan))
+    assertEquals(
+      "INSERT INTO TABLE default.target_table PARTITION (`dt`) (`name`, `id`, `dt`) " +
+        "SELECT `Name`, `ID`, `dt` FROM source_view",
+      CatalogWriteSqlRenderer.render(
+        plan,
+        sourceColumns = Seq("ID", "dt", "Name"),
+        targetColumns = Seq("name", "id", "dt")))
+  }
+
+  @Test
+  def catalogSqlRendererQuotesColumnNamesForSpark33ColumnListSyntax(): Unit = {
+    val plan = planner.plan(
+      tenant,
+      mode = "append",
+      sourceTable = "source_view",
+      format = "hive",
+      path = "default.target_table",
+      providerOptions = Nil,
+      partitionColumns = Nil,
+      resolvedSource = CatalogSaveSource(
+        "default.target_table",
+        SaveTargetType.Catalog,
+        supportsPartitionBy = true))
+
+    assertEquals(
+      "INSERT INTO TABLE default.target_table (`order`, `a``b`) " +
+        "SELECT `order`, `a``b` FROM source_view",
+      CatalogWriteSqlRenderer.render(
+        plan,
+        sourceColumns = Seq("a`b", "order"),
+        targetColumns = Seq("order", "a`b")))
   }
 
   @Test

@@ -6,7 +6,7 @@ import org.junit.Assert._
 import org.junit.Test
 
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
-import java.sql.{Connection, ResultSet, ResultSetMetaData, Statement}
+import java.sql.{Connection, ResultSet, ResultSetMetaData, SQLException, Statement}
 import scala.collection.mutable.ArrayBuffer
 
 final class SparkOneEngineTest {
@@ -399,6 +399,149 @@ final class SparkOneEngineTest {
   }
 
   @Test
+  def kyuubiCatalogAppendRunsReadOnlyPreflightBeforeWrite(): Unit = {
+    val fake = new RecordingJdbcConnection(
+      queryColumns = {
+        case "SELECT * FROM default.target LIMIT 0" => Seq("name", "id")
+        case "SELECT * FROM source_view LIMIT 0" => Seq("id", "name")
+        case _ => Nil
+      })
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """view source_view as select 1 as id, 'alice' as name;
+          |save append source_view as hive.`default.target`;
+          |""".stripMargin,
+        10)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(
+        Seq(
+          "CREATE OR REPLACE TEMPORARY VIEW source_view AS select 1 as id, 'alice' as name",
+          "SELECT * FROM default.target LIMIT 0",
+          "SELECT * FROM source_view LIMIT 0",
+          "EXPLAIN INSERT INTO TABLE default.target (`name`, `id`) " +
+            "SELECT `name`, `id` FROM source_view",
+          "INSERT INTO TABLE default.target (`name`, `id`) SELECT `name`, `id` FROM source_view"),
+        fake.executedSql)
+      assertEquals(
+        "INSERT INTO TABLE default.target (`name`, `id`) SELECT `name`, `id` FROM source_view",
+        result.statements.last.sql)
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiCatalogAppendStopsWhenTargetPreflightFails(): Unit = {
+    val fake = new RecordingJdbcConnection(
+      queryFailure = sql =>
+        if (sql == "SELECT * FROM default.missing LIMIT 0") Some(new SQLException("TABLE_OR_VIEW_NOT_FOUND"))
+        else None)
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """view source_view as select 1 as id;
+          |save append source_view as hive.`default.missing`;
+          |""".stripMargin,
+        10)
+
+      assertFalse(result.success)
+      assertTrue(result.statements.flatMap(_.error).mkString("\n").contains("target table does not exist"))
+      assertFalse(fake.executedSql.exists(_.startsWith("INSERT INTO")))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiCatalogAppendStopsWhenSchemaPreflightFails(): Unit = {
+    val fake = new RecordingJdbcConnection(
+      queryColumns = {
+        case "SELECT * FROM default.target LIMIT 0" => Seq("id", "name")
+        case "SELECT * FROM source_view LIMIT 0" => Seq("id")
+        case _ => Nil
+      })
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """view source_view as select 1 as id;
+          |save append source_view as hive.`default.target`;
+          |""".stripMargin,
+        10)
+
+      assertFalse(result.success)
+      assertTrue(result.statements.flatMap(_.error).mkString("\n").contains("must match target columns by name"))
+      assertFalse(fake.executedSql.exists(_.startsWith("EXPLAIN INSERT INTO")))
+      assertFalse(fake.executedSql.exists(_.startsWith("INSERT INTO")))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiCatalogAppendStopsWhenTypeAnalysisFails(): Unit = {
+    val fake = new RecordingJdbcConnection(
+      queryFailure = sql =>
+        if (sql.startsWith("EXPLAIN INSERT INTO")) Some(new SQLException("INCOMPATIBLE_DATA_FOR_TABLE"))
+        else None,
+      queryColumns = {
+        case "SELECT * FROM default.target LIMIT 0" => Seq("id")
+        case "SELECT * FROM source_view LIMIT 0" => Seq("id")
+        case _ => Nil
+      })
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """view source_view as select 'not-an-int' as id;
+          |save append source_view as hive.`default.target`;
+          |""".stripMargin,
+        10)
+
+      assertFalse(result.success)
+      assertTrue(result.statements.flatMap(_.error).mkString("\n").contains("schema is incompatible"))
+      assertFalse(fake.executedSql.exists(_.startsWith("INSERT INTO")))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiCatalogAppendIsNeverRetriedAfterConnectionFailure(): Unit = {
+    val openedConnections = ArrayBuffer.empty[RecordingJdbcConnection]
+    val engine = kyuubiEngine { _ =>
+      val fake = new RecordingJdbcConnection(
+        executeFailure = sql =>
+          if (sql.startsWith("INSERT INTO")) Some(new SQLException("connection reset by peer")) else None)
+      openedConnections += fake
+      fake.connection
+    }
+
+    try {
+      val result = engine.run(
+        tenant,
+        """view source_view as select 1 as id;
+          |save append source_view as hive.`default.target`;
+          |""".stripMargin,
+        10)
+
+      assertFalse(result.success)
+      assertEquals(1, openedConnections.flatMap(_.executedSql).count(_.startsWith("INSERT INTO")))
+      assertTrue(result.statements.flatMap(_.error).mkString("\n").contains("write status is unknown"))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
   def localCloseDoesNotInitializeLazyRuntime(): Unit = {
     var initialized = false
     val engine = new LocalSparkEngine(
@@ -441,6 +584,19 @@ final class SparkOneEngineTest {
       mysqlLoadProfiles = mysqlLoadProfiles)
   }
 
+  private def kyuubiEngine(connectionFactory: KyuubiJdbcConfig => Connection): KyuubiJdbcEngine = {
+    new KyuubiJdbcEngine(
+      "kyuubi",
+      "Kyuubi",
+      KyuubiJdbcConfig(
+        url = "jdbc:kyuubi://host:10009/default",
+        user = None,
+        password = None,
+        driver = "unused-for-test",
+        properties = Map.empty),
+      connectionFactory = connectionFactory)
+  }
+
   private final class FakeJdbcConnection {
     @volatile var closed: Boolean = false
 
@@ -478,12 +634,79 @@ final class SparkOneEngineTest {
     }
   }
 
+  private final class RecordingJdbcConnection(
+      queryFailure: String => Option[SQLException] = _ => None,
+      executeFailure: String => Option[SQLException] = _ => None,
+      queryColumns: String => Seq[String] = sql =>
+        if (sql.startsWith("SELECT * FROM")) Seq("id") else Nil) {
+    val executedSql: ArrayBuffer[String] = ArrayBuffer.empty
+    @volatile private var closed: Boolean = false
+
+    private def resultSet(columns: Seq[String]): ResultSet = proxy(classOf[ResultSet]) { method =>
+      method.getName match {
+        case "getMetaData" => resultSetMetadata(columns)
+        case "next" => Boolean.box(false)
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+
+    private def resultSetMetadata(columns: Seq[String]): ResultSetMetaData = {
+      proxyWithArgs(classOf[ResultSetMetaData]) { (method, args) =>
+        method.getName match {
+          case "getColumnCount" => Int.box(columns.size)
+          case "getColumnLabel" | "getColumnName" => columns(args(0).asInstanceOf[Integer].intValue() - 1)
+          case "getColumnTypeName" => "int"
+          case "isNullable" => Int.box(ResultSetMetaData.columnNullable)
+          case _ => defaultValue(method.getReturnType)
+        }
+      }
+    }
+
+    private def statement: Statement = proxyWithArgs(classOf[Statement]) { (method, args) =>
+      method.getName match {
+        case "executeQuery" =>
+          val sql = args(0).asInstanceOf[String]
+          executedSql += sql
+          queryFailure(sql).foreach(error => throw error)
+          resultSet(queryColumns(sql))
+        case "execute" =>
+          val sql = args(0).asInstanceOf[String]
+          executedSql += sql
+          executeFailure(sql).foreach(error => throw error)
+          Boolean.box(false)
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+
+    val connection: Connection = proxy(classOf[Connection]) { method =>
+      method.getName match {
+        case "createStatement" => statement
+        case "isClosed" => Boolean.box(closed)
+        case "close" =>
+          closed = true
+          null
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+  }
+
   private def proxy[T](interfaceClass: Class[T])(body: Method => AnyRef): T = {
     Proxy.newProxyInstance(
       interfaceClass.getClassLoader,
       Array(interfaceClass),
       new InvocationHandler {
         override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef = body(method)
+      }).asInstanceOf[T]
+  }
+
+  private def proxyWithArgs[T](interfaceClass: Class[T])(body: (Method, Array[AnyRef]) => AnyRef): T = {
+    Proxy.newProxyInstance(
+      interfaceClass.getClassLoader,
+      Array(interfaceClass),
+      new InvocationHandler {
+        override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef = {
+          body(method, Option(args).getOrElse(Array.empty[AnyRef]))
+        }
       }).asInstanceOf[T]
   }
 

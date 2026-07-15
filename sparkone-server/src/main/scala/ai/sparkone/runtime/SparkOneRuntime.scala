@@ -1,7 +1,7 @@
 package ai.sparkone.runtime
 
 import ai.sparkone.identity.TenantContext
-import ai.sparkone.sql.{CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SetStatementMetadata, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType, WriteMode, WritePlan, WriteTargetKind}
+import ai.sparkone.sql.{CatalogWriteSqlRenderer, CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SetStatementMetadata, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType, WriteMode, WritePlan, WriteTargetKind}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.UserGroupInformation
@@ -47,23 +47,24 @@ final class SparkOneRuntime(
         try {
           val compiledStatement = compiler.compileStatementWithVariables(tenant, source, variables.toMap)
           statement = Some(compiledStatement)
-          validateWriteTargetExists(compiledStatement.writePlan)
-          val dataFrame = execute(compiledStatement, variables)
-          val shouldCollectRows = compiledStatement.load.isEmpty && compiledStatement.set.isEmpty
+          val executableStatement = prepareWriteStatement(compiledStatement)
+          statement = Some(executableStatement)
+          val dataFrame = execute(executableStatement, variables)
+          val shouldCollectRows = executableStatement.load.isEmpty && executableStatement.set.isEmpty
           val collected =
             if (shouldCollectRows) dataFrame.limit(previewLimit + 1).collect().toSeq
             else Seq.empty[Row]
           val visibleRows = collected.take(previewLimit).map(rowToStrings)
           StatementResult(
             index = offset + 1,
-            source = compiledStatement.source,
-            sql = compiledStatement.sql,
+            source = executableStatement.source,
+            sql = executableStatement.sql,
             success = true,
             schema = schemaInfo(dataFrame),
             rows = visibleRows,
             rowCount = visibleRows.size,
             truncated = shouldCollectRows && collected.size > previewLimit,
-            previewTable = compiledStatement.load.map(_.table),
+            previewTable = executableStatement.load.map(_.table),
             durationMs = elapsedMs(started),
             error = None)
         } catch {
@@ -200,19 +201,28 @@ final class SparkOneRuntime(
     actionResult("SAVE MYSQL", plan.target.identifier, plan.sourceTable)
   }
 
-  private def validateWriteTargetExists(writePlan: Option[WritePlan]): Unit = {
-    writePlan.foreach { plan =>
-      plan.target.kind match {
-        case WriteTargetKind.HiveCatalog | WriteTargetKind.DorisCatalog =>
-          if (!spark.catalog.tableExists(plan.target.identifier)) {
-            throw new CompileException(
-              s"SAVE target table does not exist: ${plan.target.identifier}. " +
-                s"Create the target table explicitly before SAVE ${plan.mode.name}.")
-          }
-        case WriteTargetKind.Mysql =>
-          validateMysqlTargetExists(plan)
-        case _ =>
-      }
+  private def prepareWriteStatement(statement: CompiledStatement): CompiledStatement = {
+    statement.writePlan match {
+      case Some(plan) =>
+        plan.target.kind match {
+          case WriteTargetKind.HiveCatalog | WriteTargetKind.DorisCatalog =>
+            if (!spark.catalog.tableExists(plan.target.identifier)) {
+              throw new CompileException(
+                s"SAVE target table does not exist: ${plan.target.identifier}. " +
+                  s"Create the target table explicitly before SAVE ${plan.mode.name}.")
+            }
+            val sourceColumns = spark.table(plan.sourceTable).schema.fieldNames.toSeq
+            val targetColumns = spark.table(plan.target.identifier).schema.fieldNames.toSeq
+            val sql = CatalogWriteSqlRenderer.render(plan, sourceColumns, targetColumns)
+            spark.sql(s"EXPLAIN $sql").collect()
+            statement.copy(sql = sql)
+          case WriteTargetKind.Mysql =>
+            validateMysqlTargetExists(plan)
+            statement
+          case _ =>
+            statement
+        }
+      case None => statement
     }
   }
 

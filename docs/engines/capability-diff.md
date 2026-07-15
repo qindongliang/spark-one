@@ -12,6 +12,7 @@
 | `set name as select ...` | 两边都执行查询取第一行第一列；local 通过 DataFrame，Kyuubi 通过 JDBC ResultSet。 |
 | `load hive/doris ... as t` | 编译 SQL 一致；Kyuubi 需要在 Kyuubi/Spark engine 侧配置好 Hive/Doris catalog。 |
 | 固定写入能力矩阵 | 两边都在提交前使用同一个 `WritePlan` 和矩阵；Hive/Doris/MySQL overwrite 永久拒绝。 |
+| Hive/Doris Catalog append | 两边都要求目标存在、源和目标列名集合一致，并通过显式目标列清单和源列投影写入；类型不兼容在写入前失败。 |
 
 ## 有条件对等
 
@@ -31,7 +32,8 @@
 | `load mysql` adapter | 支持 Spark JDBC reader，连接信息来自 `engines.local.datasources.mysql`。 | 支持 `mysql.\`catalog.db.table\``：无分片参数走远端 catalog SQL；带分片参数走 `sparkone_mysql` provider，并复用 Kyuubi/Spark engine 侧 `spark.sql.catalog.<catalog>.*`。 |
 | `save mysql` adapter | append 支持 Spark JDBC writer；overwrite 永久拒绝。 | 当前不支持，且原生写入不能作为旁路。 |
 | 受控 HDFS staging overwrite | executor 尚未实现，当前 fail closed。 | executor 尚未实现，当前 fail closed。 |
-| 目标表存在性预检查 | 可通过 `spark.catalog.tableExists` 或本地 JDBC reader 检查。 | 当前主要依赖远端 SQL 执行时报错。 |
+| Catalog append 预检查 | 通过 `spark.catalog.tableExists`、DataFrame schema 和最终 SQL 的 `EXPLAIN` 检查。 | 通过远端 `LIMIT 0` 和最终显式列 `INSERT` 的 `EXPLAIN` 检查。 |
+| 写语句断线处理 | 进程内 Spark 执行，不存在 JDBC statement 自动重放。 | `save` statement 永不自动重试；连接异常返回写入状态未知。 |
 | `/api/compile` 语义 | local 下编译结果通常可直接执行。 | 若不做 engine-aware 校验，可能出现 Compile 成功但 Run 才发现 Kyuubi 不支持的情况。 |
 
 ## 已落地优化
@@ -42,10 +44,11 @@
 | `/api/config` 暴露 engine capabilities | 已落地。前端可读取 `mysqlAdapter`、`externalCatalogConfiguredBySparkOne` 等执行能力；固定写入矩阵不作为可变 engine capability 暴露。 |
 | Kyuubi compile diagnostics | 已落地第一版。Compile 成功时返回 Kyuubi 配置归属提示，说明 catalog/provider jars 需要在 Kyuubi/Spark engine 侧配置。 |
 | Kyuubi-safe MySQL catalog load | 已落地。Kyuubi `load mysql.\`catalog.db.table\`` 不读取 SparkOne 本地 MySQL 密钥；大表 provider 只传 catalog/table/where/partition 参数。 |
+| Catalog append 3A | 已落地。Hive/Doris 使用 Spark 3.3+ column list 语法，Local/Kyuubi 都做目标、列名和类型检查；Kyuubi 写 statement 禁止断线重放。 |
 
 ## 后续优先级
 
-1. Kyuubi 增加可选远端诊断能力，主动执行轻量 SQL 检查常见 catalog/provider 是否可用。
-2. 对 `save append hive/doris` 增强远端目标表存在性预检查，给出比 Spark SQL 原始异常更稳定的错误信息。
-3. 实现共用的受控 HDFS staging overwrite executor，workspace 由逻辑租户计算，Kyuubi/Spark 继续使用固定服务身份执行。
+1. 进入 3B，补齐 MySQL append 的统一 schema 预检和 Kyuubi 执行路径。
+2. 进入 3C，实现 HDFS、本地文件、S3、OSS 文件 append executor。
+3. 最后实现共用的受控 HDFS staging overwrite executor，workspace 由逻辑租户计算，Kyuubi/Spark 继续使用固定服务身份执行。
 4. 保持架构原则：SparkOne 不直接替 Kyuubi 管理 Spark/YARN/Hive 执行用户、connector classpath 或 catalog 密钥。

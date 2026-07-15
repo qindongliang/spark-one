@@ -10,6 +10,56 @@ import scala.collection.JavaConverters._
 
 final class WritePolicyRuntimeTest {
   @Test
+  def hiveAppendMapsColumnsByNameAndRejectsIncompatibleSchema(): Unit = {
+    val root = Files.createTempDirectory("sparkone-write-policy-by-name-")
+    val spark = localSpark(root)
+    val tenant = TenantContext.development("alice")
+    try {
+      spark.sql("CREATE TABLE default.sparkone_by_name_target (name STRING, id INT) USING parquet")
+      val runtime = new SparkOneRuntime(spark)
+      val success = runtime.run(
+        tenant,
+        """view reordered_source as select 1 as id, 'alice' as name;
+          |save append reordered_source as hive.`default.sparkone_by_name_target`;
+          |""".stripMargin,
+        10)
+
+      assertTrue(success.statements.flatMap(_.error).mkString("\n"), success.success)
+      assertEquals(
+        "INSERT INTO TABLE default.sparkone_by_name_target (`name`, `id`) " +
+          "SELECT `name`, `id` FROM reordered_source",
+        success.statements.last.sql)
+      assertFalse(success.statements.last.sql.contains("BY NAME"))
+      val written = spark.sql(
+        "SELECT name, id FROM default.sparkone_by_name_target").collect().map(row => row.getString(0) -> row.getInt(1))
+      assertEquals(Seq("alice" -> 1), written.toSeq)
+
+      val incompatible = runtime.run(
+        tenant,
+        """view missing_column_source as select 2 as id;
+          |save append missing_column_source as hive.`default.sparkone_by_name_target`;
+          |""".stripMargin,
+        10)
+      assertFalse(incompatible.success)
+      assertTrue(incompatible.statements.flatMap(_.error).mkString("\n").contains("must match target columns by name"))
+      assertEquals(1L, spark.table("default.sparkone_by_name_target").count())
+
+      val incompatibleTypes = runtime.run(
+        tenant,
+        """view incompatible_type_source as select 'not-an-int' as id, 'bob' as name;
+          |save append incompatible_type_source as hive.`default.sparkone_by_name_target`;
+          |""".stripMargin,
+        10)
+      assertFalse(incompatibleTypes.success)
+      assertTrue(incompatibleTypes.statements.flatMap(_.error).mkString("\n").contains("INCOMPATIBLE_DATA_FOR_TABLE"))
+      assertEquals(1L, spark.table("default.sparkone_by_name_target").count())
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
   def hiveAppendStillRequiresExistingTarget(): Unit = {
     val root = Files.createTempDirectory("sparkone-write-policy-hive-")
     val spark = localSpark(root)

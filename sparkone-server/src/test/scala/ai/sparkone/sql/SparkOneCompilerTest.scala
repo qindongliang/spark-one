@@ -519,7 +519,9 @@ final class SparkOneCompilerTest {
   def compilesSaveAppendToHiveTable(): Unit = {
     val statement = compiler.compile("save append users as hive.`default.users`;").head
 
-    assertEquals("INSERT INTO TABLE default.users SELECT * FROM users", statement.sql)
+    assertEquals(
+      "SELECT 'SAVE CATALOG' AS sparkone_action, 'users TO default.users' AS sparkone_target",
+      statement.sql)
     assertEquals(Some(WriteMode.Append), statement.writePlan.map(_.mode))
     assertEquals(Some(WriteTargetKind.HiveCatalog), statement.writePlan.map(_.target.kind))
   }
@@ -577,7 +579,9 @@ final class SparkOneCompilerTest {
   def compilesSaveAppendToDorisCatalogTable(): Unit = {
     val statement = compiler.compile("save append users as doris.`dataagent.user_stats`;").head
 
-    assertEquals("INSERT INTO TABLE doris.dataagent.user_stats SELECT * FROM users", statement.sql)
+    assertEquals(
+      "SELECT 'SAVE CATALOG' AS sparkone_action, 'users TO doris.dataagent.user_stats' AS sparkone_target",
+      statement.sql)
     assertEquals(Some(WriteMode.Append), statement.writePlan.map(_.mode))
     assertEquals(Some("doris.dataagent.user_stats"), statement.writePlan.map(_.target.identifier))
     assertEquals(Some(WriteTargetKind.DorisCatalog), statement.writePlan.map(_.target.kind))
@@ -615,9 +619,12 @@ final class SparkOneCompilerTest {
 
   @Test
   def compilesSaveAppendToHivePartition(): Unit = {
-    val sql = compiler.compile("save append users as hive.`default.users` partitionBy dt, region;").head.sql
+    val statement = compiler.compile("save append users as hive.`default.users` partitionBy dt, region;").head
 
-    assertEquals("INSERT INTO TABLE default.users PARTITION (dt, region) SELECT * FROM users", sql)
+    assertEquals(Seq("dt", "region"), statement.writePlan.toSeq.flatMap(_.partitionColumns))
+    assertEquals(
+      "SELECT 'SAVE CATALOG' AS sparkone_action, 'users TO default.users' AS sparkone_target",
+      statement.sql)
   }
 
   @Test
