@@ -1,6 +1,6 @@
 # Write Safety
 
-SparkOne 的写入安全策略由内部 `WritePlan` 和固定能力矩阵统一决定。配置只能进一步收紧能力，不能放开矩阵中永久拒绝的 overwrite 类型。
+SparkOne 的写入安全策略由内部 `WritePlan` 和固定能力矩阵统一决定。配置只能进一步收紧能力，不能放开矩阵中永久拒绝的写入类型。
 
 ## 固定能力矩阵
 
@@ -9,9 +9,9 @@ SparkOne 的写入安全策略由内部 `WritePlan` 和固定能力矩阵统一�
 | Hive Catalog | 允许 | 永久拒绝 |
 | Doris Catalog | 允许 | 永久拒绝 |
 | MySQL | 允许 | 永久拒绝 |
-| 受控 HDFS workspace | 允许 | 允许，但必须由 staging executor 执行 |
-| 本地文件、S3、OSS 等外部路径 | 允许 | 永久拒绝 |
-| 未识别 provider | 默认拒绝 | 永久拒绝 |
+| 受控 HDFS workspace | 永久拒绝 | 允许，但必须由 staging executor 执行 |
+| 本地文件、S3、OSS 等外部路径 | 永久拒绝 | 永久拒绝 |
+| 未识别 provider | 永久拒绝 | 永久拒绝 |
 
 旧的全局 overwrite policy、备份策略、protected paths 以及 MySQL/Doris overwrite 开关已经删除，不兼容旧配置。原生 DDL/DML 没有放行开关。
 
@@ -44,7 +44,8 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 
 - Hive、Doris、MySQL append 生成对应的 catalog SQL 或 runtime adapter 计划。
 - Hive、Doris、MySQL overwrite 在编译阶段永久拒绝。
-- 绝对路径、带 scheme 的路径以及本地/S3/OSS 等外部路径 overwrite 在编译阶段永久拒绝。
+- 所有文件 append 在编译阶段永久拒绝；裸文件 append 不进入 MVP 路线。
+- 绝对路径、带 scheme 的路径以及本地/S3/OSS 等外部路径 append 和 overwrite 都在编译阶段永久拒绝。
 - 未识别 provider 的 append 和 overwrite 均在编译阶段拒绝。
 - 每条语句携带 `StatementIntent`；原生 SQL 只允许查询和只读检查命令，其他 Spark command 在编译阶段默认拒绝。
 - Hive、Doris、Kyuubi MySQL Catalog append 在 runtime 统一生成 `INSERT INTO TABLE target (目标列...) SELECT 源列...`，显式按目标列顺序投影，源列顺序不影响目标映射。
@@ -57,10 +58,9 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 
 当前尚未开放：
 
-- 文件 append executor。
 - 受控 HDFS staging overwrite executor。
 
-因此，矩阵中“允许”的文件 append 和受控 HDFS overwrite 当前仍会 fail closed，并明确提示对应 executor 尚未实现。这不是配置问题，不能通过 SQL option 或 HOCON 放开。
+因此，只有受控 HDFS overwrite 属于“矩阵允许但 executor 尚未实现”的能力，当前会 fail closed 并提示 staging executor 尚未就绪。文件 append 以及本地/S3/OSS 写入属于固定策略拒绝，不提供 SQL option 或 HOCON 放行开关。
 
 Hive、Doris、MySQL append 的受控执行顺序为：
 
@@ -102,6 +102,12 @@ reports/../daily
 ```
 
 客户端不能直接提交完整 workspace 路径，也不能提交其他用户名。最终绝对路径只能由服务端根据当前 `TenantContext` 计算。
+
+## 文件 append 产品边界
+
+SparkOne MVP 不提供 Parquet、ORC、CSV、JSON、Text、Excel 等裸文件或目录 append。增量写入优先落到 Hive、Doris、MySQL 等受治理表；Delta、Iceberg、Hudi 或 Structured Streaming 等需求应按事务表或流式 sink 单独设计，不能复用通用裸路径 append。
+
+只有出现明确生产案例后才重新评估文件 append，且至少需要同时明确：目标格式与分区约束、schema 合同、并发写策略、失败重跑幂等语义和存储系统 committer。即使重新评估，也应优先限定为 Parquet/ORC 分区或事务湖表，不开放 CSV、Excel、本地文件以及任意 S3/OSS 裸路径 append。
 
 ## 原生 SQL 旁路
 
@@ -149,6 +155,8 @@ INSERT INTO TABLE analytics.app.target_table (`city`, `cnt`) SELECT `city`, `cnt
 save overwrite source_view as hive.`default.target_table`;
 save overwrite source_view as doris.`app.target_table`;
 save overwrite source_view as mysql.`analytics.target_table`;
+save append source_view as parquet.`reports/daily`;
+save append source_view as parquet.`s3a://bucket/target`;
 save overwrite source_view as parquet.`/tmp/target`;
 save overwrite source_view as parquet.`s3a://bucket/target`;
 ```

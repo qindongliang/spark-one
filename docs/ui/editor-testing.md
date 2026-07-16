@@ -1146,7 +1146,7 @@ SELECT `name`, `id` FROM stage3b_mysql_source
 
 ## 使用 SparkOne Save DSL
 
-第二阶段已经统一使用 `WritePlan` 和固定能力矩阵。Hive、Doris、MySQL 只允许 append；这些 catalog/数据库目标的 overwrite 永久拒绝。文件 append 与受控 HDFS staging overwrite executor 尚未开放，因此当前同样 fail closed。
+第二阶段已经统一使用 `WritePlan` 和固定能力矩阵。Hive、Doris、MySQL 只允许 append；这些 catalog/数据库目标的 overwrite 永久拒绝。所有文件 append 以及本地/S3/OSS external path 写入永久拒绝；只有受控 HDFS overwrite 可以在 staging executor 落地后开放。
 
 测试原生 DDL/DML 是否被拦截。下面每条语句应分别点击 Compile，且都应失败：
 
@@ -1180,6 +1180,15 @@ save overwrite city_stats as parquet.`/tmp/city_stats_parquet`;
 
 预期 Compile 失败，错误包含 `external-path` 和 `permanently denied`。
 
+测试文件 append 永久拒绝：
+
+```sql
+save append city_stats as parquet.`reports/city_stats`;
+save append city_stats as parquet.`s3a://bucket/reports/city_stats`;
+```
+
+两条语句都应 Compile 失败并包含 `permanently denied`；第一条目标类型是 `managed-hdfs`，第二条是 `external-path`。文件 append 不存在待开启的 executor 或配置开关。
+
 测试相对路径被识别为受控 HDFS：
 
 ```sql
@@ -1187,6 +1196,8 @@ save overwrite city_stats as parquet.`reports/city_stats`;
 ```
 
 预期 Compile 失败，但错误应提示 `staging overwrite executor` 尚未就绪，而不是 `external-path`。后续 executor 会把目标解析为 `/public/sparkone/user/${username}/reports/city_stats`；客户端不能提交绝对 workspace 路径。
+
+本地文件、S3、OSS 裸路径的 append/overwrite 都保持永久拒绝。未来只有出现明确生产案例并定义 schema、分区、并发和失败重跑幂等合同后，才单独评估 Parquet/ORC 分区 append 或事务湖表写入，不恢复 CSV、Excel 或任意裸路径 append。
 
 Hive/catalog 表 append 要求目标表先存在。请先通过平台外 Hive/catalog 管理入口准备下面三个目标表，不能在 SparkOne 编辑器执行建表语句：
 

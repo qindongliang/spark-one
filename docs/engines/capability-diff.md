@@ -13,6 +13,7 @@
 | `load hive/doris ... as t` | 编译 SQL 一致；Kyuubi 需要在 Kyuubi/Spark engine 侧配置好 Hive/Doris catalog。 |
 | 固定写入能力矩阵 | 两边都在提交前使用同一个 `WritePlan` 和矩阵；Hive/Doris/MySQL overwrite 永久拒绝。 |
 | Catalog append | Hive/Doris 以及 Kyuubi MySQL 都要求目标存在、源和目标列名集合一致，并通过显式目标列清单和源列投影写入；类型不兼容在写入前失败。 |
+| 文件路径写入边界 | 两边都永久拒绝文件 append 和 external path 写入；只有受控 HDFS overwrite 可以在 staging executor 落地后开放。 |
 
 ## 有条件对等
 
@@ -49,6 +50,7 @@
 
 ## 后续优先级
 
-1. 进入 3C，实现 HDFS、本地文件、S3、OSS 文件 append executor。
-2. 最后实现共用的受控 HDFS staging overwrite executor，workspace 由逻辑租户计算，Kyuubi/Spark 继续使用固定服务身份执行。
-3. 保持架构原则：SparkOne 不直接替 Kyuubi 管理 Spark/YARN/Hive 执行用户、connector classpath 或 catalog 密钥。
+1. 实现共用的受控 HDFS staging overwrite executor，workspace 由逻辑租户计算，Kyuubi/Spark 继续使用固定服务身份执行。
+2. 文件 append 不进入 MVP 路线；只有出现明确生产案例，并定义 schema、分区、并发与幂等合同后，才单独评估 Parquet/ORC 分区 append 或事务湖表写入。
+3. 本地文件、S3、OSS 裸路径写入保持永久拒绝，不增加配置开关。
+4. 保持架构原则：SparkOne 不直接替 Kyuubi 管理 Spark/YARN/Hive 执行用户、connector classpath 或 catalog 密钥。

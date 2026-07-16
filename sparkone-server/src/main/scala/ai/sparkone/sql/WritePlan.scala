@@ -66,8 +66,8 @@ object WriteCapabilityMatrix {
     HiveCatalog -> Set(Append),
     DorisCatalog -> Set(Append),
     Mysql -> Set(Append),
-    ManagedHdfs -> Set(Append, Overwrite),
-    ExternalPath -> Set(Append),
+    ManagedHdfs -> Set(Overwrite),
+    ExternalPath -> Set.empty,
     UnknownProvider -> Set.empty)
 
   def supports(kind: WriteTargetKind, mode: WriteMode): Boolean = {
@@ -234,7 +234,6 @@ private object WritePlanner {
 
 private[sql] object WriteSqlRenderer {
   import WriteExecutionType._
-  import WriteMode._
 
   def render(plan: WritePlan): String = plan.executionType match {
     case CatalogSql =>
@@ -246,13 +245,7 @@ private[sql] object WriteSqlRenderer {
         "SAVE MYSQL",
         s"${plan.sourceTable} TO ${plan.target.identifier}")
     case FileProvider =>
-      plan.mode match {
-        case Append =>
-          throw new CompileException(
-            s"SAVE append for ${plan.target.kind.name} is allowed by the capability matrix, but the file append executor is not implemented yet")
-        case Overwrite =>
-          throw new CompileException(
-            "SAVE overwrite for managed-hdfs is disabled until the staging overwrite executor is available")
-      }
+      throw new CompileException(
+        "SAVE overwrite for managed-hdfs is disabled until the staging overwrite executor is available")
   }
 }

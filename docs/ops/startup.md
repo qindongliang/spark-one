@@ -281,7 +281,7 @@ preview {
 
 写入权限由代码中的固定能力矩阵决定，不再提供全局 overwrite policy、文件备份、protected paths 或 MySQL/Doris overwrite 开关。Hive、Doris、MySQL 和 external path overwrite 永久拒绝，配置不能放开。
 
-受控 HDFS workspace 使用 `/public/sparkone/user/${username}`。DSL 只接受相对路径；文件 append 和 staging overwrite executor 尚未实现，因此当前继续在编译阶段 fail closed。
+受控 HDFS workspace 使用 `/public/sparkone/user/${username}`。DSL 只接受相对路径；文件 append 永久拒绝，受控 HDFS overwrite 在 staging executor 就绪前继续在编译阶段 fail closed。本地文件、S3、OSS 裸路径的 append/overwrite 都不能通过配置放开。
 
 原生 SQL 只允许查询和只读检查命令。`CREATE/DROP/ALTER/INSERT` 等 DDL/DML 在 Compile 阶段永久拒绝，必须通过平台外流程治理表结构，并通过 SparkOne `save` 写入；不存在可以放开的 HOCON 配置。
 

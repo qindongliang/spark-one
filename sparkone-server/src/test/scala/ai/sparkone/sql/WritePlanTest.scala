@@ -16,13 +16,13 @@ final class WritePlanTest {
     assertTrue(WriteCapabilityMatrix.supports(HiveCatalog, Append))
     assertTrue(WriteCapabilityMatrix.supports(DorisCatalog, Append))
     assertTrue(WriteCapabilityMatrix.supports(Mysql, Append))
-    assertTrue(WriteCapabilityMatrix.supports(ManagedHdfs, Append))
     assertTrue(WriteCapabilityMatrix.supports(ManagedHdfs, Overwrite))
-    assertTrue(WriteCapabilityMatrix.supports(ExternalPath, Append))
 
     assertFalse(WriteCapabilityMatrix.supports(HiveCatalog, Overwrite))
     assertFalse(WriteCapabilityMatrix.supports(DorisCatalog, Overwrite))
     assertFalse(WriteCapabilityMatrix.supports(Mysql, Overwrite))
+    assertFalse(WriteCapabilityMatrix.supports(ManagedHdfs, Append))
+    assertFalse(WriteCapabilityMatrix.supports(ExternalPath, Append))
     assertFalse(WriteCapabilityMatrix.supports(ExternalPath, Overwrite))
     assertFalse(WriteCapabilityMatrix.supports(UnknownProvider, Append))
     assertFalse(WriteCapabilityMatrix.supports(UnknownProvider, Overwrite))
@@ -120,14 +120,23 @@ final class WritePlanTest {
   }
 
   @Test
-  def classifiesOnlyKnownRelativeProviderPathsAsManagedHdfs(): Unit = {
+  def allowsOnlyKnownRelativeProviderPathsToReachManagedHdfsOverwrite(): Unit = {
     val managed = planner.plan(
-      tenant, "append", "source", "parquet", "reports/daily", Nil, Nil, ProviderSaveSource("parquet"))
-    val external = planner.plan(
-      tenant, "append", "source", "parquet", "s3a://bucket/reports", Nil, Nil, ProviderSaveSource("parquet"))
+      tenant, "overwrite", "source", "parquet", "reports/daily", Nil, Nil, ProviderSaveSource("parquet"))
 
     assertEquals(WriteTargetKind.ManagedHdfs, managed.target.kind)
-    assertEquals(WriteTargetKind.ExternalPath, external.target.kind)
+
+    val managedAppendError = expectCompileException {
+      planner.plan(tenant, "append", "source", "parquet", "reports/daily", Nil, Nil, ProviderSaveSource("parquet"))
+    }
+    assertTrue(managedAppendError.getMessage.contains("managed-hdfs"))
+    assertTrue(managedAppendError.getMessage.contains("permanently denied"))
+
+    val externalAppendError = expectCompileException {
+      planner.plan(tenant, "append", "source", "parquet", "s3a://bucket/reports", Nil, Nil, ProviderSaveSource("parquet"))
+    }
+    assertTrue(externalAppendError.getMessage.contains("external-path"))
+    assertTrue(externalAppendError.getMessage.contains("permanently denied"))
 
     val unknownError = expectCompileException {
       planner.plan(tenant, "append", "source", "custom", "reports/daily", Nil, Nil, ProviderSaveSource("custom"))

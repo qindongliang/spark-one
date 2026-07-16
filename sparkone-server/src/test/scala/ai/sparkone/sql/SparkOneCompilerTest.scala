@@ -386,6 +386,18 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def permanentlyRejectsFileAppendForManagedAndExternalPaths(): Unit = {
+    Seq(
+      "save append users as parquet.`reports/daily`;" -> "managed-hdfs",
+      "save append users as parquet.`s3a://bucket/reports/daily`;" -> "external-path").foreach {
+      case (sql, targetKind) =>
+        val error = tryCompile(sql)
+        assertTrue(error.getMessage.contains(targetKind))
+        assertTrue(error.getMessage.contains("permanently denied"))
+    }
+  }
+
+  @Test
   def rejectsNativeCreateViewSql(): Unit = {
     val error = tryCompile(
       """create or replace temporary view result_table as

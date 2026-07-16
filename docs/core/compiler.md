@@ -74,7 +74,7 @@ group by city;
 - `save append` 写 Hive、MySQL、Doris 时要求目标表已存在；SparkOne 不自动建表，目标表和结构变更必须由平台外的 Hive/Doris/MySQL 管理入口完成。
 - Hive、Doris、MySQL append 在执行前要求源和目标列名集合完全一致，并在写入前校验类型兼容；写入统一按目标列顺序投影，不按列位置映射，也不为缺失 nullable 列自动补 `NULL`。
 - compiler 对每条 `save` 先生成携带逻辑租户、目标分类和执行类型的 `WritePlan`。Catalog 最终 SQL 延迟到 runtime 取得 schema 后渲染，Compile 接口只展示无副作用的安全占位 SQL。
-- 已识别的文件 provider 只有相对路径可进入受控 HDFS 分类；绝对路径和 URI 均属于 external path，overwrite 永久拒绝。文件 append 与受控 HDFS staging overwrite executor 尚未实现，当前继续 fail closed。
+- 已识别的文件 provider 只有相对路径可进入受控 HDFS 分类；所有文件 append 永久拒绝。绝对路径和 URI 均属于 external path，本地文件、S3、OSS 等 external path 的 append/overwrite 都永久拒绝。受控 HDFS overwrite 在 staging executor 就绪前继续 fail closed。
 - `StatementPolicy` 在 compiler 统一出口使用 Spark `SparkSqlParser` 校验原生只读边界，因此 Local/Kyuubi 的 Compile 和 Run 行为一致。
 - Doris 推荐直接使用标准 Spark SQL：`show namespaces in doris`、`select * from doris.db.table`；裸写 `show databases` 和 `db.table` 仍表示默认 Hive catalog。
 - 不支持 `load/save jdbc`，避免账号密码和连接串散落在 SQL 里。
