@@ -1,15 +1,18 @@
 package ai.sparkone.runtime
 
 import ai.sparkone.identity.TenantContext
-import ai.sparkone.sql.{CatalogWriteSqlRenderer, CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SetStatementMetadata, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType, WriteMode, WritePlan, WriteTargetKind}
+import ai.sparkone.sql.{CatalogWriteSqlRenderer, CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SetStatementMetadata, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType, WriteMode, WritePlan, WriteSchemaPolicy, WriteTargetKind}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.UserGroupInformation
+import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
+import org.apache.spark.sql.internal.SQLConf.StoreAssignmentPolicy
 import org.slf4j.LoggerFactory
 
 import java.io.File
 import java.net.URLClassLoader
+import java.util.Locale
 import scala.collection.mutable
 import scala.util.control.NonFatal
 
@@ -185,11 +188,12 @@ final class SparkOneRuntime(
       case WriteMode.Overwrite =>
         throw new CompileException("SAVE overwrite is permanently denied for target type mysql")
     }
+    val source = prepareMysqlAppend(plan)
     val started = System.nanoTime()
     logger.info(
       s"MySQL Save: start, tenant=${plan.tenant.username}, mode=${plan.mode.name}, " +
         s"source=${plan.sourceTable}, target=${plan.target.identifier}")
-    spark.table(plan.sourceTable)
+    source
       .write
       .format("jdbc")
       .options(plan.target.connectionOptions)
@@ -199,6 +203,46 @@ final class SparkOneRuntime(
       s"MySQL Save: success, tenant=${plan.tenant.username}, mode=${plan.mode.name}, " +
         s"source=${plan.sourceTable}, target=${plan.target.identifier}, costMs=${elapsedMs(started)}")
     actionResult("SAVE MYSQL", plan.target.identifier, plan.sourceTable)
+  }
+
+  private def prepareMysqlAppend(plan: WritePlan): DataFrame = {
+    val source = spark.table(plan.sourceTable)
+    val target = loadMysqlTarget(plan)
+    val orderedSourceColumns = WriteSchemaPolicy.sourceColumnsInTargetOrder(
+      source.schema.fieldNames.toSeq,
+      target.schema.fieldNames.toSeq,
+      plan.target.identifier)
+    val sourceFieldsByName = source.schema.fields.map(field => field.name.toLowerCase(Locale.ROOT) -> field).toMap
+
+    target.schema.fields.zip(orderedSourceColumns).foreach { case (targetField, sourceColumn) =>
+      val sourceField = sourceFieldsByName(sourceColumn.toLowerCase(Locale.ROOT))
+      try {
+        val compatible = DataTypeUtils.canWrite(
+          plan.target.identifier,
+          sourceField.dataType,
+          targetField.dataType,
+          byName = false,
+          (left: String, right: String) => left.equalsIgnoreCase(right),
+          targetField.name,
+          StoreAssignmentPolicy.ANSI,
+          _ => ())
+        if (!compatible) {
+          throw new CompileException(
+            s"SAVE source schema is incompatible with target table: ${plan.target.identifier}")
+        }
+      } catch {
+        case e: CompileException => throw e
+        case NonFatal(e) =>
+          throw new CompileException(
+            s"SAVE source schema is incompatible with target table: ${plan.target.identifier}",
+            e)
+      }
+    }
+
+    val projections = target.schema.fields.zip(orderedSourceColumns).map { case (targetField, sourceColumn) =>
+      source.col(quoteColumn(sourceColumn)).cast(targetField.dataType).as(targetField.name)
+    }
+    source.select(projections: _*)
   }
 
   private def prepareWriteStatement(statement: CompiledStatement): CompiledStatement = {
@@ -217,7 +261,6 @@ final class SparkOneRuntime(
             spark.sql(s"EXPLAIN $sql").collect()
             statement.copy(sql = sql)
           case WriteTargetKind.Mysql =>
-            validateMysqlTargetExists(plan)
             statement
           case _ =>
             statement
@@ -226,14 +269,12 @@ final class SparkOneRuntime(
     }
   }
 
-  private def validateMysqlTargetExists(plan: WritePlan): Unit = {
+  private def loadMysqlTarget(plan: WritePlan): DataFrame = {
     try {
       spark.read
         .format("jdbc")
         .options(plan.target.connectionOptions)
         .load()
-        .limit(0)
-        .collect()
     } catch {
       case NonFatal(e) =>
         logger.warn(
@@ -246,6 +287,10 @@ final class SparkOneRuntime(
             s"Create the target table explicitly before SAVE ${plan.mode.name}.",
           e)
     }
+  }
+
+  private def quoteColumn(value: String): String = {
+    s"`${value.replace("`", "``")}`"
   }
 
   private def actionResult(action: String, target: String, table: String): DataFrame = {

@@ -6,6 +6,7 @@ import org.junit.Assert._
 import org.junit.Test
 
 import java.nio.file.{Files, Path}
+import java.sql.DriverManager
 import scala.collection.JavaConverters._
 
 final class WritePolicyRuntimeTest {
@@ -88,6 +89,108 @@ final class WritePolicyRuntimeTest {
     } finally {
       spark.stop()
       deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def localMysqlAppendMapsColumnsByNameAndFailsBeforeUnsafeWrites(): Unit = {
+    val root = Files.createTempDirectory("sparkone-write-policy-mysql-")
+    val spark = localSpark(root)
+    val tenant = TenantContext.development("alice")
+    val jdbcUrl = s"jdbc:derby:${root.resolve("mysql-db").toAbsolutePath};create=true"
+    Class.forName("org.apache.derby.jdbc.EmbeddedDriver")
+    val setup = DriverManager.getConnection(jdbcUrl)
+    try {
+      setup.createStatement().executeUpdate(
+        "CREATE TABLE TARGET_USERS (NAME VARCHAR(100), ID INTEGER)")
+    } finally {
+      setup.close()
+    }
+
+    try {
+      withSystemProperties(Map(
+        "sparkone.datasource.mysql.analytics.url" -> jdbcUrl,
+        "sparkone.datasource.mysql.analytics.driver" -> "org.apache.derby.jdbc.EmbeddedDriver")) {
+        val runtime = new SparkOneRuntime(spark)
+        val success = runtime.run(
+          tenant,
+          """view mysql_source as select 7 as id, 'alice' as name;
+            |save append mysql_source as mysql.`analytics.TARGET_USERS`;
+            |""".stripMargin,
+          10)
+
+        assertTrue(success.statements.flatMap(_.error).mkString("\n"), success.success)
+        assertEquals(Seq("alice" -> 7), readMysqlRows(jdbcUrl))
+
+        val missingColumn = runtime.run(
+          tenant,
+          """view mysql_missing_column as select 8 as id;
+            |save append mysql_missing_column as mysql.`analytics.TARGET_USERS`;
+            |""".stripMargin,
+          10)
+        assertFalse(missingColumn.success)
+        assertTrue(missingColumn.statements.flatMap(_.error).mkString("\n")
+          .contains("must match target columns by name"))
+        assertEquals(1, readMysqlRows(jdbcUrl).size)
+
+        val incompatibleType = runtime.run(
+          tenant,
+          """view mysql_incompatible_type as select 'not-an-int' as id, 'bob' as name;
+            |save append mysql_incompatible_type as mysql.`analytics.TARGET_USERS`;
+            |""".stripMargin,
+          10)
+        assertFalse(incompatibleType.success)
+        assertTrue(incompatibleType.statements.flatMap(_.error).mkString("\n")
+          .contains("schema is incompatible"))
+        assertEquals(1, readMysqlRows(jdbcUrl).size)
+
+        val missingTarget = runtime.run(
+          tenant,
+          """view mysql_missing_target_source as select 9 as id, 'carol' as name;
+            |save append mysql_missing_target_source as mysql.`analytics.MISSING_USERS`;
+            |""".stripMargin,
+          10)
+        assertFalse(missingTarget.success)
+        assertTrue(missingTarget.statements.flatMap(_.error).mkString("\n")
+          .contains("target table does not exist"))
+        assertEquals(1, readMysqlRows(jdbcUrl).size)
+      }
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  private def readMysqlRows(jdbcUrl: String): Seq[(String, Int)] = {
+    val connection = DriverManager.getConnection(jdbcUrl)
+    try {
+      val statement = connection.createStatement()
+      try {
+        val resultSet = statement.executeQuery("SELECT NAME, ID FROM TARGET_USERS ORDER BY ID")
+        val rows = Seq.newBuilder[(String, Int)]
+        while (resultSet.next()) {
+          rows += resultSet.getString(1) -> resultSet.getInt(2)
+        }
+        resultSet.close()
+        rows.result()
+      } finally {
+        statement.close()
+      }
+    } finally {
+      connection.close()
+    }
+  }
+
+  private def withSystemProperties[T](values: Map[String, String])(body: => T): T = {
+    val previous = values.keys.map(key => key -> sys.props.get(key)).toMap
+    values.foreach { case (key, value) => sys.props.put(key, value) }
+    try {
+      body
+    } finally {
+      previous.foreach {
+        case (key, Some(value)) => sys.props.put(key, value)
+        case (key, None) => sys.props.remove(key)
+      }
     }
   }
 

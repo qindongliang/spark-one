@@ -108,6 +108,7 @@ final class WritePlanTest {
     val targets = Seq[ResolvedSaveSource](
       CatalogSaveSource("default.target", SaveTargetType.Catalog, supportsPartitionBy = true),
       CatalogSaveSource("doris.app.target", SaveTargetType.DorisCatalog, supportsPartitionBy = false),
+      CatalogSaveSource("mysql.app.target", SaveTargetType.MysqlCatalog, supportsPartitionBy = false),
       MysqlSaveSource("target", Seq("url" -> "jdbc:mysql://host/db")))
 
     targets.foreach { target =>
@@ -166,6 +167,7 @@ final class WritePlanTest {
   private def targetFormat(source: ResolvedSaveSource): String = source match {
     case CatalogSaveSource(_, SaveTargetType.Catalog, _) => "hive"
     case CatalogSaveSource(_, SaveTargetType.DorisCatalog, _) => "doris"
+    case CatalogSaveSource(_, SaveTargetType.MysqlCatalog, _) => "mysql"
     case _: MysqlSaveSource => "mysql"
     case _ => "unknown"
   }

@@ -37,7 +37,7 @@ SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户。统�
 - Kyuubi 模式下临时视图存在于 JDBC session 对应的远端 Spark engine 中；SparkOne 按逻辑租户复用独立 connection，以支持同一租户 `load ... as t` 后续 preview，同时避免不同租户共享临时视图。
 - 逻辑租户不会覆盖 Kyuubi JDBC 的 `user/password/options`；连接仍使用启动配置中的固定服务账号，租户身份只进入 SparkOne 的权限决策上下文。
 - `save` 在提交 Kyuubi 前同样生成携带逻辑租户的 `WritePlan` 并执行固定能力矩阵；Hive、Doris、MySQL 和 external path overwrite 永久拒绝。
-- Hive、Doris Catalog append 会在同一租户 JDBC session 内依次执行目标 `LIMIT 0`、源 `LIMIT 0`，再按目标列顺序生成显式 column list `INSERT` 并执行 `EXPLAIN`。目标不存在、列名集合不一致或类型不兼容时不会提交写语句。
+- Hive、Doris、MySQL Catalog append 会在同一租户 JDBC session 内依次执行目标 `LIMIT 0`、源 `LIMIT 0`，再按目标列顺序生成显式 column list `INSERT` 并执行 `EXPLAIN`。目标不存在、列名集合不一致或类型不兼容时不会提交写语句。
 - Catalog append 的最终 SQL 使用 Spark 3.3 已支持的 column list 语法，同一路径兼容 Spark 3.3.x–3.5.x，不会先尝试 3.5 的 `BY NAME` 再回退。
 - Kyuubi 查询和只读预检遇到失效连接可以重连一次；携带 `WritePlan` 的 `save` 写语句永不自动重试。写入连接中断时返回“状态未知”，由用户核查目标后决定是否重新提交。
 - 受控 HDFS overwrite 的 staging executor 尚未开放，因此当前不会向 Kyuubi 提交文件 overwrite SQL。后续 executor 应在 SparkOne 核心执行层实现 workspace 解析和 staging 流程，不依赖 Kyuubi 切换 keytab 执行身份。
@@ -48,7 +48,8 @@ SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户。统�
 - `load mysql` 在 Kyuubi 模式下优先使用 `mysql.\`catalog.db.table\`` 语义，连接信息来自 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`。
 - 无分片参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成远端 catalog SQL。
 - 带 `partitionColumn` 或其他受控大表读取参数时，编译成 `USING sparkone_mysql`，由 provider 在 Spark engine 内复用 catalog 连接配置；只写 `partitionColumn` 时会在远端自动查询 `lowerBound/upperBound`，`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。
-- `save mysql` 仍不支持 Kyuubi adapter。原生 catalog 写入也会被 SparkOne 的原生写保护拦截，当前 Kyuubi 路径不提供 MySQL 写入旁路。
+- `save append ... as mysql.\`catalog.db.table\`` 复用远端 JDBC Catalog 并走受控 Catalog `WritePlan`；路径必须是三段式，不接受 SQL `OPTIONS`，overwrite 永久拒绝。
+- MySQL save 的 URL、用户名、密码和 driver 只存在于 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*` 配置，不进入 SparkOne SQL。
 
 更完整的数据源语义见 [../data/datasources.md](../data/datasources.md)。
 

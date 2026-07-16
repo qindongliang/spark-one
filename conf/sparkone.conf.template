@@ -138,11 +138,13 @@ engines {
     #   kyuubiServerPrincipal = "kyuubi/host@HADOOP.COM"
     # }
 
-    # Kyuubi MySQL load 首选直接复用远端 Spark JDBC Catalog，例如：
+    # Kyuubi MySQL load/save 首选直接复用远端 Spark JDBC Catalog，例如：
     #   load mysql.`mysql_A.Dworks.orders` as orders;
     #   load mysql.`mysql_A.Dworks.big_orders` options partitionColumn="id" ... as big_orders;
+    #   save append source_view as mysql.`mysql_A.Dworks.target_table`;
     #
     # MySQL url/user/password 必须放在 Kyuubi/Spark engine 侧，例如 spark.sql.catalog.mysql_A.*。
+    # Kyuubi save mysql 必须使用 catalog.database.table 三段式路径，且不接受 SQL OPTIONS。
     # 带 partitionColumn/lowerBound/upperBound/numPartitions/fetchsize 的大表 load 会编译为
     # USING sparkone_mysql，Kyuubi/Spark engine 侧需要把 sparkone-mysql-provider jar 放进 classpath。
     #

@@ -1002,7 +1002,7 @@ order by id;
 
 同时仍会传 `partitionColumn=id`，并在执行侧按过滤后的子查询自动补齐上下界和默认分区参数。
 
-测试 `save append` 写入 MySQL：
+选择 local engine，测试 `save append` 写入 MySQL：
 
 ```sql
 load mysql.`analytics.sparkone_mysql_seed` as mysql_seed;
@@ -1024,7 +1024,7 @@ load mysql.`analytics.sparkone_city_result` as mysql_saved_result;
 select * from mysql_saved_result order by city;
 ```
 
-预期可以看到 `beijing/shanghai/hangzhou` 的聚合结果。重复执行 append 会重复追加数据，这是 Spark JDBC append 的正常语义。
+预期可以看到 `beijing/shanghai/hangzhou` 的聚合结果。目标必须已存在，源/目标列名集合必须完全一致；即使源列顺序不同，写入也会按目标列名重排。重复执行 append 会重复追加数据，这是 Spark JDBC append 的正常语义。
 
 测试 MySQL overwrite 永久拒绝：
 
@@ -1047,6 +1047,7 @@ as mysql.`analytics.sparkone_city_result`;
 - `mysql.\`analytics.sparkone_mysql_seed\`` 中 `analytics` 是 HOCON 连接名，`sparkone_mysql_seed` 是 MySQL 表名。
 - `save append ... as mysql` 要求目标表已存在；SparkOne 不会自动创建 MySQL 表。表结构、主键、索引等用 MySQL DDL 先建好。
 - SQL 里的 `options` 只能补充 `fetchsize`、`batchsize` 等非连接参数，不能覆盖 `url/user/password/driver/dbtable`。
+- 缺列、多列或类型不兼容会在 JDBC write 前失败，目标表不会因为 schema 预检失败而新增数据。
 - `load` 会注册临时视图；普通 `Run` 默认只展示 schema，不自动拉取数据。需要看样例数据时，在该结果的 Preview tab 里点 `Preview`，预览行数受 `preview.maxRows` 和页面 `Rows` 共同限制。需要更精确抽样时，仍建议在后续 `select * from mysql_seed limit 10` 中显式限制。
 
 ## 测试 Kyuubi sparkone_mysql Provider
@@ -1113,6 +1114,35 @@ SELECT * FROM `orders_big` LIMIT 101
 - SQL options 禁止传 `url/user/password/driver/dbtable/query`；这些敏感配置留在 Kyuubi/Spark engine 侧。
 - `lowerBound/upperBound` 只决定 Spark JDBC 分区步长，不做业务过滤。业务过滤写 `where "..."`，例如 `where "biz_date = '2026-07-07'"`。
 - `numPartitions` 会增加对 MySQL 的并发连接和 IO 压力。验证通过后再按 MySQL 监控、Spark task 耗时和源表索引情况调大。
+
+### 测试 Kyuubi MySQL append
+
+先通过 MySQL 管理入口预建测试目标表，SparkOne 内禁止执行 `CREATE TABLE`。以下示例假设远端 JDBC Catalog 中已存在 `mysql.Dworks.sparkone_3b_target`，列为 `name string, id int`，且页面选择 Kyuubi engine：
+
+```sql
+view stage3b_mysql_source as
+select * from values
+  (101, 'stage3b-alice'),
+  (102, 'stage3b-bob')
+as stage3b_mysql_source(id, name);
+
+save append stage3b_mysql_source
+as mysql.`mysql.Dworks.sparkone_3b_target`;
+
+select name, id
+from mysql.Dworks.sparkone_3b_target
+where id in (101, 102)
+order by id;
+```
+
+Run 结果中的最终写入 SQL 应为显式列写入，源列顺序不会决定目标映射：
+
+```sql
+INSERT INTO TABLE mysql.Dworks.sparkone_3b_target (`name`, `id`)
+SELECT `name`, `id` FROM stage3b_mysql_source
+```
+
+该 SQL 不应包含 JDBC URL、用户名或密码。Kyuubi MySQL save 只接受 `mysql.\`catalog.database.table\`` 三段式路径，不接受任何 SQL `OPTIONS`；两段式路径、缺列、多列和类型不兼容都应在真正写入前失败。`save overwrite` 永久拒绝。最终写 statement 如果连接中断，SparkOne 返回写入状态未知且不会自动重放，需先核查目标表再决定是否重新提交。
 
 ## 使用 SparkOne Save DSL
 

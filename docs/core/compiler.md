@@ -65,13 +65,14 @@ group by city;
 - `load hive` 是 catalog 表读取语义，编译成 `CREATE ... AS SELECT * FROM db.table`；追加 `where "..."` 时编译成 `SELECT * FROM db.table WHERE ...`。
 - `save ... as hive` 是 catalog 表写入语义；当前只允许 append。compiler 生成 `WritePlan` 和安全占位 SQL，runtime 取得两端 schema 后生成带显式目标列清单和源列投影的 `INSERT INTO TABLE`。
 - `save ... partitionBy col1, col2` 只用于 catalog 表写入，runtime 最终渲染为 Spark SQL 动态分区 `PARTITION (col1, col2)`。
-- `load/save mysql` 是薄 runtime adapter：连接信息从 HOCON 读取，编译展示安全占位 SQL，执行时使用 Spark JDBC reader/writer。
+- local 引擎的 `load/save mysql.\`connection.table\`` 是薄 runtime adapter：连接信息从 HOCON 读取，编译展示安全占位 SQL，执行时使用 Spark JDBC reader/writer。
+- Kyuubi 引擎的 `save mysql.\`catalog.database.table\`` 生成 MySQL Catalog `WritePlan`，复用远端 Spark JDBC Catalog；不接受 SQL `OPTIONS`，SQL 中不携带 URL、用户名或密码。
 - `load mysql ... options partitionColumn="id"` 会在执行侧自动查询 `lowerBound/upperBound`；`where` 存在时按过滤后数据取边界，不存在时按原表取边界。`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。
 - `load doris` 是 Spark Doris Catalog 语法糖：`load doris.\`db.table\` as t` 编译成 `CREATE ... AS SELECT * FROM doris.db.table`；追加 `where "..."` 时编译成 `SELECT * FROM doris.db.table WHERE ...`。
 - `save ... as doris` 是 Spark Doris Catalog 表写入语义；当前只允许 append，和 Hive 共用延迟渲染的显式列写入逻辑。
 - Hive、MySQL、Doris overwrite 由固定能力矩阵永久拒绝，不存在可以放开的 SQL option 或 HOCON 开关；`partitionBy` 不用于 Doris Catalog 写入。
 - `save append` 写 Hive、MySQL、Doris 时要求目标表已存在；SparkOne 不自动建表，目标表和结构变更必须由平台外的 Hive/Doris/MySQL 管理入口完成。
-- Hive、Doris append 在执行前要求源和目标列名集合完全一致，再由 Spark Analyzer 校验类型兼容；不按列位置写入，也不为缺失 nullable 列自动补 `NULL`。
+- Hive、Doris、MySQL append 在执行前要求源和目标列名集合完全一致，并在写入前校验类型兼容；写入统一按目标列顺序投影，不按列位置映射，也不为缺失 nullable 列自动补 `NULL`。
 - compiler 对每条 `save` 先生成携带逻辑租户、目标分类和执行类型的 `WritePlan`。Catalog 最终 SQL 延迟到 runtime 取得 schema 后渲染，Compile 接口只展示无副作用的安全占位 SQL。
 - 已识别的文件 provider 只有相对路径可进入受控 HDFS 分类；绝对路径和 URI 均属于 external path，overwrite 永久拒绝。文件 append 与受控 HDFS staging overwrite executor 尚未实现，当前继续 fail closed。
 - `StatementPolicy` 在 compiler 统一出口使用 Spark `SparkSqlParser` 校验原生只读边界，因此 Local/Kyuubi 的 Compile 和 Run 行为一致。

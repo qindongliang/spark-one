@@ -43,7 +43,7 @@ object EngineCapabilities {
     compileDiagnostics = Seq(
       "Kyuubi engine does not read engines.local catalog, datasource, or jars config; configure catalogs and provider jars in Kyuubi/Spark engine.",
       "Kyuubi load mysql can use mysql.`catalog.db.table`; big-table options require sparkone_mysql provider in Kyuubi/Spark engine.",
-      "SparkOne save mysql adapter is local-only; Kyuubi save mysql is unavailable."))
+      "Kyuubi save mysql requires mysql.`catalog.db.table` and reuses the JDBC Catalog configured in Kyuubi/Spark engine."))
 }
 
 final case class EngineInfo(id: String, label: String, engineType: String, capabilities: EngineCapabilities)
@@ -367,7 +367,8 @@ final class KyuubiJdbcEngine(
     }
     statement.writePlan.foreach { plan =>
       if (plan.executionType == WriteExecutionType.MysqlAdapter) {
-        throw new CompileException("Kyuubi engine does not support SparkOne save mysql adapter; use the local engine for MySQL append")
+        throw new CompileException(
+          "Kyuubi engine does not support the local MySQL save adapter; use mysql.`catalog.db.table` for MySQL append")
       }
     }
   }

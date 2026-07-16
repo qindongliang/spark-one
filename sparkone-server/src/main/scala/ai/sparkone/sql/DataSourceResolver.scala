@@ -58,11 +58,10 @@ final class DataSourceResolver(
     if (normalized == "jdbc") {
       throw new CompileException("SparkOne does not support SAVE jdbc. Use SAVE mysql with the selected local engine's datasources.mysql config.")
     } else if (normalized == "mysql") {
-      val target = mysqlTarget(path, "SAVE")
       if (mysqlLoadMode == MysqlLoadMode.KyuubiProfile) {
-        validateMysqlConnectionOptions(options)
-        MysqlSaveSource(target.dbtable, Nil)
+        resolveKyuubiMysqlSave(path, options)
       } else {
+        val target = mysqlTarget(path, "SAVE")
         MysqlSaveSource(target.dbtable, mysqlOptions(target.connection, target.dbtable, options))
       }
     } else if (normalized == "doris") {
@@ -129,6 +128,24 @@ final class DataSourceResolver(
             withDefaultFetchSize(normalizedOptions, profile)
         ProviderLoadSource(profile.provider, providerOptions)
     }
+  }
+
+  private def resolveKyuubiMysqlSave(
+      path: String,
+      options: Seq[(String, String)]): ResolvedSaveSource = {
+    if (options.nonEmpty) {
+      validateMysqlConnectionOptions(options)
+      throw new CompileException(
+        "Kyuubi MySQL save does not support SQL OPTIONS; configure write options in the Kyuubi/Spark JDBC Catalog.")
+    }
+    val target = parseKyuubiMysqlCatalogPath(path).getOrElse {
+      throw new CompileException(
+        "Kyuubi MySQL save path must be catalog.database.table, for example mysql.`analytics.app.users`.")
+    }
+    CatalogSaveSource(
+      target.catalogTable,
+      SaveTargetType.MysqlCatalog,
+      supportsPartitionBy = false)
   }
 
   private def base64(value: String): String = {

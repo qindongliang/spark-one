@@ -171,6 +171,7 @@ final class WritePlanner {
         val kind = targetType match {
           case SaveTargetType.Catalog => HiveCatalog
           case SaveTargetType.DorisCatalog => DorisCatalog
+          case SaveTargetType.MysqlCatalog => Mysql
           case other => throw new CompileException(s"Unsupported catalog write target type: $other")
         }
         WritePlan(

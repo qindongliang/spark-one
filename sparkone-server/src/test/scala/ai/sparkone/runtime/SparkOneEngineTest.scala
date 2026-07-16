@@ -1,7 +1,7 @@
 package ai.sparkone.runtime
 
 import ai.sparkone.identity.TenantContext
-import ai.sparkone.sql.{CompileException, MysqlLoadProfile, MysqlLoadProfileStrategy}
+import ai.sparkone.sql.{CompileException, MysqlLoadProfile, MysqlLoadProfileStrategy, WriteExecutionType, WriteTargetKind}
 import org.junit.Assert._
 import org.junit.Test
 
@@ -185,18 +185,47 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiCompileRejectsMysqlSaveAdapterBeforeRun(): Unit = {
+  def kyuubiCompileMysqlSaveAsRemoteCatalogPlan(): Unit = {
     val engine = kyuubiEngine()
 
     try {
-      engine.compile(tenant,
+      val statements = engine.compile(tenant,
         """view users as select 1 as id;
-          |save append users as mysql.`analytics.target_users`;
+          |save append users as mysql.`analytics.app.target_users`;
           |""".stripMargin)
-      fail("Expected CompileException")
-    } catch {
-      case e: CompileException =>
-        assertTrue(e.getMessage.contains("Kyuubi engine does not support SparkOne save mysql adapter"))
+
+      val save = statements.last
+      assertEquals(
+        "SELECT 'SAVE CATALOG' AS sparkone_action, " +
+          "'users TO analytics.app.target_users' AS sparkone_target",
+        save.sql)
+      assertEquals(Some(WriteTargetKind.Mysql), save.writePlan.map(_.target.kind))
+      assertEquals(Some(WriteExecutionType.CatalogSql), save.writePlan.map(_.executionType))
+      assertEquals(Some("analytics.app.target_users"), save.writePlan.map(_.target.identifier))
+      assertTrue(save.writePlan.toSeq.flatMap(_.target.connectionOptions).isEmpty)
+      assertFalse(save.sql.contains("jdbc:mysql"))
+      assertFalse(save.sql.toLowerCase.contains("password"))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiCompileMysqlSaveRequiresCatalogDatabaseTableAndRejectsOptions(): Unit = {
+    val engine = kyuubiEngine()
+
+    try {
+      Seq(
+        "save append users as mysql.`analytics.target_users`;",
+        "save append users as mysql.`analytics.app.target_users` options batchsize='500';").foreach { sql =>
+        try {
+          engine.compile(tenant, sql)
+          fail("Expected CompileException")
+        } catch {
+          case e: CompileException =>
+            assertTrue(e.getMessage.contains("catalog.database.table") || e.getMessage.contains("does not support SQL OPTIONS"))
+        }
+      }
     } finally {
       engine.close()
     }
@@ -207,7 +236,7 @@ final class SparkOneEngineTest {
     val engine = kyuubiEngine()
 
     try {
-      engine.compile(tenant, "save overwrite users as mysql.`analytics.target_users`;")
+      engine.compile(tenant, "save overwrite users as mysql.`analytics.app.target_users`;")
       fail("Expected CompileException")
     } catch {
       case e: CompileException =>
@@ -429,6 +458,42 @@ final class SparkOneEngineTest {
       assertEquals(
         "INSERT INTO TABLE default.target (`name`, `id`) SELECT `name`, `id` FROM source_view",
         result.statements.last.sql)
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiMysqlCatalogAppendUsesRemoteCatalogWithoutSecrets(): Unit = {
+    val fake = new RecordingJdbcConnection(
+      queryColumns = {
+        case "SELECT * FROM analytics.app.target_users LIMIT 0" => Seq("name", "id")
+        case "SELECT * FROM source_view LIMIT 0" => Seq("id", "name")
+        case _ => Nil
+      })
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """view source_view as select 1 as id, 'alice' as name;
+          |save append source_view as mysql.`analytics.app.target_users`;
+          |""".stripMargin,
+        10)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(
+        Seq(
+          "CREATE OR REPLACE TEMPORARY VIEW source_view AS select 1 as id, 'alice' as name",
+          "SELECT * FROM analytics.app.target_users LIMIT 0",
+          "SELECT * FROM source_view LIMIT 0",
+          "EXPLAIN INSERT INTO TABLE analytics.app.target_users (`name`, `id`) " +
+            "SELECT `name`, `id` FROM source_view",
+          "INSERT INTO TABLE analytics.app.target_users (`name`, `id`) " +
+            "SELECT `name`, `id` FROM source_view"),
+        fake.executedSql)
+      assertFalse(fake.executedSql.mkString("\n").contains("jdbc:mysql"))
+      assertFalse(fake.executedSql.mkString("\n").toLowerCase.contains("password"))
     } finally {
       engine.close()
     }

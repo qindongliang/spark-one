@@ -25,9 +25,11 @@ libsvm
 - SparkOne 不复刻 MLSQL 的 `storage="hive"` / 数据湖替换逻辑，也不开放原生建表/改表语句；目标表由平台外 catalog 治理入口创建和维护。
 - `mysql` 是关系库特殊 source：`load mysql.\`analytics.users\` as users` 从 local 引擎的 `datasources.mysql.analytics` 读取连接，再用 Spark JDBC reader 注册临时视图。
 - `engines.local.catalogs.mysql` 是显式 Spark JDBC Catalog 配置：可用 `show namespaces in mysql` 查看 MySQL database，用 `show tables in mysql.app` 查看表，用 `select * from mysql.app.users` 做原生查询。MySQL JDBC URL 需要带 `databaseTerm=SCHEMA`，让 Spark 传入的 JDBC schemaPattern 对应 MySQL database。
-- MySQL catalog 只用于原生 SQL 浏览/查询；local 引擎下的 `datasources.mysql` 和 `catalogs.mysql` 不互相隐式复用。`load/save mysql` 仍走 SparkOne adapter，因此 SQL 侧不能覆盖 `url/user/password/driver/dbtable/query`。
+- MySQL catalog 可用于原生 SQL 浏览/查询；local 引擎下的 `datasources.mysql` 和 `catalogs.mysql` 不互相隐式复用。local 的 `load/save mysql` 仍走 SparkOne adapter，因此 SQL 侧不能覆盖 `url/user/password/driver/dbtable/query`。
 - Kyuubi 引擎下的 `load mysql.\`catalog.db.table\`` 复用远端 Spark JDBC Catalog 配置，不读取 `engines.local.datasources.mysql`，也不允许 SQL 传 `url/user/password/driver/dbtable/query`。SparkOne 只传 catalog、表名、可选 `where` 和受控 partition 参数；真实 MySQL 连接信息必须放在 Kyuubi/Spark engine 侧。
-- `save append t as mysql.\`analytics.target_table\`` 用 Spark JDBC writer 追加写入 MySQL，要求目标表已存在。
+- local 的 `save append t as mysql.\`analytics.target_table\`` 用 Spark JDBC writer 追加写入 MySQL；`analytics` 是 HOCON 连接名。
+- Kyuubi 的 `save append t as mysql.\`analytics.app.target_table\`` 复用远端 Spark JDBC Catalog；`analytics` 是 catalog 名，路径必须为三段式且不接受 SQL `OPTIONS`。
+- 两条 MySQL append 路径都要求目标表已存在、源和目标列名集合完全一致，并在写入前校验类型兼容；源数据按目标列顺序投影，不依赖源列位置。
 - `save overwrite t as mysql.\`analytics.target_table\`` 由固定能力矩阵永久拒绝。
 - `doris` 是 Spark Doris Catalog 名：`select * from doris.db.users` 直接走 Spark 原生 catalog 解析。
 - `show namespaces in doris` 查看 Doris database；裸写 `show databases` 仍查看默认 Hive catalog。
@@ -88,7 +90,7 @@ engines {
 
 这里的 `databaseTerm=SCHEMA` 只用于 Spark 原生 JDBC Catalog。原因是 Spark 执行 `show tables in mysql.app` 时，会把 `app` 作为 JDBC `DatabaseMetaData.getTables` 的 `schemaPattern` 参数传给驱动；而 MySQL Connector/J 默认把 MySQL database 解释为 JDBC catalog，不解释为 schema。加上该参数后，MySQL database 会按 JDBC schema 暴露，`show tables in mysql.app` 才会过滤到 `app` 这个库。
 
-Kyuubi MySQL load 首选直接复用远端 Spark JDBC Catalog。Kyuubi/Spark engine 侧按连接注册 catalog，例如 `spark.sql.catalog.analytics`；SparkOne SQL 使用 `mysql.\`catalog.db.table\``，不在 SparkOne 侧保存 MySQL 密钥：
+Kyuubi MySQL load/save 首选直接复用远端 Spark JDBC Catalog。Kyuubi/Spark engine 侧按连接注册 catalog，例如 `spark.sql.catalog.analytics`；SparkOne SQL 使用 `mysql.\`catalog.db.table\``，不在 SparkOne 侧保存 MySQL 密钥：
 
 ```properties
 spark.sql.catalog.analytics=org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog
@@ -109,7 +111,12 @@ load mysql.`analytics.Dworks.big_orders`
 where "biz_date = '2026-06-10' and status = 'PAID'"
 options partitionColumn="id"
 as orders_big;
+
+save append source_view
+as mysql.`analytics.Dworks.target_table`;
 ```
+
+Kyuubi `save mysql` 不使用 `sparkone_mysql` provider，也不接受 SQL `OPTIONS`。执行前通过远端 `LIMIT 0` 读取源/目标 schema，按目标列顺序生成显式 column list `INSERT` 并执行 `EXPLAIN`；最终写 statement 连接中断时不会自动重试。
 
 无 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时，Kyuubi `load mysql.\`analytics.Dworks.orders\`` 编译成远端 catalog SQL：
 
