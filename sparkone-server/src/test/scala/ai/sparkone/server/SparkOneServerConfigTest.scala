@@ -1,6 +1,6 @@
 package ai.sparkone.server
 
-import ai.sparkone.extension.overwrite.{ManagedHdfsOverwriteProtocol, ManagedHdfsOverwriteRequest}
+import ai.sparkone.extension.overwrite.{ManagedHdfsLoadProtocol, ManagedHdfsLoadRequest, ManagedHdfsOverwriteProtocol, ManagedHdfsOverwriteRequest}
 import org.junit.Assert._
 import org.junit.Test
 
@@ -30,6 +30,28 @@ final class SparkOneServerConfigTest {
       display)
     assertFalse(display.contains(command.split(" ").last))
     assertEquals("select 1", SparkOneServer.displaySql("select 1"))
+  }
+
+  @Test
+  def rendersManagedHdfsLoadCommandForUi(): Unit = {
+    val command = ManagedHdfsLoadProtocol.render(ManagedHdfsLoadRequest(
+      tenant = "alice",
+      targetTable = "daily_result",
+      format = "parquet",
+      relativePath = "reports/daily",
+      options = Map("mergeSchema" -> "false")))
+
+    val display = SparkOneServer.displaySql(command)
+
+    assertEquals(
+      """MANAGED HDFS LOAD
+        |  tenant: alice
+        |  view: daily_result
+        |  format: parquet
+        |  source: reports/daily
+        |  options: {mergeSchema='false'}""".stripMargin,
+      display)
+    assertFalse(display.contains(command.split(" ").last))
   }
 
   @Test

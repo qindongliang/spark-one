@@ -34,6 +34,7 @@ sealed trait LoadTargetType
 
 object LoadTargetType {
   case object Provider extends LoadTargetType
+  case object ManagedHdfs extends LoadTargetType
   case object Mysql extends LoadTargetType
 }
 

@@ -162,7 +162,8 @@ final class WritePlanTest {
       "reports/daily?version=1",
       "reports/daily#latest",
       "reports//daily",
-      "reports\\daily")
+      "reports\\daily",
+      "reports/.sparkone-overwrite-target/staging")
 
     unsafePaths.foreach { path =>
       val error = expectCompileException {

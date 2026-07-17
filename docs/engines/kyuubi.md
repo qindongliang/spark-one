@@ -40,6 +40,7 @@ SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户。统�
 - Hive、Doris、MySQL Catalog append 会在同一租户 JDBC session 内依次执行目标 `LIMIT 0`、源 `LIMIT 0`，再按目标列顺序生成显式 column list `INSERT` 并执行 `EXPLAIN`。目标不存在、列名集合不一致或类型不兼容时不会提交写语句。
 - Catalog append 的最终 SQL 使用 Spark 3.3 已支持的 column list 语法，同一路径兼容 Spark 3.3.x–3.5.x，不会先尝试 3.5 的 `BY NAME` 再回退。
 - Kyuubi 查询和只读预检遇到失效连接可以重连一次；携带 `WritePlan` 的 `save` 写语句永不自动重试。写入连接中断时返回“状态未知”，由用户核查目标后决定是否重新提交。
+- 文件 `load` 只接受 workspace 相对路径，向 Kyuubi 提交 SparkOne 内部命令，由远端 extension 根据逻辑租户解析最终 HDFS 路径并注册临时视图；原生文件 provider relation 会在提交前拒绝。
 - 受控 HDFS overwrite 会向 Kyuubi 提交 SparkOne 内部命令，由 Spark engine extension 在远端 driver 内完成 ZK 排他、staging 写入和 HDFS rename 发布。该 statement 属于写操作，连接异常时同样不会自动重试。
 
 ## Session 模式
@@ -64,7 +65,7 @@ kyuubi.engine.single.spark.session=false
 
 `USER` 允许不同 JDBC session 复用 Spark engine/SparkContext；关闭 `single.spark.session` 则保证每个 connection 仍有独立 SparkSession。SparkOne 使用固定 Kyuubi 服务账号时不能开启 `kyuubi.engine.single.spark.session=true`，否则不同逻辑租户及隔离任务可能共享临时视图、SQL 配置和 UDF。
 
-## 受控 HDFS overwrite 扩展
+## 受控 HDFS workspace 扩展
 
 构建扩展 JAR：
 
@@ -85,16 +86,16 @@ spark.sparkone.overwrite.zk.connectionTimeoutMs=15000
 
 如果 engine 已配置 Ranger、Iceberg 等其他 extension，`spark.sql.extensions` 使用逗号拼接，不能覆盖已有值。扩展依赖 Spark/Hadoop 发行包已有的 Curator/ZooKeeper 类，不额外打入一套版本，避免 Kyuubi engine classpath 冲突。
 
-这些参数属于 engine 可信配置，不能放入 SparkOne HOCON 的 Kyuubi JDBC options，也不能由 DSL `SAVE OPTIONS` 传入。Spark driver 仍使用 Kyuubi 配置的固定 keytab 账号访问 HDFS；内部命令携带的逻辑租户只用于将相对路径约束到 `/public/sparkone/user/${username}`。
+这些参数属于 engine 可信配置，不能放入 SparkOne HOCON 的 Kyuubi JDBC options，也不能由 DSL `LOAD/SAVE OPTIONS` 传入。Spark driver 仍使用 Kyuubi 配置的固定 keytab 账号访问 HDFS；内部命令携带的逻辑租户只用于将相对路径约束到 `/public/sparkone/user/${username}`。`workspaceRoot` 同时用于受控 load 和 overwrite；ZooKeeper 参数只在 overwrite 时使用，纯 load 不加锁。
 
 锁节点格式为 `/sparkone/overwrite/<tenant>/<readable-relative-path>--<qualified-target-sha256>`，末级为 ephemeral node，value 只保存 `operationId` 和完整 qualified target。旧版 extension 使用 `/sparkone/overwrite/<sha256>`；切换节点格式时必须先确认没有 overwrite 正在运行，再统一升级并重启所有 Local 和 Kyuubi Spark Engine，不能让新旧 extension 并行执行。
 
-内部命令只允许由 SparkOne `SAVE` 编译链路生成，作为原生 SQL 提交会被 SparkOne 拒绝。MVP 不对内部 payload 增加签名，因此 Kyuubi JDBC 必须保持平台内部服务边界，不能把使用固定 keytab 身份的直连入口开放给终端租户。
+内部命令只允许由 SparkOne `LOAD/SAVE` 编译链路生成，作为原生 SQL 提交会被 SparkOne 拒绝。MVP 不对内部 payload 增加签名，因此 Kyuubi JDBC 必须保持平台内部服务边界，不能把使用固定 keytab 身份的直连入口开放给终端租户。
 
 ## 数据源归属
 
 - 外部 Spark datasource provider jar 应放在 Kyuubi/Spark engine classpath，不放在 SparkOne 主包里。
-- `sparkone-hdfs-overwrite-extension` jar 同样属于 Spark engine classpath，并通过 `spark.sql.extensions` 注册。
+- `sparkone-hdfs-overwrite-extension` jar 同样属于 Spark engine classpath，并通过 `spark.sql.extensions` 注册；模块名保持兼容，但 extension 同时承载受控 HDFS load 和 overwrite。
 - `load mysql` 在 Kyuubi 模式下优先使用 `mysql.\`catalog.db.table\`` 语义，连接信息来自 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`。
 - 无分片参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成远端 catalog SQL。
 - 带 `partitionColumn` 或其他受控大表读取参数时，编译成 `USING sparkone_mysql`，由 provider 在 Spark engine 内复用 catalog 连接配置；只写 `partitionColumn` 时会在远端自动查询 `lowerBound/upperBound`，`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。

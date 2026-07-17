@@ -40,12 +40,13 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 
 ## 当前实现状态
 
-第二阶段、3A、3B 及受控 HDFS overwrite 已经实现：
+第二阶段、3A、3B 及受控 HDFS workspace 已经实现：
 
 - Hive、Doris、MySQL append 生成对应的 catalog SQL 或 runtime adapter 计划。
 - Hive、Doris、MySQL overwrite 在编译阶段永久拒绝。
 - 所有文件 append 在编译阶段永久拒绝；裸文件 append 不进入 MVP 路线。
 - 绝对路径、带 scheme 的路径以及本地/S3/OSS 等外部路径 append 和 overwrite 都在编译阶段永久拒绝。
+- 已识别文件 provider 的 load 只接受租户 workspace 相对路径；绝对路径、URI 和原生 provider relation 在编译阶段拒绝。
 - 未识别 provider 的 append 和 overwrite 均在编译阶段拒绝。
 - 每条语句携带 `StatementIntent`；原生 SQL 只允许查询和只读检查命令，其他 Spark command 在编译阶段默认拒绝。
 - Hive、Doris、Kyuubi MySQL Catalog append 在 runtime 统一生成 `INSERT INTO TABLE target (目标列...) SELECT 源列...`，显式按目标列顺序投影，源列顺序不影响目标映射。
@@ -56,6 +57,7 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 - Catalog append 使用 Spark 3.3 已支持的 column list 语法，不做 Spark 版本分支；当前 Kyuubi 远端支持范围是 Spark 3.3.x–3.5.x。
 - Kyuubi `save` 写语句遇到连接异常时不会自动重试。错误会明确提示写入状态未知，需要人工核查目标后再决定是否重提。
 - 受控 HDFS overwrite 编译为 SparkOne 内部命令，由独立 Spark extension 在 Spark driver 内完成 ZK 排他、staging 写入、发布、回滚和清理。
+- 受控 HDFS load 使用同一 extension 解析租户和相对路径并注册临时视图，不使用 ZK 或 staging。
 - 文件 append 以及本地/S3/OSS 写入仍属于固定策略拒绝，不提供 SQL option 或 HOCON 放行开关。
 
 Hive、Doris、MySQL append 的受控执行顺序为：
@@ -74,9 +76,10 @@ Kyuubi 的前三步都是只读预检，可以在连接失效时重连一次；�
 /public/sparkone/user/${username}
 ```
 
-DSL 文件写入只接受相对路径，例如：
+DSL 文件读取和写入都只接受相对路径，例如：
 
 ```sql
+load parquet.`reports/daily` as daily_result;
 save overwrite city_stats as parquet.`reports/daily`;
 ```
 
@@ -86,7 +89,7 @@ Spark extension 会把它解析到：
 /public/sparkone/user/${username}/reports/daily
 ```
 
-相对路径必须逐段校验。空路径、绝对路径、URI scheme、authority、query、fragment、百分号编码、反斜杠、空段、`.` 和 `..` 都不能进入受控 workspace。下面这些目标不会被分类为受控 HDFS：
+相对路径必须逐段校验。空路径、绝对路径、URI scheme、authority、query、fragment、百分号编码、反斜杠、空段、`.`、`..` 和内部 `.sparkone-overwrite-*` 目录都不能进入受控 workspace。下面这些路径都会被拒绝：
 
 ```text
 /public/sparkone/user/alice/reports
@@ -98,6 +101,8 @@ reports/../daily
 ```
 
 客户端不能直接提交完整 workspace 路径，也不能提交其他用户名。最终绝对路径只能由服务端根据当前 `TenantContext` 计算。
+
+文件读取必须先通过 `load <format>.\`relative/path\` as view` 注册临时视图，再从该视图查询。原生 SQL 或 `view` 中直接写 `parquet.\`path\``、`csv.\`path\`` 等文件 provider relation 会被编译器拒绝，防止绕过逻辑租户。受控 load 只解析路径并注册视图，不使用 ZK 锁、staging 或 backup。
 
 ## HDFS overwrite 执行链路
 

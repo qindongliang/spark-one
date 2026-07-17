@@ -1,6 +1,6 @@
 package ai.sparkone.server
 
-import ai.sparkone.extension.overwrite.ManagedHdfsOverwriteProtocol
+import ai.sparkone.extension.overwrite.{ManagedHdfsLoadProtocol, ManagedHdfsOverwriteProtocol}
 import ai.sparkone.identity.{DevelopmentSessionStore, TenantContext}
 import ai.sparkone.runtime.{PreviewConfig, SessionMode, SparkOneEngineRegistry}
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -253,18 +253,29 @@ object SparkOneServer {
   }
 
   private[server] def displaySql(sql: String): String = {
-    ManagedHdfsOverwriteProtocol.parse(sql).map { request =>
-      val options = request.options.toSeq.sortBy(_._1).map { case (key, value) =>
-        s"$key=${displayLiteral(value)}"
-      }.mkString("{", ", ", "}")
+    ManagedHdfsLoadProtocol.parse(sql).map { request =>
+      Seq(
+        "MANAGED HDFS LOAD",
+        s"  tenant: ${request.tenant}",
+        s"  view: ${request.targetTable}",
+        s"  format: ${request.format}",
+        s"  source: ${request.relativePath}",
+        s"  options: ${displayOptions(request.options)}").mkString("\n")
+    }.orElse(ManagedHdfsOverwriteProtocol.parse(sql).map { request =>
       Seq(
         "MANAGED HDFS OVERWRITE",
         s"  tenant: ${request.tenant}",
         s"  source: ${request.sourceTable}",
         s"  format: ${request.format}",
         s"  target: ${request.relativePath}",
-        s"  options: $options").mkString("\n")
-    }.getOrElse(sql)
+        s"  options: ${displayOptions(request.options)}").mkString("\n")
+    }).getOrElse(sql)
+  }
+
+  private def displayOptions(options: Map[String, String]): String = {
+    options.toSeq.sortBy(_._1).map { case (key, value) =>
+      s"$key=${displayLiteral(value)}"
+    }.mkString("{", ", ", "}")
   }
 
   private def displayLiteral(value: String): String = {

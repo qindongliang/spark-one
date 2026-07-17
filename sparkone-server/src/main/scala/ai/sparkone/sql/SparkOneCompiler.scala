@@ -1,5 +1,6 @@
 package ai.sparkone.sql
 
+import ai.sparkone.extension.overwrite.{ManagedHdfsLoadProtocol, ManagedHdfsLoadRequest}
 import ai.sparkone.identity.TenantContext
 import ai.sparkone.sql.parser.{SparkOneDslLexer, SparkOneDslParser}
 import org.antlr.v4.runtime.{BaseErrorListener, CharStreams, CommonTokenStream, Parser, RecognitionException, Recognizer}
@@ -92,7 +93,7 @@ final class SparkOneCompiler(
       script: String,
       statement: SparkOneDslParser.StatementContext): CompileResult = {
     if (statement.loadStatement() != null) {
-      compileLoad(statement.loadStatement())
+      compileLoad(tenant, statement.loadStatement())
     } else if (statement.saveStatement() != null) {
       compileSave(tenant, statement.saveStatement())
     } else if (statement.setStatement() != null) {
@@ -145,12 +146,29 @@ final class SparkOneCompiler(
     }
   }
 
-  private def compileLoad(load: SparkOneDslParser.LoadStatementContext): CompileResult = {
+  private def compileLoad(
+      tenant: TenantContext,
+      load: SparkOneDslParser.LoadStatementContext): CompileResult = {
     val (format, path) = parseSource(load.source(), "LOAD")
     val table = SparkOneSqlRender.requireIdentifier(load.table.getText, "LOAD target table")
     val options = parseOptions(load.optionClause())
     val filter = parseLoadFilter(load.whereClause())
     dataSourceResolver.resolveLoad(format, path, options, filter) match {
+      case ManagedHdfsLoadSource(provider, relativePath, providerOptions) =>
+        CompileResult(
+          ManagedHdfsLoadProtocol.render(ManagedHdfsLoadRequest(
+            tenant.username,
+            table,
+            provider,
+            relativePath,
+            providerOptions.toMap)),
+          load = Some(LoadStatementMetadata(
+            table,
+            format,
+            relativePath,
+            providerOptions.toMap,
+            LoadTargetType.ManagedHdfs)),
+          intent = StatementIntent.Load)
       case ProviderLoadSource(provider, providerOptions) =>
         CompileResult(
           SparkOneSqlRender.renderCreateTempViewUsing(table, provider, providerOptions),

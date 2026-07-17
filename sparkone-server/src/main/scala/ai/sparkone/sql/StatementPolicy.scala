@@ -1,8 +1,12 @@
 package ai.sparkone.sql
 
+import ai.sparkone.extension.overwrite.ManagedHdfsWorkspacePolicy
 import org.apache.spark.sql.catalyst.plans.logical.{Command, ParsedStatement}
+import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.execution.SparkSqlParser
 import org.slf4j.LoggerFactory
+
+import java.util.Locale
 
 final class StatementPolicy {
   import StatementIntent._
@@ -13,7 +17,7 @@ final class StatementPolicy {
   def validate(statement: CompiledStatement): Unit = statement.intent match {
     case NativeSql => validateNativeReadOnly(statement.sql)
     case Load => requireMetadata(statement.load.nonEmpty, "LOAD")
-    case View =>
+    case View => validateNoNativeProviderPaths(statement.sql)
     case SetVariable =>
       requireMetadata(statement.set.nonEmpty, "SET")
       statement.set.foreach { metadata =>
@@ -25,12 +29,8 @@ final class StatementPolicy {
   }
 
   private def validateNativeReadOnly(sql: String): Unit = {
-    val plan = try {
-      parser.parsePlan(sql)
-    } catch {
-      case e: Exception =>
-        throw new CompileException(s"Spark SQL parser rejected statement: ${e.getMessage}", e)
-    }
+    val plan = parsePlan(sql)
+    rejectNativeProviderPaths(plan)
     plan.collectFirst {
       case statement: ParsedStatement => statement.nodeName
       case command: Command if !isReadOnlyCommand(command.nodeName) => command.nodeName
@@ -40,6 +40,39 @@ final class StatementPolicy {
       throw new CompileException(
         s"Native Spark SQL command '$planName' is disabled; " +
           "SparkOne only allows native read-only SQL and controlled LOAD, VIEW, SET, and SAVE statements")
+    }
+  }
+
+  private def validateNoNativeProviderPaths(sql: String): Unit = {
+    rejectNativeProviderPaths(parsePlan(sql))
+  }
+
+  private def rejectNativeProviderPaths(plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan): Unit = {
+    val blockedProviders = ManagedHdfsWorkspacePolicy.ReadFormats ++
+      Set("jdbc", "avro", "delta", "iceberg", "hudi", "xml")
+    plan.collectFirst {
+      case relation: UnresolvedRelation
+          if relation.multipartIdentifier.size >= 2 &&
+            (blockedProviders.contains(relation.multipartIdentifier.head.toLowerCase(Locale.ROOT)) ||
+              relation.multipartIdentifier.tail.exists(looksLikePath)) =>
+        relation.multipartIdentifier.head
+    }.foreach { provider =>
+      throw new CompileException(
+        s"Native provider path '$provider' is disabled; use SparkOne LOAD with a relative tenant workspace path")
+    }
+  }
+
+  private def looksLikePath(value: String): Boolean = {
+    value.startsWith("/") || value.startsWith(".") || value.contains("/") || value.contains("\\") ||
+      value.matches("^[A-Za-z][A-Za-z0-9+.-]*:.*")
+  }
+
+  private def parsePlan(sql: String): org.apache.spark.sql.catalyst.plans.logical.LogicalPlan = {
+    try {
+      parser.parsePlan(sql)
+    } catch {
+      case e: Exception =>
+        throw new CompileException(s"Spark SQL parser rejected statement: ${e.getMessage}", e)
     }
   }
 

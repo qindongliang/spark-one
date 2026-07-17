@@ -1,7 +1,9 @@
 package ai.sparkone.sql
 
+import ai.sparkone.extension.overwrite.ManagedHdfsWorkspacePolicy
+
 import java.nio.charset.StandardCharsets
-import java.util.Base64
+import java.util.{Base64, Locale}
 
 final class DataSourceResolver(
     providerAliases: Map[String, String] = DataSourceResolver.DefaultProviderAliases,
@@ -19,7 +21,7 @@ final class DataSourceResolver(
       path: String,
       options: Seq[(String, String)],
       filter: Option[String] = None): ResolvedLoadSource = {
-    val normalized = format.toLowerCase
+    val normalized = format.toLowerCase(Locale.ROOT)
     if (normalized == "jdbc") {
       throw new CompileException("SparkOne does not support LOAD jdbc. Use LOAD mysql with the selected local engine's datasources.mysql config.")
     } else if (normalized == "mysql") {
@@ -45,11 +47,26 @@ final class DataSourceResolver(
       val identifier = SparkOneSqlRender.renderMultipartIdentifier(path, "LOAD catalog table")
       val tableExpression = filter.map(condition => s"$identifier WHERE $condition").getOrElse(identifier)
       CatalogTableSource(tableExpression)
+    } else if (ManagedHdfsWorkspacePolicy.ReadFormats.contains(normalized)) {
+      if (filter.nonEmpty) {
+        throw new CompileException(s"LOAD source '$format' does not support WHERE filter in the MVP compiler")
+      }
+      if (!ManagedHdfsWorkspacePolicy.isManagedRelativePath(path)) {
+        throw new CompileException(
+          s"LOAD managed HDFS requires a relative tenant workspace path: $path")
+      }
+      options.foreach { case (key, _) =>
+        if (!ManagedHdfsWorkspacePolicy.isAllowedOption(key)) {
+          throw new CompileException(s"LOAD managed HDFS option is not allowed: $key")
+        }
+      }
+      ManagedHdfsLoadSource(resolveProvider(format), path, options)
     } else {
       if (filter.nonEmpty) {
         throw new CompileException(s"LOAD source '$format' does not support WHERE filter in the MVP compiler")
       }
-      ProviderLoadSource(resolveProvider(format), ("path" -> path) +: options)
+      throw new CompileException(
+        s"LOAD provider '$format' is not supported; use a managed file provider or a configured catalog source")
     }
   }
 
@@ -328,6 +345,10 @@ object DataSourceResolver {
 }
 
 sealed trait ResolvedLoadSource
+final case class ManagedHdfsLoadSource(
+    provider: String,
+    relativePath: String,
+    options: Seq[(String, String)]) extends ResolvedLoadSource
 final case class ProviderLoadSource(provider: String, options: Seq[(String, String)]) extends ResolvedLoadSource
 final case class CatalogTableSource(identifier: String) extends ResolvedLoadSource
 final case class MysqlLoadSource(dbtable: String, options: Seq[(String, String)]) extends ResolvedLoadSource

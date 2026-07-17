@@ -15,6 +15,8 @@ text
 libsvm
 ```
 
+文件 provider 的 `load` 只接受当前租户 workspace 下的相对路径，例如 `load parquet.\`extension-test/result\` as result`。Spark extension 会在 driver 内解析为 `/public/sparkone/user/${username}/extension-test/result`；绝对路径、HDFS/S3/OSS URI、路径穿越和内部 overwrite 工作目录都会在编译或执行阶段拒绝。原生 SQL/`view` 不能直接使用文件 provider path relation，必须先通过受控 `load` 注册临时视图。
+
 特殊 source：
 
 - `hive` 是 catalog 表语义：`load hive.\`db.table\` as t` 编译成 `CREATE OR REPLACE TEMPORARY VIEW t AS SELECT * FROM db.table`。
@@ -272,6 +274,14 @@ include "datasources/hive.conf"
 - 受控 HDFS overwrite 已由 Spark driver extension 开放，使用目标级 ZK ephemeral lock、固定同级 staging/backup 和 HDFS rename 发布；缺少可信 engine 配置时 fail closed。
 - 未来只有出现明确生产案例，并具备格式/分区约束、schema 合同、并发控制和重跑幂等语义时，才单独评估 Parquet/ORC 分区 append 或事务湖表写入；不恢复通用裸路径 append。
 - 完整矩阵、路径校验和本阶段测试见 [safe-save.md](safe-save.md)。
+
+文件类 load：
+
+- 已识别文件 provider 只接受当前逻辑租户 workspace 的相对路径，绝对路径和 URI 在编译阶段拒绝。
+- Local/Kyuubi 都将 load 编译为内部命令，由 Spark driver extension 使用可信 `workspaceRoot` 解析最终路径并注册临时视图。
+- 原生 SQL 或 `view` 中直接访问文件 provider path relation 会被拒绝，避免固定 keytab 执行身份绕过逻辑租户。
+- load 不使用 ZooKeeper、staging 或 backup；目标路径不存在时立即失败。
+- 未识别 provider 默认拒绝；新增文件格式必须先纳入受控 provider 清单和 workspace 测试，不能回退到通用 `USING provider OPTIONS(path ...)`。
 
 外部 provider：
 

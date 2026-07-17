@@ -1,11 +1,9 @@
 package ai.sparkone.sql
 
 import ai.sparkone.identity.TenantContext
-import ai.sparkone.extension.overwrite.{ManagedHdfsOverwriteProtocol, ManagedHdfsOverwriteRequest}
+import ai.sparkone.extension.overwrite.{ManagedHdfsOverwriteProtocol, ManagedHdfsOverwriteRequest, ManagedHdfsWorkspacePolicy}
 
-import java.net.URI
 import java.util.Locale
-import scala.util.Try
 
 final case class WritePlan(
     tenant: TenantContext,
@@ -207,35 +205,16 @@ final class WritePlanner {
   private def classifyProviderTarget(provider: String, path: String): WriteTargetKind = {
     if (!WritePlanner.KnownFileProviders.contains(provider.toLowerCase(Locale.ROOT))) {
       UnknownProvider
-    } else if (isManagedRelativePath(path)) {
+    } else if (ManagedHdfsWorkspacePolicy.isManagedRelativePath(path)) {
       ManagedHdfs
     } else {
       ExternalPath
     }
   }
 
-  private def isManagedRelativePath(path: String): Boolean = {
-    val trimmed = path.trim
-    if (trimmed.isEmpty || trimmed.startsWith("/") || trimmed.contains("\\")) {
-      false
-    } else {
-      val uri = Try(new URI(trimmed)).toOption
-      val segments = trimmed.split("/", -1)
-      uri.exists { value =>
-        value.getScheme == null &&
-          value.getAuthority == null &&
-          value.getQuery == null &&
-          value.getFragment == null &&
-          value.getPath == trimmed &&
-          segments.forall(segment => segment.nonEmpty && segment != "." && segment != "..")
-      }
-    }
-  }
-
   private def validateManagedHdfsOptions(options: Seq[(String, String)]): Unit = {
     options.foreach { case (key, _) =>
-      val normalized = key.replaceAll("[^A-Za-z0-9]", "").toLowerCase(Locale.ROOT)
-      if (WritePlanner.SensitiveManagedHdfsOptions.contains(normalized) || key.toLowerCase(Locale.ROOT).startsWith("fs.")) {
+      if (!ManagedHdfsWorkspacePolicy.isAllowedOption(key)) {
         throw new CompileException(s"SAVE managed HDFS option is not allowed: $key")
       }
     }
@@ -244,9 +223,6 @@ final class WritePlanner {
 
 private object WritePlanner {
   private val KnownFileProviders = Set("parquet", "csv", "json", "orc", "text", "excel")
-  private val SensitiveManagedHdfsOptions = Set(
-    "path", "url", "uri", "user", "username", "password", "token",
-    "accesskey", "accesskeyid", "secretkey", "secretaccesskey", "credential", "credentials")
 }
 
 private[sql] object WriteSqlRenderer {

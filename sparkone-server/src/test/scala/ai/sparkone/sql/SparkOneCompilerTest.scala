@@ -9,7 +9,7 @@ final class SparkOneCompilerTest {
   @Test
   def compilesBasicPipeline(): Unit = {
     val script =
-      """load parquet.`/tmp/users` as users;
+      """load parquet.`datasets/users` as users;
         |
         |view city_stats as
         |select city, count(*) as cnt
@@ -19,14 +19,19 @@ final class SparkOneCompilerTest {
         |select * from city_stats;
         |""".stripMargin
 
-    val sql = compiler.compile(script).map(_.sql)
+    val statements = compiler.compile(script)
+    val load = ai.sparkone.extension.overwrite.ManagedHdfsLoadProtocol.parse(statements.head.sql)
 
+    assertTrue(load.isDefined)
+    assertEquals("compiler", load.get.tenant)
+    assertEquals("users", load.get.targetTable)
+    assertEquals("parquet", load.get.format)
+    assertEquals("datasets/users", load.get.relativePath)
     assertEquals(
       Seq(
-        "CREATE OR REPLACE TEMPORARY VIEW users USING parquet OPTIONS (path '/tmp/users')",
         "CREATE OR REPLACE TEMPORARY VIEW city_stats AS select city, count(*) as cnt\nfrom users\ngroup by city",
         "select * from city_stats"),
-      sql)
+      statements.tail.map(_.sql))
   }
 
   @Test
@@ -360,19 +365,44 @@ final class SparkOneCompilerTest {
   @Test
   def compilesExcelLoadWithProviderAlias(): Unit = {
     val statement = compiler.compile(
-      """load excel.`/tmp/users.xlsx`
+      """load excel.`imports/users.xlsx`
         |options header="true"
         |and dataAddress="'Sheet1'!A1"
         |as users;
         |""".stripMargin).head
 
-    assertEquals(
-      "CREATE OR REPLACE TEMPORARY VIEW users USING excel OPTIONS " +
-        "(path '/tmp/users.xlsx', header 'true', dataAddress '''Sheet1''!A1')",
-      statement.sql)
+    val request = ai.sparkone.extension.overwrite.ManagedHdfsLoadProtocol.parse(statement.sql)
+    assertTrue(request.isDefined)
+    assertEquals("users", request.get.targetTable)
+    assertEquals("excel", request.get.format)
+    assertEquals("imports/users.xlsx", request.get.relativePath)
+    assertEquals(Map("header" -> "true", "dataAddress" -> "'Sheet1'!A1"), request.get.options)
     assertEquals(Some("users"), statement.load.map(_.table))
-    assertEquals(Some("/tmp/users.xlsx"), statement.load.map(_.path))
+    assertEquals(Some("imports/users.xlsx"), statement.load.map(_.path))
+    assertEquals(Some(LoadTargetType.ManagedHdfs), statement.load.map(_.targetType))
     assertEquals(Some("true"), statement.load.flatMap(_.options.get("header")))
+  }
+
+  @Test
+  def rejectsUnsafeManagedHdfsLoadPathsAndOptions(): Unit = {
+    Seq(
+      "/public/sparkone/user/alice/result",
+      "hdfs:///public/sparkone/user/alice/result",
+      "../alice/result",
+      "reports/../result",
+      "reports/.sparkone-overwrite-target/staging").foreach { path =>
+      val error = tryCompile(s"load parquet.`$path` as result;")
+      assertTrue(path, error.getMessage.contains("relative tenant workspace path"))
+    }
+
+    Seq("path", "url", "password", "access_key").foreach { option =>
+      val error = tryCompile(
+        s"load parquet.`reports/daily` options $option='secret' as result;")
+      assertTrue(option, error.getMessage.contains("option is not allowed"))
+    }
+
+    val unknownProvider = tryCompile("load avro.`reports/daily` as result;")
+    assertTrue(unknownProvider.getMessage.contains("provider 'avro' is not supported"))
   }
 
   @Test
@@ -401,13 +431,18 @@ final class SparkOneCompilerTest {
 
   @Test
   def rejectsManagedHdfsInternalCommandSubmittedAsNativeSql(): Unit = {
-    val command = ai.sparkone.extension.overwrite.ManagedHdfsOverwriteProtocol.render(
-      ai.sparkone.extension.overwrite.ManagedHdfsOverwriteRequest(
-        "bob", "users", "parquet", "reports/daily", Map.empty))
+    val commands = Seq(
+      ai.sparkone.extension.overwrite.ManagedHdfsOverwriteProtocol.render(
+        ai.sparkone.extension.overwrite.ManagedHdfsOverwriteRequest(
+          "bob", "users", "parquet", "reports/daily", Map.empty)),
+      ai.sparkone.extension.overwrite.ManagedHdfsLoadProtocol.render(
+        ai.sparkone.extension.overwrite.ManagedHdfsLoadRequest(
+          "bob", "users", "parquet", "reports/daily", Map.empty)))
 
-    val error = tryCompile(command)
-
-    assertTrue(error.getMessage.contains("Spark SQL parser rejected statement"))
+    commands.foreach { command =>
+      val error = tryCompile(command)
+      assertTrue(error.getMessage.contains("Spark SQL parser rejected statement"))
+    }
   }
 
   @Test
@@ -677,19 +712,18 @@ final class SparkOneCompilerTest {
 
   @Test
   def doesNotSplitSemicolonsInsideBackticks(): Unit = {
-    val sql = compiler.compile("load text.`/tmp/a;b` as t;").head.sql
-    assertEquals(
-      "CREATE OR REPLACE TEMPORARY VIEW t USING text OPTIONS (path '/tmp/a;b')",
-      sql)
+    val sql = compiler.compile("load text.`data/a;b` as t;").head.sql
+    val request = ai.sparkone.extension.overwrite.ManagedHdfsLoadProtocol.parse(sql)
+    assertEquals(Some("data/a;b"), request.map(_.relativePath))
   }
 
   @Test
   def generatedSqlIsAcceptedBySparkSqlParser(): Unit = {
     val validatingCompiler = new SparkOneCompiler(new SparkSqlValidator)
     val sql = validatingCompiler.compile(
-      """load parquet.`/tmp/users` as users;
+      """load parquet.`datasets/users` as users;
         |load hive.`default.source_users` as source_users;
-        |load excel.`/tmp/users.xlsx` options header="true" as excel_users;
+        |load excel.`imports/users.xlsx` options header="true" as excel_users;
         |view city_stats as select city, count(*) as cnt from users group by city;
         |save append city_stats as hive.`default.city_stats` partitionBy dt;
         |""".stripMargin).map(_.sql)

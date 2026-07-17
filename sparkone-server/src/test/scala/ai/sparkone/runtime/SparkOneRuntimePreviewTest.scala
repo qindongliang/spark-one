@@ -1,5 +1,6 @@
 package ai.sparkone.runtime
 
+import ai.sparkone.extension.overwrite.{ManagedHdfsWorkspacePolicy, SparkOneHdfsOverwriteExtensions}
 import org.apache.spark.sql.SparkSession
 import org.junit.Assert._
 import org.junit.Test
@@ -14,7 +15,8 @@ final class SparkOneRuntimePreviewTest {
     val spark = localSpark(root)
     try {
       import spark.implicits._
-      val source = root.resolve("users")
+      val source = root.resolve("local-runtime/users")
+      Files.createDirectories(source.getParent)
       Seq(
         ("beijing", 1),
         ("shanghai", 2),
@@ -24,7 +26,7 @@ final class SparkOneRuntimePreviewTest {
         .parquet(source.toString)
 
       val runtime = new SparkOneRuntime(spark)
-      val schemaOnly = runtime.run(s"load parquet.`${source.toUri}` as users;", limit = 2)
+      val schemaOnly = runtime.run("load parquet.`users` as users;", limit = 2)
 
       assertTrue(schemaOnly.statements.flatMap(_.error).mkString("\n"), schemaOnly.success)
       assertEquals(0, schemaOnly.statements.head.rowCount)
@@ -50,15 +52,16 @@ final class SparkOneRuntimePreviewTest {
     val spark = localSpark(root)
     try {
       import spark.implicits._
-      val first = root.resolve("first")
-      val second = root.resolve("second")
+      val first = root.resolve("local-runtime/first")
+      val second = root.resolve("local-runtime/second")
+      Files.createDirectories(first.getParent)
       Seq(1).toDF("id").write.parquet(first.toString)
       Seq(2).toDF("id").write.parquet(second.toString)
 
       val runtime = new SparkOneRuntime(spark)
       val result = runtime.run(
-        s"""load parquet.`${first.toUri}` as first_users;
-           |load parquet.`${second.toUri}` as second_users;
+        """load parquet.`first` as first_users;
+           |load parquet.`second` as second_users;
            |""".stripMargin)
 
       assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
@@ -168,6 +171,8 @@ final class SparkOneRuntimePreviewTest {
       .config("spark.driver.host", "127.0.0.1")
       .config("spark.driver.bindAddress", "127.0.0.1")
       .config("spark.sql.warehouse.dir", root.resolve("warehouse").toString)
+      .config(ManagedHdfsWorkspacePolicy.WorkspaceRootKey, root.toString)
+      .withExtensions(new SparkOneHdfsOverwriteExtensions().apply)
       .getOrCreate()
   }
 

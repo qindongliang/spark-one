@@ -105,12 +105,14 @@ cp conf/sparkone.conf.template conf/sparkone.conf
 验证 HDFS：
 
 ```sql
-create or replace temporary view users
-using csv
-options (path 'hdfs:///tmp/users.csv', header 'true');
+load csv.`imports/users.csv`
+options header="true"
+as users;
 
 select * from users limit 10;
 ```
+
+测试文件应预先放到 `/public/sparkone/user/${username}/imports/users.csv`。编辑器只接受 workspace 相对路径，不接受 `hdfs://` 或绝对路径。
 
 验证 Hive metastore：
 

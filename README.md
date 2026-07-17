@@ -10,7 +10,7 @@ aggregator and exposes three modules:
 
 - `sparkone-server`: SparkOne Web/API/compiler/runtime.
 - `sparkone-mysql-provider`: Spark datasource provider jar for Kyuubi/Spark engine.
-- `sparkone-hdfs-overwrite-extension`: Spark driver extension for managed HDFS overwrite.
+- `sparkone-hdfs-overwrite-extension`: Spark driver extension for managed HDFS workspace reads and overwrite.
 
 ## Compiler Strategy
 
@@ -19,8 +19,8 @@ SparkOne only parses its own thin commands with ANTLR:
 - `load <format>.\`<path>\` as <view>`
 - `save overwrite <view> as <format>.\`<path>\``
 
-Everything else is treated as native Spark SQL, passed through unchanged, and
-validated with Spark's `SparkSqlParser`.
+Everything else is treated as native Spark SQL and validated with Spark's
+`SparkSqlParser`; only queries and read-only inspection commands are allowed.
 
 ANTLR is pinned to `4.9.3` because Spark 3.5.x generates its SQL parser with
 that runtime. Do not upgrade ANTLR independently from Spark.
@@ -34,7 +34,7 @@ should replace this runtime layer without changing the compiler.
 ## Example
 
 ```sql
-create or replace temporary view users as
+view users as
 select * from values
   ('beijing', 1),
   ('shanghai', 2),

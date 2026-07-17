@@ -239,43 +239,36 @@ join orders as o on u.id = o.user_id;
 
 路径说明：
 
-- 类似 `load csv` 使用 `/tmp/users.csv` 这种没有 scheme 的绝对路径时，会交给 Spark/Hadoop 按 `fs.defaultFS` 解析。
-- 如果已经加载 Hadoop 配置，且 `fs.defaultFS=hdfs://nameservice1`，`/tmp/users.csv` 默认就是 HDFS 上的 `hdfs://nameservice1/tmp/users.csv`。
-- 只有显式写 `file:///tmp/users.csv`，才表示 Spark driver 所在机器的本地文件。
-- `hdfs:///tmp/users.csv` 是显式 HDFS 路径，适合在文档或脚本里避免歧义。
+- 文件 `load` 只接受当前登录租户 workspace 下的相对路径。
+- `load csv.\`imports/users.csv\`` 会在 Spark driver 内解析为 `/public/sparkone/user/${username}/imports/users.csv`。
+- 绝对路径、`file://`、`hdfs://`、`s3a://`、`oss://`、`..` 和内部 `.sparkone-overwrite-*` 目录都会被拒绝。
+- 原生 SQL/`view` 不能直接写 `csv.\`path\``、`parquet.\`path\`` 等文件 relation，必须先通过 `load ... as view` 注册临时视图。
 
-CSV（默认按 `fs.defaultFS` 解析；在测试环境里通常是 HDFS）：
+CSV：
 
 ```sql
-load csv.`/tmp/users.csv`
+load csv.`imports/users.csv`
 options header="true" and inferSchema="true"
 as users;
 
 select * from users limit 20;
 ```
 
-它会编译成类似：
+Compile 页面会显示可读摘要，实际执行仍使用内部命令：
 
-```sql
-CREATE OR REPLACE TEMPORARY VIEW users
-USING csv
-OPTIONS (path '/tmp/users.csv', header 'true', inferSchema 'true');
-```
-
-本地文件：
-
-```sql
-load csv.`file:///tmp/users.csv`
-options header="true" and inferSchema="true"
-as local_users;
-
-select * from local_users limit 20;
+```text
+MANAGED HDFS LOAD
+  tenant: <当前登录用户>
+  view: users
+  format: csv
+  source: imports/users.csv
+  options: {header='true', inferSchema='true'}
 ```
 
 Parquet：
 
 ```sql
-load parquet.`/tmp/users_parquet` as users_parquet;
+load parquet.`datasets/users_parquet` as users_parquet;
 
 select * from users_parquet limit 20;
 ```
@@ -319,24 +312,15 @@ order by city, event_type;
 HDFS/defaultFS 上的 JSON Lines：
 
 ```sql
-load json.`/tmp/events.json` as events;
+load json.`events/events.json` as events;
 
 select * from events limit 20;
-```
-
-本地 JSON Lines：
-
-```sql
-load json.`file:///Users/qindongliang/Downloads/events.json`
-as local_events;
-
-select * from local_events limit 20;
 ```
 
 多行 JSON 文件：
 
 ```sql
-load json.`/tmp/events_pretty.json`
+load json.`events/events_pretty.json`
 options multiLine="true"
 as pretty_events;
 
@@ -346,7 +330,7 @@ select * from pretty_events limit 20;
 显式推断 schema：
 
 ```sql
-load json.`/tmp/events.json`
+load json.`events/events.json`
 options inferSchema="true"
 as inferred_events;
 
@@ -359,7 +343,7 @@ order by cnt desc;
 指定 schema 并过滤脏数据：
 
 ```sql
-load json.`/tmp/events.json`
+load json.`events/events.json`
 options schema="event_id STRING, event_type STRING, amount DOUBLE, created_at TIMESTAMP"
 and mode="PERMISSIVE"
 and timestampFormat="yyyy-MM-dd HH:mm:ss"
@@ -1179,7 +1163,7 @@ SELECT `name`, `id` FROM stage3b_mysql_source
 
 ## 使用 SparkOne Save DSL
 
-第二阶段已经统一使用 `WritePlan` 和固定能力矩阵。Hive、Doris、MySQL 只允许 append；这些 catalog/数据库目标的 overwrite 永久拒绝。所有文件 append 以及本地/S3/OSS external path 写入永久拒绝；受控 HDFS overwrite 由 Spark driver extension 执行。
+第二阶段已经统一使用 `WritePlan` 和固定能力矩阵。Hive、Doris、MySQL 只允许 append；这些 catalog/数据库目标的 overwrite 永久拒绝。所有文件 append 以及本地/S3/OSS external path 读写永久拒绝；受控 HDFS load/overwrite 由 Spark driver extension 执行。
 
 测试原生 DDL/DML 是否被拦截。下面每条语句应分别点击 Compile，且都应失败：
 
@@ -1241,7 +1225,25 @@ MANAGED HDFS OVERWRITE
 
 实际执行仍使用版本化内部命令。Run 会把目标解析为 `/public/sparkone/user/${username}/reports/city_stats`；客户端不能提交绝对 workspace 路径。Local 必须先配置 `engines.local.overwrite.zkConnect`，Kyuubi 必须部署 extension jar 并配置 `spark.sql.extensions` 和 `spark.sparkone.overwrite.*`。
 
-第一次 Run 后读取该路径，应只包含本次结果；修改 `city_stats` 后再次 Run，路径中应只包含第二次完整结果。执行期间，同目标的第二个 overwrite 应失败并包含 `already running`，同时显示占用锁的 `operationId`、`target` 和包含租户的 ZK `lockPath`；不同目标应可并发。成功或明确失败后，正式目录同级不应残留 `.sparkone-overwrite-*`；模拟 driver 中断留下 work 目录时，下次取得锁的 overwrite 应先恢复/清理残留再执行。
+第一次 Run 后通过同一相对路径读取：
+
+```sql
+load parquet.`reports/city_stats` as saved_city_stats;
+
+select *
+from saved_city_stats
+order by city;
+```
+
+Compile 应显示 `MANAGED HDFS LOAD` 摘要，Run 后只包含本次结果。修改 `city_stats` 后再次 overwrite，再重新执行 load，路径中应只包含第二次完整结果。执行期间，同目标的第二个 overwrite 应失败并包含 `already running`，同时显示占用锁的 `operationId`、`target` 和包含租户的 ZK `lockPath`；不同目标应可并发。成功或明确失败后，正式目录同级不应残留 `.sparkone-overwrite-*`；模拟 driver 中断留下 work 目录时，下次取得锁的 overwrite 应先恢复/清理残留再执行。
+
+下面的直接路径读取都应在 Compile 阶段失败，并提示使用 SparkOne `LOAD`：
+
+```sql
+select * from parquet.`/public/sparkone/user/alice/reports/city_stats`;
+view bypass as select * from parquet.`reports/city_stats`;
+load parquet.`../bob/reports/city_stats` as bypass;
+```
 
 本地文件、S3、OSS 裸路径的 append/overwrite 都保持永久拒绝。未来只有出现明确生产案例并定义 schema、分区、并发和失败重跑幂等合同后，才单独评估 Parquet/ORC 分区 append 或事务湖表写入，不恢复 CSV、Excel 或任意裸路径 append。
 
@@ -1337,12 +1339,12 @@ as hive.`default.sparkone_save_hive_append`;
 
 ## HDFS 和 Hive 测试
 
-如果使用 `conf/sparkone.conf` 配置了 Hadoop/Hive/Kerberos，页面里可以直接写 HDFS 路径或 Hive 表。裸路径 `/tmp/...` 会按 Hadoop `fs.defaultFS` 解析；为了让脚本更明确，也可以写成 `hdfs:///tmp/...`。
+如果使用 `conf/sparkone.conf` 配置了 Hadoop/Hive/Kerberos，Hive 表仍按 catalog 标识读取；HDFS 文件必须先放到当前租户的 `/public/sparkone/user/${username}` workspace，再在页面使用相对路径。
 
 HDFS CSV：
 
 ```sql
-load csv.`hdfs:///tmp/users.csv`
+load csv.`imports/users.csv`
 options header="true" and inferSchema="true"
 as users;
 
@@ -1386,7 +1388,7 @@ engines {
 然后页面里可以写：
 
 ```sql
-load excel.`file:///Users/qindongliang/Downloads/jupyter_tasks.xlsx`
+load excel.`imports/jupyter_tasks.xlsx`
 options header="true" and inferSchema="true"
 as users_excel;
 

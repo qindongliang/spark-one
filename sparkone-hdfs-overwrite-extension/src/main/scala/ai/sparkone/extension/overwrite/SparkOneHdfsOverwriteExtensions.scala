@@ -18,15 +18,22 @@ final class SparkOneHdfsOverwriteExtensions extends SparkSessionExtensionsProvid
 
 private final class SparkOneManagedHdfsParser(delegate: ParserInterface) extends ParserInterface {
   override def parsePlan(sqlText: String): LogicalPlan = {
-    ManagedHdfsOverwriteProtocol.parse(sqlText) match {
+    ManagedHdfsLoadProtocol.parse(sqlText) match {
       case Some(request) =>
+        SparkOneManagedHdfsLoadCommand(
+          request.tenant,
+          request.targetTable,
+          request.format,
+          request.relativePath,
+          request.options)
+      case None => ManagedHdfsOverwriteProtocol.parse(sqlText).map { request =>
         SparkOneManagedHdfsOverwriteCommand(
           request.tenant,
           request.sourceTable,
           request.format,
           request.relativePath,
           request.options)
-      case None => delegate.parsePlan(sqlText)
+      }.getOrElse(delegate.parsePlan(sqlText))
     }
   }
 
@@ -37,6 +44,21 @@ private final class SparkOneManagedHdfsParser(delegate: ParserInterface) extends
   override def parseMultipartIdentifier(sqlText: String): Seq[String] = delegate.parseMultipartIdentifier(sqlText)
   override def parseTableSchema(sqlText: String): StructType = delegate.parseTableSchema(sqlText)
   override def parseDataType(sqlText: String): DataType = delegate.parseDataType(sqlText)
+}
+
+private final case class SparkOneManagedHdfsLoadCommand(
+    tenant: String,
+    targetTable: String,
+    format: String,
+    relativePath: String,
+    options: Map[String, String]) extends LeafRunnableCommand {
+
+  override def run(sparkSession: SparkSession): Seq[org.apache.spark.sql.Row] = {
+    ManagedHdfsLoadExecutor.execute(
+      sparkSession,
+      ManagedHdfsLoadRequest(tenant, targetTable, format, relativePath, options))
+    Seq.empty
+  }
 }
 
 private final case class SparkOneManagedHdfsOverwriteCommand(

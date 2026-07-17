@@ -11,6 +11,7 @@
 | `set name = literal` | 两边都在 SparkOne runtime 层维护变量 map。 |
 | `set name as select ...` | 两边都执行查询取第一行第一列；local 通过 DataFrame，Kyuubi 通过 JDBC ResultSet。 |
 | `load hive/doris ... as t` | 编译 SQL 一致；Kyuubi 需要在 Kyuubi/Spark engine 侧配置好 Hive/Doris catalog。 |
+| 受控 HDFS 文件 load | 两边都只接受 workspace 相对路径，并使用相同内部命令和 driver extension 注册临时视图；原生文件 provider relation 统一拒绝。 |
 | 固定写入能力矩阵 | 两边都在提交前使用同一个 `WritePlan` 和矩阵；Hive/Doris/MySQL overwrite 永久拒绝。 |
 | Catalog append | Hive/Doris 以及 Kyuubi MySQL 都要求目标存在、源和目标列名集合一致，并通过显式目标列清单和源列投影写入；类型不兼容在写入前失败。 |
 | 文件路径写入边界 | 两边都永久拒绝文件 append 和 external path 写入；受控 HDFS overwrite 使用相同的内部命令和 driver extension。 |
@@ -48,10 +49,11 @@
 | Catalog append 3A | 已落地。Hive/Doris 使用 Spark 3.3+ column list 语法，Local/Kyuubi 都做目标、列名和类型检查；Kyuubi 写 statement 禁止断线重放。 |
 | MySQL append 3B | 已落地。Local JDBC adapter 与 Kyuubi JDBC Catalog 都做目标、列名和类型预检并按列名写入；SQL 不携带连接密钥，overwrite 永久拒绝。 |
 | 受控 HDFS overwrite | 已落地。Spark driver 使用目标级 ZK ephemeral lock、固定同级 staging/backup 和 HDFS rename 发布。 |
+| 受控 HDFS load | 已落地。文件 provider 只接受租户相对路径，Spark driver 使用可信 workspace 配置解析并注册临时视图。 |
 
 ## 后续优先级
 
-1. 在真实 Kyuubi、HDFS 和 ZooKeeper 环境验证受控 overwrite 的并发拒绝、driver 退出和残留恢复。
+1. 在真实 Kyuubi、HDFS 和 ZooKeeper 环境验证受控 load 的租户隔离，以及 overwrite 的并发拒绝、driver 退出和残留恢复。
 2. 文件 append 不进入 MVP 路线；只有出现明确生产案例，并定义 schema、分区、并发与幂等合同后，才单独评估 Parquet/ORC 分区 append 或事务湖表写入。
 3. 本地文件、S3、OSS 裸路径写入保持永久拒绝，不增加配置开关。
 4. 保持架构原则：SparkOne 不直接替 Kyuubi 管理 Spark/YARN/Hive 执行用户、connector classpath 或 catalog 密钥。

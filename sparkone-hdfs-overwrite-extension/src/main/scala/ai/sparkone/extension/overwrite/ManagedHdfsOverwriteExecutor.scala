@@ -7,36 +7,34 @@ import org.apache.spark.sql.{SaveMode, SparkSession}
 import org.apache.zookeeper.{CreateMode, KeeperException}
 import org.slf4j.LoggerFactory
 
-import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.{Locale, UUID}
 import java.util.concurrent.TimeUnit
-import scala.util.Try
 import scala.util.control.NonFatal
 
 private[overwrite] object ManagedHdfsOverwriteExecutor {
-  val WorkspaceRootKey = "spark.sparkone.overwrite.workspaceRoot"
+  val WorkspaceRootKey = ManagedHdfsWorkspacePolicy.WorkspaceRootKey
   val ZooKeeperConnectKey = "spark.sparkone.overwrite.zk.connect"
   val ZooKeeperRootKey = "spark.sparkone.overwrite.zk.root"
   val ZooKeeperSessionTimeoutMsKey = "spark.sparkone.overwrite.zk.sessionTimeoutMs"
   val ZooKeeperConnectionTimeoutMsKey = "spark.sparkone.overwrite.zk.connectionTimeoutMs"
 
-  private val DefaultWorkspaceRoot = "/public/sparkone/user"
   private val DefaultZooKeeperRoot = "/sparkone/overwrite"
   private val DefaultSessionTimeoutMs = 60000
   private val DefaultConnectionTimeoutMs = 15000
   private val MaxReadableLockPathLength = 96
-  private val UsernamePattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$".r
-  private val IdentifierPattern = "^[A-Za-z_][A-Za-z0-9_]*$".r
-  private val SupportedFormats = Set("parquet", "csv", "json", "orc", "text", "excel")
-  private val SensitiveOptionNames = Set(
-    "path", "url", "uri", "user", "username", "password", "token",
-    "accesskey", "accesskeyid", "secretkey", "secretaccesskey", "credential", "credentials")
   private val logger = LoggerFactory.getLogger(getClass)
 
   def execute(spark: SparkSession, request: ManagedHdfsOverwriteRequest): Unit = {
-    validate(request)
+    ManagedHdfsWorkspacePolicy.validateRequest(
+      request.tenant,
+      request.sourceTable,
+      request.format,
+      request.relativePath,
+      request.options,
+      ManagedHdfsWorkspacePolicy.WriteFormats,
+      operation = "overwrite")
     val paths = resolvePaths(spark, request)
     val operationId = UUID.randomUUID().toString
     val lock = ZooKeeperTargetLock(
@@ -71,53 +69,12 @@ private[overwrite] object ManagedHdfsOverwriteExecutor {
     }
   }
 
-  private def validate(request: ManagedHdfsOverwriteRequest): Unit = {
-    if (!UsernamePattern.pattern.matcher(request.tenant).matches()) {
-      throw new IllegalArgumentException("Invalid managed HDFS overwrite tenant")
-    }
-    if (!IdentifierPattern.pattern.matcher(request.sourceTable).matches()) {
-      throw new IllegalArgumentException("Managed HDFS overwrite source must be a simple temporary view name")
-    }
-    val normalizedFormat = request.format.toLowerCase(Locale.ROOT)
-    if (!SupportedFormats.contains(normalizedFormat)) {
-      throw new IllegalArgumentException(s"Managed HDFS overwrite format is not supported: ${request.format}")
-    }
-    if (!isManagedRelativePath(request.relativePath)) {
-      throw new IllegalArgumentException("Managed HDFS overwrite requires a validated relative path")
-    }
-    request.options.keys.foreach { key =>
-      val normalized = key.replaceAll("[^A-Za-z0-9]", "").toLowerCase(Locale.ROOT)
-      if (SensitiveOptionNames.contains(normalized) || key.toLowerCase(Locale.ROOT).startsWith("fs.")) {
-        throw new IllegalArgumentException(s"Managed HDFS overwrite option is not allowed: $key")
-      }
-    }
-  }
-
-  private def isManagedRelativePath(path: String): Boolean = {
-    val trimmed = path.trim
-    if (trimmed.isEmpty || trimmed != path || trimmed.startsWith("/") || trimmed.contains("\\")) {
-      false
-    } else {
-      val uri = Try(new URI(trimmed)).toOption
-      val segments = trimmed.split("/", -1)
-      uri.exists { value =>
-        value.getScheme == null && value.getAuthority == null && value.getQuery == null &&
-          value.getFragment == null && value.getPath == trimmed &&
-          segments.forall(segment => segment.nonEmpty && segment != "." && segment != "..")
-      }
-    }
-  }
-
   private def resolvePaths(
       spark: SparkSession,
       request: ManagedHdfsOverwriteRequest): OverwritePaths = {
-    val workspaceRoot = spark.conf.getOption(WorkspaceRootKey).getOrElse(DefaultWorkspaceRoot)
-    val userRoot = new Path(new Path(workspaceRoot), request.tenant)
-    val candidate = new Path(userRoot, request.relativePath)
-    val fs = candidate.getFileSystem(spark.sparkContext.hadoopConfiguration)
-    val qualifiedUserRoot = fs.makeQualified(userRoot)
-    val finalPath = fs.makeQualified(candidate)
-    requireDescendant(qualifiedUserRoot, finalPath)
+    val target = ManagedHdfsWorkspacePolicy.resolveTarget(spark, request.tenant, request.relativePath)
+    val fs = target.fs
+    val finalPath = target.finalPath
     val parent = finalPath.getParent
     if (parent == null) {
       throw new IllegalArgumentException("Managed HDFS overwrite target must have a parent directory")
@@ -129,16 +86,6 @@ private[overwrite] object ManagedHdfsOverwriteExecutor {
       workPath,
       new Path(workPath, "staging"),
       new Path(workPath, "backup"))
-  }
-
-  private def requireDescendant(root: Path, child: Path): Unit = {
-    val rootUri = root.toUri.normalize()
-    val childUri = child.toUri.normalize()
-    val rootPath = rootUri.getPath.stripSuffix("/")
-    if (rootUri.getScheme != childUri.getScheme || rootUri.getAuthority != childUri.getAuthority ||
-        !childUri.getPath.startsWith(rootPath + "/")) {
-      throw new IllegalArgumentException("Managed HDFS overwrite target escapes the tenant workspace")
-    }
   }
 
   private def writeStaging(

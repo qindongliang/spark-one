@@ -1,0 +1,36 @@
+package ai.sparkone.extension.overwrite
+
+final case class ManagedHdfsLoadRequest(
+    tenant: String,
+    targetTable: String,
+    format: String,
+    relativePath: String,
+    options: Map[String, String])
+
+object ManagedHdfsLoadProtocol {
+  private val Command = "SPARKONE MANAGED_HDFS_LOAD"
+
+  def render(request: ManagedHdfsLoadRequest): String = {
+    ManagedHdfsCommandCodec.render(
+      Command,
+      ManagedHdfsCommandFields(
+        request.tenant,
+        request.targetTable,
+        request.format,
+        request.relativePath,
+        request.options))
+  }
+
+  def parse(sql: String): Option[ManagedHdfsLoadRequest] = {
+    ManagedHdfsCommandCodec.parse(sql, Command, "load").map { fields =>
+      ManagedHdfsLoadRequest(
+        fields.tenant,
+        fields.table,
+        fields.format,
+        fields.relativePath,
+        fields.options)
+    }
+  }
+
+  def isCommand(sql: String): Boolean = parse(sql).nonEmpty
+}

@@ -56,7 +56,7 @@ final class StatementPolicyTest {
   @Test
   def allowsControlledDslIntents(): Unit = {
     val statements = compiler.compile(
-      """load parquet.`/tmp/source` as source_view;
+      """load parquet.`source` as source_view;
         |view projected as select * from source_view;
         |set biz_date = "2026-07-13";
         |save append projected as hive.`default.target`;
@@ -69,6 +69,19 @@ final class StatementPolicyTest {
         StatementIntent.SetVariable,
         StatementIntent.Save),
       statements.map(_.intent))
+  }
+
+  @Test
+  def rejectsNativeProviderPathsInQueriesAndViews(): Unit = {
+    Seq(
+      "select * from parquet.`/public/sparkone/user/alice/result`",
+      "select * from csv.`relative/result.csv`",
+      "select * from avro.`/public/sparkone/user/alice/result`",
+      "select * from custom.`relative/result`",
+      "view leaked as select * from orc.`/public/sparkone/user/bob/result`").foreach { sql =>
+      val error = expectCompileException(sql)
+      assertTrue(sql, error.getMessage.contains("use SparkOne LOAD"))
+    }
   }
 
   @Test

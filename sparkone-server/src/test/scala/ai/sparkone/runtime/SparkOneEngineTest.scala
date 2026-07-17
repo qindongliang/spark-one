@@ -1,6 +1,6 @@
 package ai.sparkone.runtime
 
-import ai.sparkone.extension.overwrite.ManagedHdfsOverwriteProtocol
+import ai.sparkone.extension.overwrite.{ManagedHdfsLoadProtocol, ManagedHdfsOverwriteProtocol}
 import ai.sparkone.identity.TenantContext
 import ai.sparkone.sql.{CompileException, MysqlLoadProfile, MysqlLoadProfileStrategy, WriteExecutionType, WriteTargetKind}
 import org.junit.Assert._
@@ -595,6 +595,31 @@ final class SparkOneEngineTest {
       assertEquals("source_view", request.get.sourceTable)
       assertEquals("reports/daily", request.get.relativePath)
       assertFalse(fake.executedSql.exists(_.startsWith("EXPLAIN INSERT INTO")))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiManagedHdfsLoadSubmitsInternalCommandToRemoteEngine(): Unit = {
+    val fake = new RecordingJdbcConnection()
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        "load parquet.`extension-test/result` as loaded_result;",
+        10)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      val request = fake.executedSql.iterator
+        .flatMap(sql => ManagedHdfsLoadProtocol.parse(sql))
+        .toSeq
+        .headOption
+      assertTrue(request.isDefined)
+      assertEquals("test-user", request.get.tenant)
+      assertEquals("loaded_result", request.get.targetTable)
+      assertEquals("extension-test/result", request.get.relativePath)
     } finally {
       engine.close()
     }
