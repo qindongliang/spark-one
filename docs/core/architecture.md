@@ -5,7 +5,7 @@ SparkOne SQL 当前是 MLSQL-inspired 的最小可用版本，核心目标是：
 ```text
 SparkOne DSL + native Spark SQL script
   -> compile
-  -> Spark SQL statements
+  -> Spark SQL statements / versioned internal overwrite command
   -> local SparkSession runtime or Kyuubi SQL gateway
 ```
 
@@ -16,6 +16,7 @@ SparkOne DSL + native Spark SQL script
 - Web 服务默认仍是本地测试台，方便快速 compile/run。
 - 当前用户名登录只创建开发态逻辑租户上下文，不是生产认证；生产身份后续由 RMS 提供。
 - Kyuubi 作为远程 SQL gateway 接入；YARN、Kubernetes、Standalone 等终态由 Kyuubi engine 侧承接，不放进 SparkOne。
+- 受控 HDFS overwrite 是 Spark SQL 难以安全表达的少数 runtime adapter：薄 compiler 生成内部命令，`sparkone-hdfs-overwrite-extension` 在 Spark driver 内执行，不把任务状态或文件发布职责放进 SparkOne Web 进程。
 
 主要代码：
 
@@ -24,6 +25,7 @@ SparkOne DSL + native Spark SQL script
 - `sparkone-server/src/main/scala/ai/sparkone/runtime/SparkOneRuntime.scala`
 - `sparkone-server/src/main/scala/ai/sparkone/runtime/SparkOneEngine.scala`
 - `sparkone-server/src/main/scala/ai/sparkone/server/SparkOneServer.scala`
+- `sparkone-hdfs-overwrite-extension/src/main/scala/ai/sparkone/extension/overwrite`
 
 推荐继续演进的方向：
 

@@ -10,9 +10,12 @@ http://127.0.0.1:7070
 
 首次打开页面需要输入用户名。这个页面只在开发测试环境选择逻辑租户，不校验密码，也不代表生产身份认证。登录后刷新页面应保持当前 session；点击 `Log out` 后，编译、执行和预览接口都应返回未登录状态。
 
+页面选择 Kyuubi 引擎时会显示 `Session` 下拉框，可以直接切换 `Tenant shared` 和 `Run isolated` 测试两种会话模式。Local 引擎不显示该控件。
+
 ## 页面区域
 
 - 左侧编辑器：输入一段 SQL 脚本，可以包含多条语句，用分号 `;` 分隔。
+- `Session`：只在 Kyuubi 引擎下显示。`Tenant shared` 表示同一租户共享会话、支持跨 Run 临时视图；`Run isolated` 表示每次 Run 使用独立会话，临时视图不能跨 Run，适合模拟定时任务。
 - `Compile`：只编译，不执行。只有 `server.showCompiledSql = true` 时才显示，适合检查 `load/save` 这类 SparkOne DSL 被转成了什么 Spark SQL。
 - `Run`：编译后按顺序执行每条 SQL，后面的语句可以使用前面创建的临时视图。
 - `Preview`：在结果区的 Preview tab 里显示；对 `load ... as t`，先 `Run` 注册临时视图并展示 schema，再点该结果里的 `Preview` tab 显式拉取 `t` 的预览数据。
@@ -86,6 +89,36 @@ select * from city_stats order by city;
 ```
 
 页面服务不重启时，临时视图会留在当前本地 Spark 会话里；服务重启后临时视图会消失。
+
+## Kyuubi Session 隔离
+
+页面选择 Kyuubi 引擎后，可以用 `Session` 下拉框验证两种运行方式。
+
+选择 `Tenant shared`，先单独 Run：
+
+```sql
+view editor_session_probe as
+select 1 as id, 'shared' as mode;
+```
+
+再单独 Run：
+
+```sql
+select * from editor_session_probe;
+```
+
+第二次应查询成功，因为同一登录租户复用了 Kyuubi session。该模式仍允许同租户并发 Run，共享的是 connection/session，不是串行执行锁。
+
+切换为 `Run isolated` 后，仍分两次执行上面的 SQL。第二次应提示找不到 `editor_session_probe`，因为每次 Run 都创建并关闭独立 Kyuubi session。把创建和查询放进同一次 Run 则应成功：
+
+```sql
+view isolated_session_probe as
+select 1 as id, 'isolated' as mode;
+
+select * from isolated_session_probe;
+```
+
+切回 Local 引擎后，`Session` 控件应隐藏，并按默认的 `tenant_shared` 请求值提交；该值不会改变 Local 引擎已有的 SparkSession 行为。
 
 ## 脚本变量 Set
 
@@ -1146,7 +1179,7 @@ SELECT `name`, `id` FROM stage3b_mysql_source
 
 ## 使用 SparkOne Save DSL
 
-第二阶段已经统一使用 `WritePlan` 和固定能力矩阵。Hive、Doris、MySQL 只允许 append；这些 catalog/数据库目标的 overwrite 永久拒绝。所有文件 append 以及本地/S3/OSS external path 写入永久拒绝；只有受控 HDFS overwrite 可以在 staging executor 落地后开放。
+第二阶段已经统一使用 `WritePlan` 和固定能力矩阵。Hive、Doris、MySQL 只允许 append；这些 catalog/数据库目标的 overwrite 永久拒绝。所有文件 append 以及本地/S3/OSS external path 写入永久拒绝；受控 HDFS overwrite 由 Spark driver extension 执行。
 
 测试原生 DDL/DML 是否被拦截。下面每条语句应分别点击 Compile，且都应失败：
 
@@ -1195,7 +1228,20 @@ save append city_stats as parquet.`s3a://bucket/reports/city_stats`;
 save overwrite city_stats as parquet.`reports/city_stats`;
 ```
 
-预期 Compile 失败，但错误应提示 `staging overwrite executor` 尚未就绪，而不是 `external-path`。后续 executor 会把目标解析为 `/public/sparkone/user/${username}/reports/city_stats`；客户端不能提交绝对 workspace 路径。
+预期 Compile 成功，页面展示以下可读摘要，不应出现内部 Base64 payload：
+
+```text
+MANAGED HDFS OVERWRITE
+  tenant: <当前登录用户>
+  source: city_stats
+  format: parquet
+  target: reports/city_stats
+  options: {}
+```
+
+实际执行仍使用版本化内部命令。Run 会把目标解析为 `/public/sparkone/user/${username}/reports/city_stats`；客户端不能提交绝对 workspace 路径。Local 必须先配置 `engines.local.overwrite.zkConnect`，Kyuubi 必须部署 extension jar 并配置 `spark.sql.extensions` 和 `spark.sparkone.overwrite.*`。
+
+第一次 Run 后读取该路径，应只包含本次结果；修改 `city_stats` 后再次 Run，路径中应只包含第二次完整结果。执行期间，同目标的第二个 overwrite 应失败并包含 `already running`，同时显示占用锁的 `operationId`、`target` 和包含租户的 ZK `lockPath`；不同目标应可并发。成功或明确失败后，正式目录同级不应残留 `.sparkone-overwrite-*`；模拟 driver 中断留下 work 目录时，下次取得锁的 overwrite 应先恢复/清理残留再执行。
 
 本地文件、S3、OSS 裸路径的 append/overwrite 都保持永久拒绝。未来只有出现明确生产案例并定义 schema、分区、并发和失败重跑幂等合同后，才单独评估 Parquet/ORC 分区 append 或事务湖表写入，不恢复 CSV、Excel 或任意裸路径 append。
 

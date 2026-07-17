@@ -1,7 +1,8 @@
 package ai.sparkone.server
 
+import ai.sparkone.extension.overwrite.ManagedHdfsOverwriteProtocol
 import ai.sparkone.identity.{DevelopmentSessionStore, TenantContext}
-import ai.sparkone.runtime.{PreviewConfig, SparkOneEngineRegistry}
+import ai.sparkone.runtime.{PreviewConfig, SessionMode, SparkOneEngineRegistry}
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import io.javalin.Javalin
@@ -118,14 +119,14 @@ object SparkOneServer {
 
   private def handleCompile(ctx: Context): Unit = {
     withTenant(ctx) { tenant =>
-      val request = readSqlRequest(ctx)
       try {
+        val request = readSqlRequest(ctx)
         val engine = engines.get(request.engine)
         val statements = engine.compile(tenant, request.script).zipWithIndex.map { case (statement, index) =>
           Map(
             "index" -> (index + 1),
             "source" -> statement.source,
-            "sql" -> statement.sql)
+            "sql" -> displaySql(statement.sql))
         }
         json(ctx, Map(
           "success" -> true,
@@ -142,15 +143,16 @@ object SparkOneServer {
 
   private def handleRun(ctx: Context): Unit = {
     withTenant(ctx) { tenant =>
-      val request = readSqlRequest(ctx)
       try {
+        val request = readSqlRequest(ctx)
         val engine = engines.get(request.engine)
-        val result = engine.run(tenant, request.script, request.limit)
+        val result = engine.run(tenant, request.script, request.limit, request.sessionMode)
         json(ctx, Map(
           "success" -> result.success,
           "engine" -> engine.id,
           "showCompiledSql" -> showCompiledSql,
-          "statements" -> result.statements))
+          "statements" -> result.statements.map(statement =>
+            statement.copy(sql = displaySql(statement.sql)))))
       } catch {
         case e: Throwable =>
           logger.warn(s"Failed to run SQL request for tenant ${tenant.username}", e)
@@ -226,7 +228,9 @@ object SparkOneServer {
       .map(_.asInt(preview.maxRows))
     val limit = preview.clampRows(requestedLimit)
     val engine = Option(node.get("engine")).filterNot(_.isNull).map(_.asText()).map(_.trim).filter(_.nonEmpty)
-    SqlRequest(script, limit, engine)
+    val sessionMode = SessionMode.parse(
+      Option(node.get("sessionMode")).filterNot(_.isNull).map(_.asText()))
+    SqlRequest(script, limit, engine, sessionMode)
   }
 
   private def readPreviewRequest(ctx: Context): PreviewRequest = {
@@ -248,6 +252,33 @@ object SparkOneServer {
     ctx.result(mapper.writeValueAsString(value))
   }
 
+  private[server] def displaySql(sql: String): String = {
+    ManagedHdfsOverwriteProtocol.parse(sql).map { request =>
+      val options = request.options.toSeq.sortBy(_._1).map { case (key, value) =>
+        s"$key=${displayLiteral(value)}"
+      }.mkString("{", ", ", "}")
+      Seq(
+        "MANAGED HDFS OVERWRITE",
+        s"  tenant: ${request.tenant}",
+        s"  source: ${request.sourceTable}",
+        s"  format: ${request.format}",
+        s"  target: ${request.relativePath}",
+        s"  options: $options").mkString("\n")
+    }.getOrElse(sql)
+  }
+
+  private def displayLiteral(value: String): String = {
+    val escaped = value.flatMap {
+      case '\\' => "\\\\"
+      case '\'' => "\\'"
+      case '\r' => "\\r"
+      case '\n' => "\\n"
+      case '\t' => "\\t"
+      case char => char.toString
+    }
+    s"'$escaped'"
+  }
+
   private def errorMessage(error: Throwable): String = {
     val root = Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq.lastOption.getOrElse(error)
     Option(root.getMessage).filter(_.nonEmpty).getOrElse(root.getClass.getName)
@@ -266,7 +297,11 @@ object SparkOneServer {
   }
 }
 
-final case class SqlRequest(script: String, limit: Int, engine: Option[String])
+final case class SqlRequest(
+    script: String,
+    limit: Int,
+    engine: Option[String],
+    sessionMode: SessionMode)
 
 final case class PreviewRequest(table: String, limit: Int, engine: Option[String])
 
@@ -491,6 +526,7 @@ private[server] object SparkOneHoconConfig {
   private def localEngineProperties(prefix: String, config: Config): Seq[(String, String)] = {
     val propertyPrefix = s"$prefix.local.property"
     localSparkProperties(propertyPrefix, config) ++
+      localOverwriteProperties(propertyPrefix, config) ++
       localHadoopProperties(propertyPrefix, config) ++
       localHiveProperties(propertyPrefix, config) ++
       localKerberosProperties(propertyPrefix, config) ++
@@ -506,6 +542,17 @@ private[server] object SparkOneHoconConfig {
       string(config, "spark.driverBindAddress").map(s"$prefix.spark.driver.bindAddress" -> _),
       string(config, "spark.kerberos.principal").map(s"$prefix.spark.kerberos.principal" -> _),
       string(config, "spark.kerberos.keytab").map(s"$prefix.spark.kerberos.keytab" -> _)).flatten
+  }
+
+  private def localOverwriteProperties(prefix: String, config: Config): Seq[(String, String)] = {
+    Seq(
+      string(config, "overwrite.zkConnect").map(s"$prefix.spark.sparkone.overwrite.zk.connect" -> _),
+      string(config, "overwrite.zkRoot").map(s"$prefix.spark.sparkone.overwrite.zk.root" -> _),
+      string(config, "overwrite.workspaceRoot").map(s"$prefix.spark.sparkone.overwrite.workspaceRoot" -> _),
+      int(config, "overwrite.zkSessionTimeoutMs")
+        .map(value => s"$prefix.spark.sparkone.overwrite.zk.sessionTimeoutMs" -> value.toString),
+      int(config, "overwrite.zkConnectionTimeoutMs")
+        .map(value => s"$prefix.spark.sparkone.overwrite.zk.connectionTimeoutMs" -> value.toString)).flatten
   }
 
   private def localHadoopProperties(prefix: String, config: Config): Seq[(String, String)] = {

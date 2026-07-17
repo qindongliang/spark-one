@@ -1,6 +1,7 @@
 package ai.sparkone.sql
 
 import ai.sparkone.identity.TenantContext
+import ai.sparkone.extension.overwrite.{ManagedHdfsOverwriteProtocol, ManagedHdfsOverwriteRequest}
 
 import java.net.URI
 import java.util.Locale
@@ -153,11 +154,15 @@ final class WritePlanner {
         if (partitionColumns.nonEmpty) {
           throw new CompileException("SAVE partitionBy is only supported for catalog targets")
         }
+        val targetKind = classifyProviderTarget(provider, path)
+        if (targetKind == ManagedHdfs) {
+          validateManagedHdfsOptions(providerOptions)
+        }
         WritePlan(
           tenant = tenant,
           mode = writeMode,
           sourceTable = sourceTable,
-          target = WriteTarget(classifyProviderTarget(provider, path), path, provider = Some(provider)),
+          target = WriteTarget(targetKind, path, provider = Some(provider)),
           format = format,
           providerOptions = providerOptions.toMap,
           executionType = FileProvider)
@@ -200,7 +205,7 @@ final class WritePlanner {
   }
 
   private def classifyProviderTarget(provider: String, path: String): WriteTargetKind = {
-    if (!WritePlanner.KnownFileProviders.contains(provider.toLowerCase)) {
+    if (!WritePlanner.KnownFileProviders.contains(provider.toLowerCase(Locale.ROOT))) {
       UnknownProvider
     } else if (isManagedRelativePath(path)) {
       ManagedHdfs
@@ -226,10 +231,22 @@ final class WritePlanner {
       }
     }
   }
+
+  private def validateManagedHdfsOptions(options: Seq[(String, String)]): Unit = {
+    options.foreach { case (key, _) =>
+      val normalized = key.replaceAll("[^A-Za-z0-9]", "").toLowerCase(Locale.ROOT)
+      if (WritePlanner.SensitiveManagedHdfsOptions.contains(normalized) || key.toLowerCase(Locale.ROOT).startsWith("fs.")) {
+        throw new CompileException(s"SAVE managed HDFS option is not allowed: $key")
+      }
+    }
+  }
 }
 
 private object WritePlanner {
   private val KnownFileProviders = Set("parquet", "csv", "json", "orc", "text", "excel")
+  private val SensitiveManagedHdfsOptions = Set(
+    "path", "url", "uri", "user", "username", "password", "token",
+    "accesskey", "accesskeyid", "secretkey", "secretaccesskey", "credential", "credentials")
 }
 
 private[sql] object WriteSqlRenderer {
@@ -245,7 +262,11 @@ private[sql] object WriteSqlRenderer {
         "SAVE MYSQL",
         s"${plan.sourceTable} TO ${plan.target.identifier}")
     case FileProvider =>
-      throw new CompileException(
-        "SAVE overwrite for managed-hdfs is disabled until the staging overwrite executor is available")
+      ManagedHdfsOverwriteProtocol.render(ManagedHdfsOverwriteRequest(
+        tenant = plan.tenant.username,
+        sourceTable = plan.sourceTable,
+        format = plan.target.provider.getOrElse(plan.format),
+        relativePath = plan.target.identifier,
+        options = plan.providerOptions))
   }
 }

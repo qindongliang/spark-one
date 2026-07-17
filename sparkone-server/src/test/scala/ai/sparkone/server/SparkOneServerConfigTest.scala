@@ -1,5 +1,6 @@
 package ai.sparkone.server
 
+import ai.sparkone.extension.overwrite.{ManagedHdfsOverwriteProtocol, ManagedHdfsOverwriteRequest}
 import org.junit.Assert._
 import org.junit.Test
 
@@ -7,6 +8,29 @@ import java.nio.file.{Files, Paths}
 
 final class SparkOneServerConfigTest {
   private val LocalPrefix = "sparkone.engine.local.local.property"
+
+  @Test
+  def rendersManagedHdfsOverwriteCommandForUi(): Unit = {
+    val command = ManagedHdfsOverwriteProtocol.render(ManagedHdfsOverwriteRequest(
+      tenant = "alice",
+      sourceTable = "city_stats",
+      format = "csv",
+      relativePath = "reports/daily",
+      options = Map("header" -> "true", "delimiter" -> "|")))
+
+    val display = SparkOneServer.displaySql(command)
+
+    assertEquals(
+      """MANAGED HDFS OVERWRITE
+        |  tenant: alice
+        |  source: city_stats
+        |  format: csv
+        |  target: reports/daily
+        |  options: {delimiter='|', header='true'}""".stripMargin,
+      display)
+    assertFalse(display.contains(command.split(" ").last))
+    assertEquals("select 1", SparkOneServer.displaySql("select 1"))
+  }
 
   @Test
   def loadsMysqlDatasourceFromHocon(): Unit = {
@@ -39,6 +63,41 @@ final class SparkOneServerConfigTest {
       assertEquals("1000", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.option.fetchsize"))
       assertEquals("convertToNull", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.option.zeroDateTimeBehavior"))
       assertFalse(properties.contains(s"$LocalPrefix.spark.sql.catalog.mysql"))
+    } finally {
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
+  def loadsManagedHdfsOverwriteConfigFromHocon(): Unit = {
+    val file = Files.createTempFile("sparkone-overwrite-", ".conf")
+    Files.write(file,
+      """engines.local {
+        |  type = "local"
+        |
+        |  overwrite {
+        |    zkConnect = "zk-1:2181,zk-2:2181"
+        |    zkRoot = "/sparkone/test-overwrite"
+        |    workspaceRoot = "/public/sparkone/user"
+        |    zkSessionTimeoutMs = 60000
+        |    zkConnectionTimeoutMs = 15000
+        |  }
+        |}
+        |""".stripMargin.getBytes("UTF-8"))
+
+    try {
+      val properties = ServerConfigFile.load(file.toString)
+
+      assertEquals("zk-1:2181,zk-2:2181",
+        properties(s"$LocalPrefix.spark.sparkone.overwrite.zk.connect"))
+      assertEquals("/sparkone/test-overwrite",
+        properties(s"$LocalPrefix.spark.sparkone.overwrite.zk.root"))
+      assertEquals("/public/sparkone/user",
+        properties(s"$LocalPrefix.spark.sparkone.overwrite.workspaceRoot"))
+      assertEquals("60000",
+        properties(s"$LocalPrefix.spark.sparkone.overwrite.zk.sessionTimeoutMs"))
+      assertEquals("15000",
+        properties(s"$LocalPrefix.spark.sparkone.overwrite.zk.connectionTimeoutMs"))
     } finally {
       Files.deleteIfExists(file)
     }

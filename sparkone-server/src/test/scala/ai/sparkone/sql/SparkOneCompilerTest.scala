@@ -376,13 +376,38 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def rejectsFileOverwriteUntilManagedHdfsStagingExecutorExists(): Unit = {
+  def compilesManagedHdfsOverwriteAndRejectsExternalOverwrite(): Unit = {
     val external = tryCompile("save overwrite users as excel.`/tmp/users.xlsx` options header=true;")
     assertTrue(external.getMessage.contains("external-path"))
     assertTrue(external.getMessage.contains("permanently denied"))
 
-    val managed = tryCompile("save overwrite users as parquet.`reports/daily`;")
-    assertTrue(managed.getMessage.contains("staging overwrite executor"))
+    val managed = compiler.compile("save overwrite users as parquet.`reports/daily`;").head
+    val request = ai.sparkone.extension.overwrite.ManagedHdfsOverwriteProtocol.parse(managed.sql)
+    assertTrue(request.isDefined)
+    assertEquals("compiler", request.get.tenant)
+    assertEquals("users", request.get.sourceTable)
+    assertEquals("parquet", request.get.format)
+    assertEquals("reports/daily", request.get.relativePath)
+  }
+
+  @Test
+  def rejectsSensitiveOptionsForManagedHdfsOverwrite(): Unit = {
+    Seq("path", "url", "password", "access_key").foreach { option =>
+      val error = tryCompile(
+        s"save overwrite users as parquet.`reports/daily` options $option='secret';")
+      assertTrue(option, error.getMessage.contains("option is not allowed"))
+    }
+  }
+
+  @Test
+  def rejectsManagedHdfsInternalCommandSubmittedAsNativeSql(): Unit = {
+    val command = ai.sparkone.extension.overwrite.ManagedHdfsOverwriteProtocol.render(
+      ai.sparkone.extension.overwrite.ManagedHdfsOverwriteRequest(
+        "bob", "users", "parquet", "reports/daily", Map.empty))
+
+    val error = tryCompile(command)
+
+    assertTrue(error.getMessage.contains("Spark SQL parser rejected statement"))
   }
 
   @Test

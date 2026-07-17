@@ -31,8 +31,15 @@
     </header>
     <main>
       <section class="pane">
-        <div class="toolbar">
+        <div class="toolbar editor-toolbar">
           <label>Engine <select id="engine"></select></label>
+          <label class="session-mode-control" id="session-mode-control" hidden>
+            Session
+            <select id="session-mode">
+              <option value="tenant_shared">Tenant shared</option>
+              <option value="run_isolated">Run isolated</option>
+            </select>
+          </label>
           <button id="compile" hidden>Compile</button>
           <button class="primary" id="run">Run</button>
         </div>

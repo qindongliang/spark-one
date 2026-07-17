@@ -267,9 +267,9 @@ include "datasources/hive.conf"
 文件类 save：
 
 - 已识别文件 provider 的相对路径会分类为当前逻辑租户的受控 HDFS workspace，基准目录是 `/public/sparkone/user/${username}`。
-- 文件 append 不进入 MVP 路线，受控 HDFS 相对路径和 external path 都由固定能力矩阵永久拒绝。
+- 文件 append 不进入 MVP 路线，受控 HDFS 相对路径和 external path 的 append 都由固定能力矩阵永久拒绝。
 - 绝对路径或包含 URI scheme/authority 的路径分类为 external path；本地文件、S3、OSS 等 external path 的 append 和 overwrite 都永久拒绝。
-- 受控 HDFS overwrite 只有在 staging executor 落地后才会开放，当前仍在编译阶段 fail closed。
+- 受控 HDFS overwrite 已由 Spark driver extension 开放，使用目标级 ZK ephemeral lock、固定同级 staging/backup 和 HDFS rename 发布；缺少可信 engine 配置时 fail closed。
 - 未来只有出现明确生产案例，并具备格式/分区约束、schema 合同、并发控制和重跑幂等语义时，才单独评估 Parquet/ORC 分区 append 或事务湖表写入；不恢复通用裸路径 append。
 - 完整矩阵、路径校验和本阶段测试见 [safe-save.md](safe-save.md)。
 

@@ -139,6 +139,14 @@ main {
   background: var(--panel);
 }
 
+.editor-toolbar {
+  flex-wrap: wrap;
+}
+
+.session-mode-control select {
+  width: 136px;
+}
+
 button {
   height: 32px;
   border: 1px solid var(--line);

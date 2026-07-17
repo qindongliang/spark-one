@@ -1,5 +1,6 @@
 package ai.sparkone.runtime
 
+import ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
 import ai.sparkone.identity.TenantContext
 import ai.sparkone.sql.{CatalogWriteSqlRenderer, CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SetStatementMetadata, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType, WriteMode, WritePlan, WriteSchemaPolicy, WriteTargetKind}
 import org.apache.hadoop.conf.Configuration
@@ -354,6 +355,7 @@ object SparkOneRuntime {
       .master(master)
       .config("spark.ui.enabled", "false")
       .config("spark.sql.warehouse.dir", "target/spark-warehouse")
+      .withExtensions(new SparkOneHdfsOverwriteExtensions().apply)
 
     configureDriverNetwork(builder, master)
     configureHadoopAndHive(builder)
@@ -365,6 +367,7 @@ object SparkOneRuntime {
     configureSparkProperty(builder, "spark.kerberos.keytab")
     configureSparkProperty(builder, "spark.sql.defaultCatalog")
     configureSparkPropertiesWithPrefix(builder, "spark.sql.catalog.")
+    configureSparkPropertiesWithPrefix(builder, "spark.sparkone.overwrite.")
     val driverClassLoader = configureDriverClasspathFromSparkJars()
 
     if (enabled("sparkone.hive.enabled", "SPARKONE_HIVE_ENABLED")) {

@@ -54,6 +54,15 @@ engines {
       krb5Conf = "/etc/krb5.conf"
     }
 
+    overwrite {
+      # 受控 HDFS overwrite 必须连接 ZooKeeper；同一目标只允许一个 Spark driver operation 执行。
+      zkConnect = "127.0.0.1:2181"
+      zkRoot = "/sparkone/overwrite"
+      workspaceRoot = "/public/sparkone/user"
+      zkSessionTimeoutMs = 60000
+      zkConnectionTimeoutMs = 15000
+    }
+
     datasources.mysql {
       # MySQL 连接统一放在 HOCON 中，SQL 里只引用连接名，例如 mysql.`analytics.users`。
       analytics {
@@ -171,5 +180,12 @@ engines {
     #   defaultFetchSize = 10000
     #   allowedTables = ["orders"]
     # }
+    #
+    # 受控 HDFS overwrite 由 Kyuubi 拉起的 Spark engine 执行。扩展 jar 和以下 Spark 配置
+    # 必须放到 Kyuubi/Spark engine 侧，不通过本 HOCON 或 SAVE OPTIONS 下发：
+    # spark.sql.extensions=ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
+    # spark.sparkone.overwrite.zk.connect=zk-1:2181,zk-2:2181
+    # spark.sparkone.overwrite.zk.root=/sparkone/overwrite
+    # spark.sparkone.overwrite.workspaceRoot=/public/sparkone/user
   }
 }

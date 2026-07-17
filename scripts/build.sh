@@ -9,11 +9,11 @@ case "$TARGET" in
   all)
     exec mvn -f "$ROOT_DIR/pom.xml" clean package -DskipTests
     ;;
-  sparkone-server|sparkone-mysql-provider)
+  sparkone-server|sparkone-mysql-provider|sparkone-hdfs-overwrite-extension)
     exec mvn -f "$ROOT_DIR/pom.xml" -pl "$TARGET" -am clean package -DskipTests
     ;;
   *)
-    echo "用法: $0 [all|sparkone-server|sparkone-mysql-provider]" >&2
+    echo "用法: $0 [all|sparkone-server|sparkone-mysql-provider|sparkone-hdfs-overwrite-extension]" >&2
     exit 1
     ;;
 esac

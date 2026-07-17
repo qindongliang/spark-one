@@ -1,5 +1,6 @@
 package ai.sparkone.runtime
 
+import ai.sparkone.extension.overwrite.ManagedHdfsOverwriteProtocol
 import ai.sparkone.identity.TenantContext
 import ai.sparkone.sql.{CompileException, MysqlLoadProfile, MysqlLoadProfileStrategy, WriteExecutionType, WriteTargetKind}
 import org.junit.Assert._
@@ -7,10 +8,28 @@ import org.junit.Test
 
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import java.sql.{Connection, ResultSet, ResultSetMetaData, SQLException, Statement}
+import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.ArrayBuffer
 
 final class SparkOneEngineTest {
   private val tenant = TenantContext.development("test-user")
+
+  @Test
+  def sessionModeDefaultsToTenantSharedAndRejectsUnknownValues(): Unit = {
+    assertEquals(SessionMode.TenantShared, SessionMode.parse(None))
+    assertEquals(SessionMode.TenantShared, SessionMode.parse(Some(" tenant_shared ")))
+    assertEquals(SessionMode.RunIsolated, SessionMode.parse(Some("RUN_ISOLATED")))
+
+    try {
+      SessionMode.parse(Some("per_request"))
+      fail("Expected invalid session mode to fail")
+    } catch {
+      case e: IllegalArgumentException =>
+        assertTrue(e.getMessage.contains("tenant_shared"))
+        assertTrue(e.getMessage.contains("run_isolated"))
+    }
+  }
 
   @Test
   def engineInfosExposeCapabilities(): Unit = {
@@ -428,6 +447,62 @@ final class SparkOneEngineTest {
   }
 
   @Test
+  def kyuubiTenantSharedRunsReuseOneConnectionAndExecuteConcurrently(): Unit = {
+    val started = new CountDownLatch(2)
+    val release = new CountDownLatch(1)
+    val fake = new BlockingJdbcConnection(started, release)
+    val openedConnections = new AtomicInteger(0)
+    val engine = kyuubiEngine { _ =>
+      openedConnections.incrementAndGet()
+      fake.connection
+    }
+
+    val execution = runConcurrently(
+      engine,
+      SessionMode.TenantShared,
+      started,
+      release)
+
+    try {
+      assertTrue("Both shared runs should reach JDBC before either completes", execution.concurrent)
+      assertTrue(execution.failures.toString, execution.failures.isEmpty)
+      assertEquals(1, openedConnections.get())
+      assertFalse(fake.closed)
+    } finally {
+      engine.close()
+    }
+
+    assertTrue(fake.closed)
+  }
+
+  @Test
+  def kyuubiRunIsolatedRunsUseIndependentConnectionsAndCloseThem(): Unit = {
+    val started = new CountDownLatch(2)
+    val release = new CountDownLatch(1)
+    val openedConnections = new ConcurrentLinkedQueue[BlockingJdbcConnection]()
+    val engine = kyuubiEngine { _ =>
+      val fake = new BlockingJdbcConnection(started, release)
+      openedConnections.add(fake)
+      fake.connection
+    }
+
+    val execution = runConcurrently(
+      engine,
+      SessionMode.RunIsolated,
+      started,
+      release)
+
+    try {
+      assertTrue("Both isolated runs should reach JDBC before either completes", execution.concurrent)
+      assertTrue(execution.failures.toString, execution.failures.isEmpty)
+      assertEquals(2, openedConnections.size())
+      assertTrue(openedConnections.toArray.forall(_.asInstanceOf[BlockingJdbcConnection].closed))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
   def kyuubiCatalogAppendRunsReadOnlyPreflightBeforeWrite(): Unit = {
     val fake = new RecordingJdbcConnection(
       queryColumns = {
@@ -494,6 +569,32 @@ final class SparkOneEngineTest {
         fake.executedSql)
       assertFalse(fake.executedSql.mkString("\n").contains("jdbc:mysql"))
       assertFalse(fake.executedSql.mkString("\n").toLowerCase.contains("password"))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiManagedHdfsOverwriteSubmitsInternalCommandToRemoteEngine(): Unit = {
+    val fake = new RecordingJdbcConnection()
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """view source_view as select 1 as id;
+          |save overwrite source_view as parquet.`reports/daily`;
+          |""".stripMargin,
+        10)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(2, fake.executedSql.size)
+      val request = ManagedHdfsOverwriteProtocol.parse(fake.executedSql.last)
+      assertTrue(request.isDefined)
+      assertEquals("test-user", request.get.tenant)
+      assertEquals("source_view", request.get.sourceTable)
+      assertEquals("reports/daily", request.get.relativePath)
+      assertFalse(fake.executedSql.exists(_.startsWith("EXPLAIN INSERT INTO")))
     } finally {
       engine.close()
     }
@@ -623,6 +724,63 @@ final class SparkOneEngineTest {
     assertFalse(initialized)
   }
 
+  @Test
+  def localRejectsRunIsolatedWithoutInitializingRuntime(): Unit = {
+    var initialized = false
+    val engine = new LocalSparkEngine(
+      "local",
+      "Local",
+      {
+        initialized = true
+        throw new IllegalStateException("runtime should not be initialized")
+      },
+      Map.empty)
+
+    try {
+      engine.run(tenant, "select 1", 10, SessionMode.RunIsolated)
+      fail("Expected local engine to reject run_isolated")
+    } catch {
+      case e: IllegalArgumentException =>
+        assertTrue(e.getMessage.contains("run_isolated"))
+    } finally {
+      engine.close()
+    }
+
+    assertFalse(initialized)
+  }
+
+  private def runConcurrently(
+      engine: KyuubiJdbcEngine,
+      sessionMode: SessionMode,
+      started: CountDownLatch,
+      release: CountDownLatch): ConcurrentExecution = {
+    val failures = new ConcurrentLinkedQueue[Throwable]()
+    val threads = (1 to 2).map { index =>
+      new Thread(new Runnable {
+        override def run(): Unit = {
+          try {
+            val result = engine.run(tenant, s"select $index as id", 10, sessionMode)
+            if (!result.success) {
+              failures.add(new AssertionError(result.statements.flatMap(_.error).mkString("\n")))
+            }
+          } catch {
+            case error: Throwable => failures.add(error)
+          }
+        }
+      }, s"sparkone-session-mode-test-$index")
+    }
+
+    threads.foreach(_.start())
+    val concurrent = started.await(3, TimeUnit.SECONDS)
+    release.countDown()
+    threads.foreach(_.join(5000))
+    threads.filter(_.isAlive).foreach { thread =>
+      failures.add(new AssertionError(s"Thread ${thread.getName} did not finish"))
+      thread.interrupt()
+    }
+    new ConcurrentExecution(concurrent, failures)
+  }
+
   private def withSystemProperties[T](values: Map[String, String])(body: => T): T = {
     val previous = values.keys.map(key => key -> sys.props.get(key)).toMap
     values.foreach { case (key, value) => sys.props.put(key, value) }
@@ -683,6 +841,33 @@ final class SparkOneEngineTest {
     private def statement: Statement = proxy(classOf[Statement]) { method =>
       method.getName match {
         case "executeQuery" => resultSet
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+
+    val connection: Connection = proxy(classOf[Connection]) { method =>
+      method.getName match {
+        case "createStatement" => statement
+        case "isClosed" => Boolean.box(closed)
+        case "close" =>
+          closed = true
+          null
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+  }
+
+  private final class BlockingJdbcConnection(started: CountDownLatch, release: CountDownLatch) {
+    @volatile var closed: Boolean = false
+
+    private def statement: Statement = proxy(classOf[Statement]) { method =>
+      method.getName match {
+        case "execute" =>
+          started.countDown()
+          if (!release.await(5, TimeUnit.SECONDS)) {
+            throw new SQLException("Timed out waiting to release test statement")
+          }
+          Boolean.box(false)
         case _ => defaultValue(method.getReturnType)
       }
     }
@@ -787,4 +972,8 @@ final class SparkOneEngineTest {
     else if (returnType == java.lang.Character.TYPE) Char.box(0.toChar)
     else null
   }
+
+  private final class ConcurrentExecution(
+      val concurrent: Boolean,
+      val failures: ConcurrentLinkedQueue[Throwable])
 }

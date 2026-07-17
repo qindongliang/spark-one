@@ -6,6 +6,8 @@ const summary = document.getElementById('summary');
 const compileButton = document.getElementById('compile');
 const runButton = document.getElementById('run');
 const engineSelect = document.getElementById('engine');
+const sessionModeControl = document.getElementById('session-mode-control');
+const sessionModeSelect = document.getElementById('session-mode');
 const loginScreen = document.getElementById('login-screen');
 const loginForm = document.getElementById('login-form');
 const loginError = document.getElementById('login-error');
@@ -23,6 +25,7 @@ compileButton.addEventListener('click', () => submit('/api/compile'));
 runButton.addEventListener('click', () => submit('/api/run'));
 loginForm.addEventListener('submit', login);
 logoutButton.addEventListener('click', logout);
+engineSelect.addEventListener('change', updateSessionModeControl);
 limit.addEventListener('input', () => {
   limitTouched = true;
 });
@@ -123,7 +126,8 @@ async function submit(path) {
       body: JSON.stringify({
         engine: selectedEngine(),
         script: scope.script,
-        limit: Number(limit.value || appConfig.previewMaxRows)
+        limit: Number(limit.value || appConfig.previewMaxRows),
+        sessionMode: selectedSessionMode()
       })
     });
     const data = await res.json();
@@ -156,16 +160,29 @@ function renderEngines(engines) {
     const option = document.createElement('option');
     option.value = engine.id;
     option.textContent = engine.label || engine.id;
+    option.dataset.engineType = engine.engineType || engine.id;
     option.selected = engine.id === appConfig.defaultEngine;
     engineSelect.appendChild(option);
   }
   engineSelect.hidden = available.length <= 1;
   const label = engineSelect.closest('label');
   if (label) label.hidden = available.length <= 1;
+  updateSessionModeControl();
 }
 
 function selectedEngine() {
   return engineSelect && engineSelect.value ? engineSelect.value : appConfig.defaultEngine;
+}
+
+function updateSessionModeControl() {
+  const option = engineSelect.options[engineSelect.selectedIndex];
+  const isKyuubi = option && option.dataset.engineType === 'kyuubi';
+  sessionModeControl.hidden = !isKyuubi;
+  if (!isKyuubi) sessionModeSelect.value = 'tenant_shared';
+}
+
+function selectedSessionMode() {
+  return sessionModeControl.hidden ? 'tenant_shared' : sessionModeSelect.value;
 }
 
 function createEditor(textarea) {
@@ -219,6 +236,7 @@ function setBusy(busy) {
   compileButton.disabled = busy;
   runButton.disabled = busy;
   engineSelect.disabled = busy;
+  sessionModeSelect.disabled = busy;
   statusText.textContent = busy ? 'Working' : 'Ready';
 }
 

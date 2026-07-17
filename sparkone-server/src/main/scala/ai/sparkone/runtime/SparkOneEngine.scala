@@ -16,7 +16,11 @@ trait SparkOneEngine extends AutoCloseable {
   def engineType: String
   def capabilities: EngineCapabilities
   def compile(tenant: TenantContext, script: String): Seq[CompiledStatement]
-  def run(tenant: TenantContext, script: String, limit: Int = PreviewConfig.current.maxRows): RunResult
+  def run(
+      tenant: TenantContext,
+      script: String,
+      limit: Int = PreviewConfig.current.maxRows,
+      sessionMode: SessionMode = SessionMode.Default): RunResult
   def previewTable(tenant: TenantContext, table: String, limit: Int = PreviewConfig.current.maxRows): StatementResult
 }
 
@@ -66,7 +70,15 @@ final class LocalSparkEngine(
     }
   }
 
-  override def run(tenant: TenantContext, script: String, limit: Int): RunResult = {
+  override def run(
+      tenant: TenantContext,
+      script: String,
+      limit: Int,
+      sessionMode: SessionMode): RunResult = {
+    if (sessionMode != SessionMode.TenantShared) {
+      throw new IllegalArgumentException(
+        s"Local engine does not support sessionMode=${sessionMode.name}; use tenant_shared")
+    }
     withLocalProperties {
       delegate.run(tenant, script, limit)
     }
@@ -144,88 +156,105 @@ final class KyuubiJdbcEngine(
     }
   }
 
-  override def run(tenant: TenantContext, script: String, limit: Int): RunResult = {
-    val session = tenantSession(tenant)
-    session.lock.synchronized {
-      val previewLimit = PreviewConfig.current.clampRows(Some(limit))
-      val sources = compiler.splitStatements(script)
-      val variables = mutable.LinkedHashMap[String, String]()
-      val results: Seq[StatementResult] = sources.zipWithIndex.map { case (source, offset) =>
-        val started = System.nanoTime()
-        var statement: Option[CompiledStatement] = None
+  override def run(
+      tenant: TenantContext,
+      script: String,
+      limit: Int,
+      sessionMode: SessionMode): RunResult = {
+    sessionMode match {
+      case SessionMode.TenantShared =>
+        runWithSession(tenantSession(tenant), script, limit)
+      case SessionMode.RunIsolated =>
+        val session = new TenantJdbcSession(tenant)
         try {
-          val compiledStatement = compiler.compileStatementWithVariables(tenant, source, variables.toMap)
-          statement = Some(compiledStatement)
-          validateSupported(compiledStatement)
-          val executableStatement = prepareWriteStatement(session, compiledStatement)
-          statement = Some(executableStatement)
-          execute(session, executableStatement, variables, previewLimit, offset + 1, started)
-        } catch {
-          case e: Exception =>
-            val sourceSummary = statement.map(_.source).getOrElse(source)
-            val sqlSummary = statement.map(_.sql).getOrElse(source)
-            logger.error(
-              s"Kyuubi statement ${offset + 1} failed, engine=$id, tenant=${session.tenant.username}, " +
-                s"source=${summarizeSql(sourceSummary)}, " +
-                s"sql=${summarizeSql(sqlSummary)}, reason=${errorMessage(e)}",
-              e)
-            StatementResult(
-              index = offset + 1,
-              source = sourceSummary,
-              sql = sqlSummary,
-              success = false,
-              schema = Nil,
-              rows = Nil,
-              rowCount = 0,
-              truncated = false,
-              previewTable = None,
-              durationMs = elapsedMs(started),
-              error = Some(errorMessage(e)))
+          runWithSession(session, script, limit)
+        } finally {
+          closeConnection(session)
         }
-      }
-
-      val success = results.forall(_.success)
-      val visibleResults =
-        if (success && results.nonEmpty && results.forall(_.previewTable.nonEmpty)) results.takeRight(1)
-        else results
-      RunResult(success, visibleResults)
     }
+  }
+
+  private def runWithSession(
+      session: TenantJdbcSession,
+      script: String,
+      limit: Int): RunResult = {
+    val previewLimit = PreviewConfig.current.clampRows(Some(limit))
+    val sources = compiler.splitStatements(script)
+    val variables = mutable.LinkedHashMap[String, String]()
+    val results: Seq[StatementResult] = sources.zipWithIndex.map { case (source, offset) =>
+      val started = System.nanoTime()
+      var statement: Option[CompiledStatement] = None
+      try {
+        val compiledStatement = compiler.compileStatementWithVariables(
+          session.tenant,
+          source,
+          variables.toMap)
+        statement = Some(compiledStatement)
+        validateSupported(compiledStatement)
+        val executableStatement = prepareWriteStatement(session, compiledStatement)
+        statement = Some(executableStatement)
+        execute(session, executableStatement, variables, previewLimit, offset + 1, started)
+      } catch {
+        case e: Exception =>
+          val sourceSummary = statement.map(_.source).getOrElse(source)
+          val sqlSummary = statement.map(_.sql).getOrElse(source)
+          logger.error(
+            s"Kyuubi statement ${offset + 1} failed, engine=$id, tenant=${session.tenant.username}, " +
+              s"source=${summarizeSql(sourceSummary)}, " +
+              s"sql=${summarizeSql(sqlSummary)}, reason=${errorMessage(e)}",
+            e)
+          StatementResult(
+            index = offset + 1,
+            source = sourceSummary,
+            sql = sqlSummary,
+            success = false,
+            schema = Nil,
+            rows = Nil,
+            rowCount = 0,
+            truncated = false,
+            previewTable = None,
+            durationMs = elapsedMs(started),
+            error = Some(errorMessage(e)))
+      }
+    }
+
+    val success = results.forall(_.success)
+    val visibleResults =
+      if (success && results.nonEmpty && results.forall(_.previewTable.nonEmpty)) results.takeRight(1)
+      else results
+    RunResult(success, visibleResults)
   }
 
   override def previewTable(tenant: TenantContext, table: String, limit: Int): StatementResult = {
     val session = tenantSession(tenant)
-    session.lock.synchronized {
-      val started = System.nanoTime()
-      val previewLimit = PreviewConfig.current.clampRows(Some(limit))
-      val sql = s"SELECT * FROM `${table.replace("`", "``")}` LIMIT ${previewLimit + 1}"
-      withStatement(session) { statement =>
-        val resultSet = statement.executeQuery(sql)
-        try {
-          val result = collectResultSet(resultSet, previewLimit)
-          StatementResult(
-            index = 1,
-            source = table,
-            sql = sql,
-            success = true,
-            schema = result.schema,
-            rows = result.rows,
-            rowCount = result.rows.size,
-            truncated = result.truncated,
-            previewTable = Some(table),
-            durationMs = elapsedMs(started),
-            error = None)
-        } finally {
-          resultSet.close()
-        }
+    val started = System.nanoTime()
+    val previewLimit = PreviewConfig.current.clampRows(Some(limit))
+    val sql = s"SELECT * FROM `${table.replace("`", "``")}` LIMIT ${previewLimit + 1}"
+    withStatement(session) { statement =>
+      val resultSet = statement.executeQuery(sql)
+      try {
+        val result = collectResultSet(resultSet, previewLimit)
+        StatementResult(
+          index = 1,
+          source = table,
+          sql = sql,
+          success = true,
+          schema = result.schema,
+          rows = result.rows,
+          rowCount = result.rows.size,
+          truncated = result.truncated,
+          previewTable = Some(table),
+          durationMs = elapsedMs(started),
+          error = None)
+      } finally {
+        resultSet.close()
       }
     }
   }
 
   override def close(): Unit = {
     tenantSessions.values.foreach { session =>
-      session.lock.synchronized {
-        closeConnection(session)
-      }
+      closeConnection(session)
     }
     tenantSessions.clear()
   }
@@ -437,39 +466,67 @@ final class KyuubiJdbcEngine(
       body: Statement => T,
       retryOnReconnect: Boolean): T = {
     var statement: Statement = null
+    var currentConnection: Connection = null
     val hadConnection = session.connectionRef != null
     try {
-      statement = connection(session).createStatement()
+      currentConnection = connection(session)
+      statement = currentConnection.createStatement()
       body(statement)
     } catch {
       case NonFatal(e) if retryOnReconnect && hadConnection && shouldReconnect(e) =>
         logger.warn(
           s"Kyuubi connection for engine $id and tenant ${session.tenant.username} is stale, " +
             s"reconnecting once: ${errorMessage(e)}")
-        closeConnection(session)
+        invalidateConnection(session, currentConnection)
         withStatement(session, body, retryOnReconnect = false)
       case NonFatal(e) =>
         if (shouldReconnect(e)) {
-          closeConnection(session)
+          invalidateConnection(session, currentConnection)
         }
         throw e
     } finally {
-      closeStatement(session, statement)
+      closeStatement(session, currentConnection, statement)
     }
   }
 
   private def connection(session: TenantJdbcSession): Connection = {
-    if (session.connectionRef == null || session.connectionRef.isClosed) {
-      session.connectionRef = connectionFactory(config)
-      logger.info(
-        s"Connected logical tenant ${session.tenant.username} to Kyuubi engine $id at ${redactJdbcUrl(config.url)}")
+    var current = session.connectionRef
+    if (current == null || current.isClosed) {
+      session.connectionLock.synchronized {
+        current = session.connectionRef
+        if (current == null || current.isClosed) {
+          current = connectionFactory(config)
+          session.connectionRef = current
+          logger.info(
+            s"Connected logical tenant ${session.tenant.username} to Kyuubi engine $id at ${redactJdbcUrl(config.url)}")
+        }
+      }
     }
-    session.connectionRef
+    current
   }
 
   private def closeConnection(session: TenantJdbcSession): Unit = {
-    val current = session.connectionRef
-    session.connectionRef = null
+    val current = session.connectionLock.synchronized {
+      val connection = session.connectionRef
+      session.connectionRef = null
+      connection
+    }
+    closeJdbcConnection(current)
+  }
+
+  private def invalidateConnection(session: TenantJdbcSession, expected: Connection): Unit = {
+    val shouldClose = session.connectionLock.synchronized {
+      if (expected != null && (session.connectionRef eq expected)) {
+        session.connectionRef = null
+        true
+      } else {
+        false
+      }
+    }
+    if (shouldClose) closeJdbcConnection(expected)
+  }
+
+  private def closeJdbcConnection(current: Connection): Unit = {
     if (current != null) {
       try {
         current.close()
@@ -480,7 +537,10 @@ final class KyuubiJdbcEngine(
     }
   }
 
-  private def closeStatement(session: TenantJdbcSession, statement: Statement): Unit = {
+  private def closeStatement(
+      session: TenantJdbcSession,
+      connection: Connection,
+      statement: Statement): Unit = {
     if (statement != null) {
       try {
         statement.close()
@@ -488,7 +548,7 @@ final class KyuubiJdbcEngine(
         case NonFatal(e) =>
           logger.warn(s"Failed to close Kyuubi statement for engine $id: ${errorMessage(e)}")
           if (shouldReconnect(e)) {
-            closeConnection(session)
+            invalidateConnection(session, connection)
           }
       }
     }
@@ -534,7 +594,7 @@ final class KyuubiJdbcEngine(
 }
 
 private final class TenantJdbcSession(val tenant: TenantContext) {
-  val lock: AnyRef = new AnyRef
+  val connectionLock: AnyRef = new AnyRef
   @volatile var connectionRef: Connection = _
 }
 

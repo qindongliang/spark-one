@@ -16,6 +16,14 @@ engines {
     spark {
       master = "local[*]"
     }
+
+    overwrite {
+      zkConnect = "127.0.0.1:2181"
+      zkRoot = "/sparkone/overwrite"
+      workspaceRoot = "/public/sparkone/user"
+      zkSessionTimeoutMs = 60000
+      zkConnectionTimeoutMs = 15000
+    }
   }
 }
 ```
@@ -70,6 +78,15 @@ engines {
 - `spark.kerberos.principal` -> `engines.local.spark.kerberos.principal`
 - `spark.kerberos.keytab` -> `engines.local.spark.kerberos.keytab`
 - `java.security.krb5.conf` -> `engines.local.kerberos.krb5Conf`
+- `spark.sparkone.overwrite.zk.connect` -> `engines.local.overwrite.zkConnect`
+- `spark.sparkone.overwrite.zk.root` -> `engines.local.overwrite.zkRoot`
+- `spark.sparkone.overwrite.workspaceRoot` -> `engines.local.overwrite.workspaceRoot`
+- `spark.sparkone.overwrite.zk.sessionTimeoutMs` -> `engines.local.overwrite.zkSessionTimeoutMs`
+- `spark.sparkone.overwrite.zk.connectionTimeoutMs` -> `engines.local.overwrite.zkConnectionTimeoutMs`
+
+Local runtime 会直接注册 `SparkOneHdfsOverwriteExtensions`。没有配置 `zkConnect` 时，受控 HDFS overwrite 会 fail closed；查询、catalog append 和其他只读能力不受影响。
+
+Local engine 是单进程测试台，仍使用一个 SparkSession 和全局执行锁，只接受 `sessionMode=tenant_shared`，不承诺多租户并发隔离。`run_isolated` 是生产 Kyuubi 路径的能力，Local 收到该模式会明确拒绝，避免给定时任务提供错误的隔离语义。
 
 ## 相关文档
 

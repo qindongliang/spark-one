@@ -38,9 +38,9 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 
 `tenant` 来自服务端登录 session。页面用户名登录只是开发测试阶段的逻辑租户选择；Kyuubi/Spark 仍使用启动配置中的固定 keytab 服务账号执行，租户身份只用于 SparkOne 权限决策和 workspace 计算。
 
-## 当前阶段状态
+## 当前实现状态
 
-第二阶段、3A 及 3B 已经实现：
+第二阶段、3A、3B 及受控 HDFS overwrite 已经实现：
 
 - Hive、Doris、MySQL append 生成对应的 catalog SQL 或 runtime adapter 计划。
 - Hive、Doris、MySQL overwrite 在编译阶段永久拒绝。
@@ -55,12 +55,8 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 - Kyuubi 在 Catalog append 前依次检查目标 schema、源 schema，并对最终显式列 `INSERT` 执行 `EXPLAIN`；任何一步失败都不会提交写语句。
 - Catalog append 使用 Spark 3.3 已支持的 column list 语法，不做 Spark 版本分支；当前 Kyuubi 远端支持范围是 Spark 3.3.x–3.5.x。
 - Kyuubi `save` 写语句遇到连接异常时不会自动重试。错误会明确提示写入状态未知，需要人工核查目标后再决定是否重提。
-
-当前尚未开放：
-
-- 受控 HDFS staging overwrite executor。
-
-因此，只有受控 HDFS overwrite 属于“矩阵允许但 executor 尚未实现”的能力，当前会 fail closed 并提示 staging executor 尚未就绪。文件 append 以及本地/S3/OSS 写入属于固定策略拒绝，不提供 SQL option 或 HOCON 放行开关。
+- 受控 HDFS overwrite 编译为 SparkOne 内部命令，由独立 Spark extension 在 Spark driver 内完成 ZK 排他、staging 写入、发布、回滚和清理。
+- 文件 append 以及本地/S3/OSS 写入仍属于固定策略拒绝，不提供 SQL option 或 HOCON 放行开关。
 
 Hive、Doris、MySQL append 的受控执行顺序为：
 
@@ -84,7 +80,7 @@ DSL 文件写入只接受相对路径，例如：
 save overwrite city_stats as parquet.`reports/daily`;
 ```
 
-后续 staging executor 会把它解析到：
+Spark extension 会把它解析到：
 
 ```text
 /public/sparkone/user/${username}/reports/daily
@@ -102,6 +98,39 @@ reports/../daily
 ```
 
 客户端不能直接提交完整 workspace 路径，也不能提交其他用户名。最终绝对路径只能由服务端根据当前 `TenantContext` 计算。
+
+## HDFS overwrite 执行链路
+
+以租户 `alice` 和目标 `reports/daily` 为例，Spark driver 内的路径为：
+
+```text
+final   = /public/sparkone/user/alice/reports/daily
+work    = /public/sparkone/user/alice/reports/.sparkone-overwrite-<targetHash>
+staging = <work>/staging
+backup  = <work>/backup
+lock    = /sparkone/overwrite/alice/reports~daily--<qualifiedFinalPathSha256>
+value   = operationId=<uuid> + qualified target
+```
+
+执行顺序固定为：
+
+```text
+创建目标级 ZK ephemeral node
+-> 恢复或清理同目标上次中断留下的固定 work 目录
+-> DataFrameWriter overwrite 到 staging
+-> final rename 到 backup（final 已存在时）
+-> staging rename 到 final
+-> 删除 backup/work
+-> 释放 ZK node 和 session
+```
+
+锁节点按“租户父节点 + 可读相对路径 + 完整 qualified path SHA-256”组织。可读路径只用于展示，会清理特殊字符并限制长度；锁唯一性仍完全由最终 qualified HDFS path 的完整 hash 保证。临时节点 value 只保存 `operationId` 和完整 qualified target，租户可从节点层级识别。
+
+锁粒度是最终 qualified HDFS path：同一目标并发 overwrite 立即失败，不同目标互不影响。冲突错误会返回现有锁的 `lockPath`、`operationId` 和 `target`。锁覆盖 staging、发布、回滚和清理全过程；Spark driver 退出或 session 丢失后 ephemeral node 由 ZooKeeper 删除。固定 work 目录不会无限增长，下次取得锁的任务会先恢复 backup，再清理残留 staging。
+
+staging 位于正式目标的同级隐藏目录，不会被读取正式 `final` path 的查询命中。发布依赖同一 HDFS FileSystem 内的 rename；`workspaceRoot` 不应跨文件系统或指向 S3/OSS 等对象存储。
+
+ZK 地址、ZK root、workspace root 和 HDFS 认证均由平台配置注入，不能通过 `SAVE OPTIONS` 传入。`path/url/user/password/token/access key/fs.*` 等敏感或重定向类 option 会被拒绝。
 
 ## 文件 append 产品边界
 
@@ -161,7 +190,7 @@ save overwrite source_view as parquet.`/tmp/target`;
 save overwrite source_view as parquet.`s3a://bucket/target`;
 ```
 
-应识别为受控 HDFS，但因 executor 尚未开放而拒绝：
+应编译并执行为受控 HDFS overwrite：
 
 ```sql
 save overwrite source_view as parquet.`reports/daily`;

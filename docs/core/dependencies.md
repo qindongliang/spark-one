@@ -9,6 +9,7 @@
 - CodeMirror WebJar: `5.65.19`
 - Jackson Scala module: `2.15.2`
 - HOCON parser: Lightbend Config `com.typesafe:config 1.4.3`
+- Apache Curator: `2.13.0`，与 Spark 3.3.x/3.5.x 发行依赖保持兼容
 - SLF4J API: `2.0.7`
 - JUnit: `4.13.2`
 
@@ -43,6 +44,11 @@ Shade jar：
 - provider 别名不要写死在前端或 runtime，统一放在 `DataSourceResolver`。
 - 外部 provider 在 local 模式通过 `engines.local.jars.packages`、`engines.local.jars.jars` 管理；Kyuubi 模式放到 Kyuubi/Spark engine classpath。
 - shade 保留 `ServicesResourceTransformer`，仅用于未来确有必要随主包合并 service 文件的场景。
+
+Spark engine 扩展依赖：
+
+- `sparkone-hdfs-overwrite-extension_2.12` 将 Spark SQL、Curator 和 SLF4J 标记为 `provided`，部署到 Kyuubi 时复用 Spark/Hadoop engine classpath，避免重复打包造成版本冲突。
+- Local server 通过 Maven reactor 依赖该模块并直接注册 extension；Kyuubi engine 需要单独部署扩展 JAR 并配置 `spark.sql.extensions`。
 
 配置文件依赖：
 

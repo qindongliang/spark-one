@@ -39,7 +39,7 @@ SELECT 'SAVE MYSQL' AS sparkone_action, 'city_stats TO city_stats' AS sparkone_t
 SELECT 'SAVE CATALOG' AS sparkone_action, 'city_stats TO doris.app.city_stats' AS sparkone_target;
 ```
 
-受控 HDFS overwrite 会先生成 `WritePlan` 并通过固定能力矩阵，但当前 staging executor 尚未开放，因此上面的 `reports/users_out` 会在 SQL 渲染阶段 fail closed，不会生成可执行 SQL。
+受控 HDFS overwrite 会先生成 `WritePlan` 并通过固定能力矩阵，再编译为版本化内部命令。Local 或 Kyuubi 的 Spark extension 在 driver 内解析该命令，执行 ZK 排他、staging 写入和 HDFS rename 发布；它不是新的用户 SQL 语法。Compile/Run API 在返回页面前会把内部 Base64 payload 转成可读的 `MANAGED HDFS OVERWRITE` 摘要，实际提交给 Spark 的命令保持不变。
 
 普通 Spark SQL 原样透传：
 
@@ -74,7 +74,7 @@ group by city;
 - `save append` 写 Hive、MySQL、Doris 时要求目标表已存在；SparkOne 不自动建表，目标表和结构变更必须由平台外的 Hive/Doris/MySQL 管理入口完成。
 - Hive、Doris、MySQL append 在执行前要求源和目标列名集合完全一致，并在写入前校验类型兼容；写入统一按目标列顺序投影，不按列位置映射，也不为缺失 nullable 列自动补 `NULL`。
 - compiler 对每条 `save` 先生成携带逻辑租户、目标分类和执行类型的 `WritePlan`。Catalog 最终 SQL 延迟到 runtime 取得 schema 后渲染，Compile 接口只展示无副作用的安全占位 SQL。
-- 已识别的文件 provider 只有相对路径可进入受控 HDFS 分类；所有文件 append 永久拒绝。绝对路径和 URI 均属于 external path，本地文件、S3、OSS 等 external path 的 append/overwrite 都永久拒绝。受控 HDFS overwrite 在 staging executor 就绪前继续 fail closed。
+- 已识别的文件 provider 只有相对路径可进入受控 HDFS overwrite；所有文件 append 永久拒绝。绝对路径和 URI 均属于 external path，本地文件、S3、OSS 等 external path 的 append/overwrite 都永久拒绝。受控 overwrite 缺少 ZK 或 Spark extension 配置时 fail closed。
 - `StatementPolicy` 在 compiler 统一出口使用 Spark `SparkSqlParser` 校验原生只读边界，因此 Local/Kyuubi 的 Compile 和 Run 行为一致。
 - Doris 推荐直接使用标准 Spark SQL：`show namespaces in doris`、`select * from doris.db.table`；裸写 `show databases` 和 `db.table` 仍表示默认 Hive catalog。
 - 不支持 `load/save jdbc`，避免账号密码和连接串散落在 SQL 里。
