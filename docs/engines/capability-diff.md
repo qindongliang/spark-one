@@ -6,7 +6,7 @@
 
 | 功能 | 说明 |
 | --- | --- |
-| 原生 Spark SQL 查询/只读检查 | `select/show/describe/explain/use` 等语句由 compiler 原样交给所选 engine；其他原生 command 在编译阶段统一拒绝。 |
+| 原生 Spark SQL 查询/只读检查 | `select/show/describe/explain/use` 等语句除 `hive` 逻辑 catalog 别名外由 compiler 原样交给所选 engine；其他原生 command 在编译阶段统一拒绝。 |
 | `view name as select ...` | 两边都编译成 `CREATE OR REPLACE TEMPORARY VIEW`，并在各自 session 中生效。 |
 | `set name = literal` | 两边都在 SparkOne runtime 层维护变量 map。 |
 | `set name as select ...` | 两边都执行查询取第一行第一列；local 通过 DataFrame，Kyuubi 通过 JDBC ResultSet。 |

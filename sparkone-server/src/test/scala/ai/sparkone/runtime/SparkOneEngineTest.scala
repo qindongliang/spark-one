@@ -506,7 +506,7 @@ final class SparkOneEngineTest {
   def kyuubiCatalogAppendRunsReadOnlyPreflightBeforeWrite(): Unit = {
     val fake = new RecordingJdbcConnection(
       queryColumns = {
-        case "SELECT * FROM default.target LIMIT 0" => Seq("name", "id")
+        case "SELECT * FROM spark_catalog.default.target LIMIT 0" => Seq("name", "id")
         case "SELECT * FROM source_view LIMIT 0" => Seq("id", "name")
         case _ => Nil
       })
@@ -524,14 +524,16 @@ final class SparkOneEngineTest {
       assertEquals(
         Seq(
           "CREATE OR REPLACE TEMPORARY VIEW source_view AS select 1 as id, 'alice' as name",
-          "SELECT * FROM default.target LIMIT 0",
+          "SELECT * FROM spark_catalog.default.target LIMIT 0",
           "SELECT * FROM source_view LIMIT 0",
-          "EXPLAIN INSERT INTO TABLE default.target (`name`, `id`) " +
+          "EXPLAIN INSERT INTO TABLE spark_catalog.default.target (`name`, `id`) " +
             "SELECT `name`, `id` FROM source_view",
-          "INSERT INTO TABLE default.target (`name`, `id`) SELECT `name`, `id` FROM source_view"),
+          "INSERT INTO TABLE spark_catalog.default.target (`name`, `id`) " +
+            "SELECT `name`, `id` FROM source_view"),
         fake.executedSql)
       assertEquals(
-        "INSERT INTO TABLE default.target (`name`, `id`) SELECT `name`, `id` FROM source_view",
+        "INSERT INTO TABLE spark_catalog.default.target (`name`, `id`) " +
+          "SELECT `name`, `id` FROM source_view",
         result.statements.last.sql)
     } finally {
       engine.close()
@@ -629,8 +631,9 @@ final class SparkOneEngineTest {
   def kyuubiCatalogAppendStopsWhenTargetPreflightFails(): Unit = {
     val fake = new RecordingJdbcConnection(
       queryFailure = sql =>
-        if (sql == "SELECT * FROM default.missing LIMIT 0") Some(new SQLException("TABLE_OR_VIEW_NOT_FOUND"))
-        else None)
+        if (sql == "SELECT * FROM spark_catalog.default.missing LIMIT 0") {
+          Some(new SQLException("TABLE_OR_VIEW_NOT_FOUND"))
+        } else None)
     val engine = kyuubiEngine(_ => fake.connection)
 
     try {
@@ -653,7 +656,7 @@ final class SparkOneEngineTest {
   def kyuubiCatalogAppendStopsWhenSchemaPreflightFails(): Unit = {
     val fake = new RecordingJdbcConnection(
       queryColumns = {
-        case "SELECT * FROM default.target LIMIT 0" => Seq("id", "name")
+        case "SELECT * FROM spark_catalog.default.target LIMIT 0" => Seq("id", "name")
         case "SELECT * FROM source_view LIMIT 0" => Seq("id")
         case _ => Nil
       })
@@ -683,7 +686,7 @@ final class SparkOneEngineTest {
         if (sql.startsWith("EXPLAIN INSERT INTO")) Some(new SQLException("INCOMPATIBLE_DATA_FOR_TABLE"))
         else None,
       queryColumns = {
-        case "SELECT * FROM default.target LIMIT 0" => Seq("id")
+        case "SELECT * FROM spark_catalog.default.target LIMIT 0" => Seq("id")
         case "SELECT * FROM source_view LIMIT 0" => Seq("id")
         case _ => Nil
       })

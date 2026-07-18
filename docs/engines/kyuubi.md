@@ -96,6 +96,7 @@ spark.sparkone.overwrite.zk.connectionTimeoutMs=15000
 
 - 外部 Spark datasource provider jar 应放在 Kyuubi/Spark engine classpath，不放在 SparkOne 主包里。
 - `sparkone-hdfs-overwrite-extension` jar 同样属于 Spark engine classpath，并通过 `spark.sql.extensions` 注册；模块名保持兼容，但 extension 同时承载受控 HDFS load 和 overwrite。
+- 远端 catalog 使用 `<catalog>.<database>.<table>` 三段式；每个连接实例注册独立 catalog，并使用 `mysql_<instance>`、`doris_<instance>` 命名。`hive` 由 SparkOne 编译为内置 `spark_catalog`，不在 Kyuubi 配置伪造同名 catalog。
 - `load mysql` 在 Kyuubi 模式下优先使用 `mysql.\`catalog.db.table\`` 语义，连接信息来自 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`。
 - 无分片参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成远端 catalog SQL。
 - 带 `partitionColumn` 或其他受控大表读取参数时，编译成 `USING sparkone_mysql`，由 provider 在 Spark engine 内复用 catalog 连接配置；只写 `partitionColumn` 时会在远端自动查询 `lowerBound/upperBound`，`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。

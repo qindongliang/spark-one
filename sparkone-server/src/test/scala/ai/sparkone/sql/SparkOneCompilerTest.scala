@@ -135,6 +135,17 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesDorisLoadWithExplicitInstanceCatalog(): Unit = {
+    val statement = compiler.compile(
+      "load doris.`doris_prod.dataagent.users` as users;").head
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW users AS " +
+        "SELECT * FROM doris_prod.dataagent.users",
+      statement.sql)
+  }
+
+  @Test
   def rejectsDorisLoadOptionsBecauseCatalogIsConfiguredOutsideSql(): Unit = {
     try {
       compiler.compile(
@@ -304,11 +315,11 @@ final class SparkOneCompilerTest {
     val statement = compiler.compile("load hive.`default.users` as users;").head
 
     assertEquals(
-      "CREATE OR REPLACE TEMPORARY VIEW users AS SELECT * FROM default.users",
+      "CREATE OR REPLACE TEMPORARY VIEW users AS SELECT * FROM spark_catalog.default.users",
       statement.sql)
     assertEquals(Some("users"), statement.load.map(_.table))
     assertEquals(Some("hive"), statement.load.map(_.format))
-    assertEquals(Some("default.users"), statement.load.map(_.path))
+    assertEquals(Some("spark_catalog.default.users"), statement.load.map(_.path))
   }
 
   @Test
@@ -321,11 +332,11 @@ final class SparkOneCompilerTest {
 
     assertEquals(
       "CREATE OR REPLACE TEMPORARY VIEW active_users AS " +
-        "SELECT * FROM default.users WHERE dt = date '2026-06-17' and status = 'active'",
+        "SELECT * FROM spark_catalog.default.users WHERE dt = date '2026-06-17' and status = 'active'",
       statement.sql)
     assertEquals(Some("active_users"), statement.load.map(_.table))
     assertEquals(
-      Some("default.users WHERE dt = date '2026-06-17' and status = 'active'"),
+      Some("spark_catalog.default.users WHERE dt = date '2026-06-17' and status = 'active'"),
       statement.load.map(_.path))
   }
 
@@ -337,6 +348,16 @@ final class SparkOneCompilerTest {
     } catch {
       case e: CompileException =>
         assertTrue(e.getMessage.contains("hive"))
+    }
+  }
+
+  @Test
+  def rejectsHiveDslPathsThatAreNotDatabaseAndTable(): Unit = {
+    Seq(
+      "load hive.`spark_catalog.default.users` as users;",
+      "save append users as hive.`spark_catalog.default.users`;").foreach { sql =>
+      val error = tryCompile(sql)
+      assertTrue(error.getMessage.contains("hive path must be database.table"))
     }
   }
 
@@ -549,6 +570,62 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def rewritesHiveCatalogAliasInNativeReadOnlySql(): Unit = {
+    val statements = compiler.compile(
+      """show databases in hive;
+        |show namespaces in `hive`;
+        |show tables in /* hive.fake */ hive.default like 'hive.default';
+        |select 'hive.default.users' as source_name, u.id
+        |from hive.default.users u
+        |join `hive`.`analytics`.`orders` o on u.id = o.user_id;
+        |describe table hive.default.users;
+        |show partitions hive.default.users;
+        |""".stripMargin)
+
+    assertEquals("show databases in spark_catalog", statements.head.sql)
+    assertEquals("show namespaces in spark_catalog", statements(1).sql)
+    assertEquals(
+      "show tables in /* hive.fake */ spark_catalog.default like 'hive.default'",
+      statements(2).sql)
+    assertEquals(
+      "select 'hive.default.users' as source_name, u.id\n" +
+        "from spark_catalog.default.users u\n" +
+        "join spark_catalog.`analytics`.`orders` o on u.id = o.user_id",
+      statements(3).sql)
+    assertEquals("describe table spark_catalog.default.users", statements(4).sql)
+    assertEquals("show partitions spark_catalog.default.users", statements(5).sql)
+  }
+
+  @Test
+  def keepsTwoPartHiveDatabaseAndTableAliasesUntouched(): Unit = {
+    val statements = compiler.compile(
+      """select * from hive.users;
+        |select hive.id from default.users hive;
+        |show tables in hive;
+        |""".stripMargin)
+
+    assertEquals("select * from hive.users", statements.head.sql)
+    assertEquals("select hive.id from default.users hive", statements(1).sql)
+    assertEquals("show tables in hive", statements(2).sql)
+  }
+
+  @Test
+  def rewritesHiveCatalogAliasInsideViewAndSqlVariableQueries(): Unit = {
+    val statements = compiler.compile(
+      """view hive_users as select * from hive.default.users;
+        |set user_count as select count(*) from hive.default.users;
+        |""".stripMargin)
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW hive_users AS " +
+        "select * from spark_catalog.default.users",
+      statements.head.sql)
+    assertEquals(
+      Some("select count(*) from spark_catalog.default.users"),
+      statements(1).set.map(_.value))
+  }
+
+  @Test
   def compilesViewAsWithNativeJoinAliases(): Unit = {
     val sql = compiler.compile(
       """view joined_orders as
@@ -592,9 +669,10 @@ final class SparkOneCompilerTest {
     val statement = compiler.compile("save append users as hive.`default.users`;").head
 
     assertEquals(
-      "SELECT 'SAVE CATALOG' AS sparkone_action, 'users TO default.users' AS sparkone_target",
+      "SELECT 'SAVE CATALOG' AS sparkone_action, 'users TO spark_catalog.default.users' AS sparkone_target",
       statement.sql)
     assertEquals(Some(WriteMode.Append), statement.writePlan.map(_.mode))
+    assertEquals(Some("spark_catalog.default.users"), statement.writePlan.map(_.target.identifier))
     assertEquals(Some(WriteTargetKind.HiveCatalog), statement.writePlan.map(_.target.kind))
   }
 
@@ -660,6 +738,26 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesSaveAppendToExplicitDorisInstanceCatalog(): Unit = {
+    val statement = compiler.compile(
+      "save append users as doris.`doris_ads.dataagent.user_stats`;").head
+
+    assertEquals(
+      Some("doris_ads.dataagent.user_stats"),
+      statement.writePlan.map(_.target.identifier))
+  }
+
+  @Test
+  def rejectsDorisDslCatalogWithoutDorisPrefix(): Unit = {
+    Seq(
+      "load doris.`mysql_crm.dataagent.users` as users;",
+      "save append users as doris.`mysql_crm.dataagent.users`;").foreach { sql =>
+      val error = tryCompile(sql)
+      assertTrue(error.getMessage.contains("doris_<instance>.database.table"))
+    }
+  }
+
+  @Test
   def rejectsSaveOverwriteToDorisCatalogTablePermanently(): Unit = {
     val error = tryCompile("save overwrite users as doris.`dataagent.user_stats`;")
     assertTrue(error.getMessage.contains("doris-catalog"))
@@ -695,7 +793,7 @@ final class SparkOneCompilerTest {
 
     assertEquals(Seq("dt", "region"), statement.writePlan.toSeq.flatMap(_.partitionColumns))
     assertEquals(
-      "SELECT 'SAVE CATALOG' AS sparkone_action, 'users TO default.users' AS sparkone_target",
+      "SELECT 'SAVE CATALOG' AS sparkone_action, 'users TO spark_catalog.default.users' AS sparkone_target",
       statement.sql)
   }
 

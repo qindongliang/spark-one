@@ -12,7 +12,8 @@ final class SparkOneCompiler(
     sqlValidator: SqlValidator = SqlValidator.Noop,
     dataSourceResolver: DataSourceResolver = new DataSourceResolver(),
     writePlanner: WritePlanner = new WritePlanner,
-    statementPolicy: StatementPolicy = new StatementPolicy) {
+    statementPolicy: StatementPolicy = new StatementPolicy,
+    hiveCatalogAliasRewriter: HiveCatalogAliasRewriter = new HiveCatalogAliasRewriter) {
   def compile(script: String): Seq[CompiledStatement] = {
     compile(SparkOneCompiler.CompilerTenant, script)
   }
@@ -103,7 +104,7 @@ final class SparkOneCompiler(
     } else {
       val sql = originalText(script, statement).trim
       rejectMalformedSparkOneDsl(sql)
-      CompileResult(sql)
+      CompileResult(hiveCatalogAliasRewriter.rewrite(sql))
     }
   }
 
@@ -112,7 +113,7 @@ final class SparkOneCompiler(
     val valueType =
       if (set.query != null) SetValueType.Sql else SetValueType.Literal
     val value =
-      if (set.query != null) originalText(script, set.query).trim
+      if (set.query != null) hiveCatalogAliasRewriter.rewrite(originalText(script, set.query).trim)
       else stripQuoted(set.value.getText).trim
     if (value.isEmpty) {
       throw new CompileException("SET value must not be empty")
@@ -211,7 +212,7 @@ final class SparkOneCompiler(
 
   private def compileView(script: String, view: SparkOneDslParser.ViewStatementContext): String = {
     val table = SparkOneSqlRender.requireIdentifier(view.table.getText, "VIEW target table")
-    val query = originalText(script, view.sqlStatement()).trim
+    val query = hiveCatalogAliasRewriter.rewrite(originalText(script, view.sqlStatement()).trim)
     SparkOneSqlRender.renderCreateTempViewAsQuery(table, query)
   }
 

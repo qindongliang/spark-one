@@ -37,7 +37,14 @@ final class DataSourceResolver(
       if (options.nonEmpty) {
         throw new CompileException("LOAD doris does not support SQL OPTIONS. Configure Spark Doris Catalog in the selected local engine's catalogs.doris or Kyuubi/Spark engine config.")
       }
-      val identifier = SparkOneSqlRender.renderMultipartIdentifier(s"doris.$path", "LOAD doris table")
+      val identifier = dorisCatalogTable(path, "LOAD")
+      val tableExpression = filter.map(condition => s"$identifier WHERE $condition").getOrElse(identifier)
+      CatalogTableSource(tableExpression)
+    } else if (normalized == "hive") {
+      if (options.nonEmpty) {
+        throw new CompileException("LOAD hive does not support Spark SQL OPTIONS in the MVP compiler")
+      }
+      val identifier = hiveCatalogTable(path, "LOAD")
       val tableExpression = filter.map(condition => s"$identifier WHERE $condition").getOrElse(identifier)
       CatalogTableSource(tableExpression)
     } else if (normalizedCatalogFormats.contains(normalized)) {
@@ -85,8 +92,11 @@ final class DataSourceResolver(
       if (options.nonEmpty) {
         throw new CompileException("SAVE doris does not support SQL OPTIONS. Configure Spark Doris Catalog in the selected local engine's catalogs.doris or Kyuubi/Spark engine config.")
       }
-      val identifier = SparkOneSqlRender.renderMultipartIdentifier(s"doris.$path", "SAVE doris table")
+      val identifier = dorisCatalogTable(path, "SAVE")
       CatalogSaveSource(identifier, SaveTargetType.DorisCatalog, supportsPartitionBy = false)
+    } else if (normalized == "hive") {
+      val identifier = hiveCatalogTable(path, "SAVE")
+      CatalogSaveSource(identifier, SaveTargetType.Catalog, supportsPartitionBy = true)
     } else if (normalizedCatalogFormats.contains(normalized)) {
       val identifier = SparkOneSqlRender.renderMultipartIdentifier(path, "SAVE catalog table")
       CatalogSaveSource(identifier, SaveTargetType.Catalog, supportsPartitionBy = true)
@@ -97,6 +107,28 @@ final class DataSourceResolver(
 
   private def resolveProvider(format: String): String = {
     normalizedProviderAliases.getOrElse(format.toLowerCase, format)
+  }
+
+  private def dorisCatalogTable(path: String, statementType: String): String = {
+    val parts = path.split("\\.", -1)
+    val identifier = parts.length match {
+      case 2 => s"doris.$path"
+      case 3 if parts.head.equalsIgnoreCase("doris") ||
+          parts.head.toLowerCase(Locale.ROOT).startsWith("doris_") => path
+      case _ =>
+        throw new CompileException(
+          s"$statementType doris path must be database.table or doris_<instance>.database.table")
+    }
+    SparkOneSqlRender.renderMultipartIdentifier(identifier, s"$statementType doris table")
+  }
+
+  private def hiveCatalogTable(path: String, statementType: String): String = {
+    if (path.split("\\.", -1).length != 2) {
+      throw new CompileException(s"$statementType hive path must be database.table")
+    }
+    SparkOneSqlRender.renderMultipartIdentifier(
+      s"${HiveCatalogAliasRewriter.SessionCatalog}.$path",
+      s"$statementType hive table")
   }
 
   private def resolveKyuubiMysqlLoad(

@@ -12,7 +12,7 @@ SparkOne DSL + native Spark SQL script
 边界：
 
 - 编译层只负责把少量 DSL 编译成 Spark SQL。
-- 普通 SQL 原样透传，由 Spark parser 和 Spark runtime 处理。
+- 普通 SQL 除 `hive` 到内置 `spark_catalog` 的逻辑别名外原样透传，由 Spark parser 和 Spark runtime 处理。
 - Web 服务默认仍是本地测试台，方便快速 compile/run。
 - 当前用户名登录只创建开发态逻辑租户上下文，不是生产认证；生产身份后续由 RMS 提供。
 - Kyuubi 作为远程 SQL gateway 接入；YARN、Kubernetes、Standalone 等终态由 Kyuubi engine 侧承接，不放进 SparkOne。

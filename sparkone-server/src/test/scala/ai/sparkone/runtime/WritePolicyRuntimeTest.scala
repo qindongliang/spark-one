@@ -27,7 +27,7 @@ final class WritePolicyRuntimeTest {
 
       assertTrue(success.statements.flatMap(_.error).mkString("\n"), success.success)
       assertEquals(
-        "INSERT INTO TABLE default.sparkone_by_name_target (`name`, `id`) " +
+        "INSERT INTO TABLE spark_catalog.default.sparkone_by_name_target (`name`, `id`) " +
           "SELECT `name`, `id` FROM reordered_source",
         success.statements.last.sql)
       assertFalse(success.statements.last.sql.contains("BY NAME"))

@@ -17,11 +17,14 @@ libsvm
 
 文件 provider 的 `load` 只接受当前租户 workspace 下的相对路径，例如 `load parquet.\`extension-test/result\` as result`。Spark extension 会在 driver 内解析为 `/public/sparkone/user/${username}/extension-test/result`；绝对路径、HDFS/S3/OSS URI、路径穿越和内部 overwrite 工作目录都会在编译或执行阶段拒绝。原生 SQL/`view` 不能直接使用文件 provider path relation，必须先通过受控 `load` 注册临时视图。
 
+Catalog 表统一使用 Spark 原生三段式 `<catalog>.<database>.<table>`。一个 catalog 对应一个真实连接实例；多实例名称使用 `<source>_<instance>`，例如 `mysql_dworks.Dworks.cloud_host_info`、`mysql_crm.crm.customer`、`doris_prod.dataagent.r_qa_log`、`doris_ads.dataagent.r_qa_log`。Hive 是唯一例外：用户可以写 `hive.default.some_table`，compiler 会将逻辑别名 `hive` 改写为 Spark 内置 `spark_catalog`。不要引入 `<source>.<instance>.<database>.<table>` 四段式平台协议。
+
 特殊 source：
 
-- `hive` 是 catalog 表语义：`load hive.\`db.table\` as t` 编译成 `CREATE OR REPLACE TEMPORARY VIEW t AS SELECT * FROM db.table`。
-- `load hive.\`db.table\` where "dt = date '2026-06-17'" as t` 会编译成 `SELECT * FROM db.table WHERE ...`；分区裁剪和谓词下推由 Spark/Hive 自身优化能力决定。
-- `save append t as hive.\`db.table\`` 先生成 `WritePlan`，执行时按目标列顺序生成 `INSERT INTO TABLE db.table (目标列...) SELECT 源列... FROM t`；要求目标表已存在且列名集合一致。
+- `hive` 是 `spark_catalog` 的逻辑别名：`show databases in hive`、`show tables in hive.db` 和 `select * from hive.db.table` 会在对应 catalog 语义位置改写为 `spark_catalog`。
+- `load hive.\`db.table\` as t` 编译成 `CREATE OR REPLACE TEMPORARY VIEW t AS SELECT * FROM spark_catalog.db.table`。
+- `load hive.\`db.table\` where "dt = date '2026-06-17'" as t` 会编译成 `SELECT * FROM spark_catalog.db.table WHERE ...`；分区裁剪和谓词下推由 Spark/Hive 自身优化能力决定。
+- `save append t as hive.\`db.table\`` 先生成 `WritePlan`，执行时按目标列顺序生成 `INSERT INTO TABLE spark_catalog.db.table (目标列...) SELECT 源列... FROM t`；要求目标表已存在且列名集合一致。
 - `save overwrite t as hive.\`db.table\`` 由固定能力矩阵永久拒绝，不存在可放开的配置。
 - `partitionBy` 仅用于 catalog 表写入：`save append t as hive.\`db.table\` partitionBy dt` 编译成动态分区插入。
 - SparkOne 不复刻 MLSQL 的 `storage="hive"` / 数据湖替换逻辑，也不开放原生建表/改表语句；目标表由平台外 catalog 治理入口创建和维护。
@@ -33,11 +36,11 @@ libsvm
 - Kyuubi 的 `save append t as mysql.\`analytics.app.target_table\`` 复用远端 Spark JDBC Catalog；`analytics` 是 catalog 名，路径必须为三段式且不接受 SQL `OPTIONS`。
 - 两条 MySQL append 路径都要求目标表已存在、源和目标列名集合完全一致，并在写入前校验类型兼容；源数据按目标列顺序投影，不依赖源列位置。
 - `save overwrite t as mysql.\`analytics.target_table\`` 由固定能力矩阵永久拒绝。
-- `doris` 是 Spark Doris Catalog 名：`select * from doris.db.users` 直接走 Spark 原生 catalog 解析。
-- `show namespaces in doris` 查看 Doris database；裸写 `show databases` 仍查看默认 Hive catalog。
-- `load doris.\`db.users\` as users` 是语法糖，编译成 `CREATE OR REPLACE TEMPORARY VIEW users AS SELECT * FROM doris.db.users`。
+- Doris 多集群分别注册为 Spark Catalog，例如 `doris_prod`、`doris_ads`；`select * from doris_prod.db.users` 直接走 Spark 原生 catalog 解析。
+- `show namespaces in doris_prod` 查看对应 Doris 集群的 database；裸写 `show databases` 仍查看默认 Hive catalog。
+- `load doris.\`db.users\` as users` 保留为默认 `doris` catalog 的兼容语法；多集群使用 `load doris.\`doris_prod.db.users\` as users`，编译成 `CREATE OR REPLACE TEMPORARY VIEW users AS SELECT * FROM doris_prod.db.users`。
 - `load doris.\`db.users\` where "dt = date '2026-06-17'" as users` 会编译成 `SELECT * FROM doris.db.users WHERE ...`；是否源端下推由 Spark Doris Catalog / Connector 的谓词下推能力决定。
-- `save append t as doris.\`db.target\`` 和 Hive 共用显式目标列清单与源列投影，要求目标表已存在且列名集合一致。
+- `save append t as doris.\`db.target\`` 和 Hive 共用显式目标列清单与源列投影；多集群目标使用 `save append t as doris.\`doris_prod.db.target\``。两种写法都要求目标表已存在且列名集合一致。
 - `save overwrite t as doris.\`db.target\`` 由固定能力矩阵永久拒绝。
 - `save doris` 不支持 SQL 里的 Doris 连接 options，也不支持 `partitionBy`；连接和写入参数应放在 Spark Doris Catalog 配置中。
 - `save doris` 不改变 Doris 表模型语义：`DUPLICATE KEY` 会保留所有写入行，`AGGREGATE KEY` 会按 Key 聚合 Value 列，`UNIQUE KEY` 会按 Key UPSERT。重复 append 的最终查询效果由目标表 DDL 决定。
@@ -92,39 +95,39 @@ engines {
 
 这里的 `databaseTerm=SCHEMA` 只用于 Spark 原生 JDBC Catalog。原因是 Spark 执行 `show tables in mysql.app` 时，会把 `app` 作为 JDBC `DatabaseMetaData.getTables` 的 `schemaPattern` 参数传给驱动；而 MySQL Connector/J 默认把 MySQL database 解释为 JDBC catalog，不解释为 schema。加上该参数后，MySQL database 会按 JDBC schema 暴露，`show tables in mysql.app` 才会过滤到 `app` 这个库。
 
-Kyuubi MySQL load/save 首选直接复用远端 Spark JDBC Catalog。Kyuubi/Spark engine 侧按连接注册 catalog，例如 `spark.sql.catalog.analytics`；SparkOne SQL 使用 `mysql.\`catalog.db.table\``，不在 SparkOne 侧保存 MySQL 密钥：
+Kyuubi MySQL load/save 首选直接复用远端 Spark JDBC Catalog。Kyuubi/Spark engine 侧为每个实例注册独立 catalog，例如 `spark.sql.catalog.mysql_dworks`；SparkOne SQL 使用 `mysql.\`catalog.db.table\``，不在 SparkOne 侧保存 MySQL 密钥：
 
 ```properties
-spark.sql.catalog.analytics=org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog
-spark.sql.catalog.analytics.url=jdbc:mysql://192.168.202.187:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false
-spark.sql.catalog.analytics.driver=com.mysql.cj.jdbc.Driver
-spark.sql.catalog.analytics.user=reader
-spark.sql.catalog.analytics.password=change-me
+spark.sql.catalog.mysql_dworks=org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog
+spark.sql.catalog.mysql_dworks.url=jdbc:mysql://192.168.202.187:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false
+spark.sql.catalog.mysql_dworks.driver=com.mysql.cj.jdbc.Driver
+spark.sql.catalog.mysql_dworks.user=reader
+spark.sql.catalog.mysql_dworks.password=change-me
 ```
 
 示例 SQL：
 
 ```sql
-load mysql.`analytics.Dworks.orders`
+load mysql.`mysql_dworks.Dworks.orders`
 where "biz_date = '2026-07-07'"
 as orders;
 
-load mysql.`analytics.Dworks.big_orders`
+load mysql.`mysql_dworks.Dworks.big_orders`
 where "biz_date = '2026-06-10' and status = 'PAID'"
 options partitionColumn="id"
 as orders_big;
 
 save append source_view
-as mysql.`analytics.Dworks.target_table`;
+as mysql.`mysql_dworks.Dworks.target_table`;
 ```
 
 Kyuubi `save mysql` 不使用 `sparkone_mysql` provider，也不接受 SQL `OPTIONS`。执行前通过远端 `LIMIT 0` 读取源/目标 schema，按目标列顺序生成显式 column list `INSERT` 并执行 `EXPLAIN`；最终写 statement 连接中断时不会自动重试。
 
-无 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时，Kyuubi `load mysql.\`analytics.Dworks.orders\`` 编译成远端 catalog SQL：
+无 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时，Kyuubi `load mysql.\`mysql_dworks.Dworks.orders\`` 编译成远端 catalog SQL：
 
 ```sql
 CREATE OR REPLACE TEMPORARY VIEW orders AS
-SELECT * FROM analytics.Dworks.orders WHERE biz_date = '2026-07-07'
+SELECT * FROM mysql_dworks.Dworks.orders WHERE biz_date = '2026-07-07'
 ```
 
 带大表读取参数时，编译成 `sparkone_mysql` provider SQL：
@@ -133,7 +136,7 @@ SELECT * FROM analytics.Dworks.orders WHERE biz_date = '2026-07-07'
 CREATE OR REPLACE TEMPORARY VIEW orders_big
 USING sparkone_mysql
 OPTIONS (
-  catalog 'analytics',
+  catalog 'mysql_dworks',
   dbtable 'Dworks.big_orders',
   whereClauseBase64 '...',
   partitionColumn 'id',
@@ -156,7 +159,7 @@ OPTIONS (
 spark.jars=/path/to/sparkone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar
 ```
 
-provider 在 Spark engine 内读取 `spark.sql.catalog.analytics.*`，再转成 Spark JDBC reader options。SparkOne 不读取 `kyuubi-defaults.conf`，也不会把 `url/user/password` 编进 SQL。
+provider 在 Spark engine 内读取 `spark.sql.catalog.mysql_dworks.*`，再转成 Spark JDBC reader options。SparkOne 不读取 `kyuubi-defaults.conf`，也不会把 `url/user/password` 编进 SQL。
 
 `mysqlLoadProfiles` 仍可作为兼容/治理增强使用，例如给 catalog 起业务别名、设置 `allowedTables` 或 `maxNumPartitions`。第一阶段如果只追求 catalog 使用方式不变，可以直接使用 `mysql.\`catalog.db.table\``，不需要配置 SparkOne 侧 profile。
 

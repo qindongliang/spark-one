@@ -366,7 +366,7 @@ select * from some_table limit 20;
 
 ```sql
 CREATE OR REPLACE TEMPORARY VIEW some_table AS
-SELECT * FROM default.some_table;
+SELECT * FROM spark_catalog.default.some_table;
 ```
 
 Hive 也支持在 `load` 语法糖里追加过滤：
@@ -385,10 +385,19 @@ limit 20;
 
 ```sql
 CREATE OR REPLACE TEMPORARY VIEW some_table_0617 AS
-SELECT * FROM default.some_table WHERE dt = date '2026-06-17';
+SELECT * FROM spark_catalog.default.some_table WHERE dt = date '2026-06-17';
 ```
 
 预期：只返回满足条件的数据。是否触发 Hive 分区裁剪或 Parquet/ORC 谓词下推由 Spark/Hive 自身优化能力决定。
+
+原生只读 SQL 也支持同一个 Hive 逻辑别名：
+
+```sql
+show tables in hive.default;
+select * from hive.default.some_table limit 20;
+```
+
+预期：Compile 分别显示 `show tables in spark_catalog.default` 和 `select * from spark_catalog.default.some_table limit 20`，Run 通过 Kyuubi/Spark 内置 session catalog 查询 Hive。
 
 Doris：
 
@@ -423,7 +432,7 @@ engines {
 show databases;
 ```
 
-查看 Doris 库列表，两种写法都可以：
+查看默认 Doris catalog 的库列表，两种写法都可以：
 
 ```sql
 show namespaces in doris;
@@ -431,6 +440,14 @@ show namespaces in doris;
 
 ```sql
 show databases in doris;
+```
+
+有多个 Doris 集群时，在 Kyuubi/Spark engine 分别注册 `doris_prod`、`doris_ads`，原生 SQL 保持三段式：
+
+```sql
+show tables in doris_prod.dataagent;
+select * from doris_prod.dataagent.r_qa_log limit 10;
+load doris.`doris_ads.dataagent.r_qa_log` as ads_qa_log;
 ```
 
 查看某个 Doris 库下的表列表：
