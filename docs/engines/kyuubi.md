@@ -2,32 +2,194 @@
 
 Kyuubi engine 通过 Kyuubi JDBC 提交 Spark SQL，是 SparkOne 面向远程 SQL gateway 的主路径。SparkOne 不直接管理 YARN、Kubernetes、Standalone、Spark engine classpath、catalog 密钥或执行用户；这些都应放在 Kyuubi/Spark/Hadoop 环境里。
 
-## 配置示例
+## 推荐配置拆分
+
+三类配置分别解决“可信公共能力”“Spark 运行环境”和“SparkOne 路由选择”，不要把同一个参数复制到三套 profile：
+
+| 配置层 | 放置内容 | 不应放置 |
+| --- | --- | --- |
+| `kyuubi-defaults.conf` | Kyuubi 认证与前端、固定 principal/keytab、Catalog 密钥、SparkOne extension、公共 JAR、engine 共享策略、profile advisor | `spark.master`、deploy mode、队列、资源、driver 地址 |
+| `kyuubi-session-<profile>.conf` | subdomain、master、deploy mode、队列、driver 网络、资源、动态分配、event log、TTL | keytab、Catalog 密钥、extension、公共 JAR |
+| `sparkone.conf` | engine id、展示名称、Kyuubi JDBC 地址、profile 名称 | `spark.*` 启动参数、Catalog 密钥、远端 keytab |
+
+这个边界让认证和数据访问配置只维护一次，也让三种运行环境只能由服务端受信任文件定义。`kyuubi.session.conf.restrict.list` 会在 Kyuubi Server 拒绝 JDBC 客户端直接注入 `spark.*` 和 engine 路由参数；`FileSessionConfAdvisor` 在这次校验之后加载管理员维护的 profile。
+
+Kyuubi Server 启动 Spark SQL engine 后，还会把合并后的 profile 作为内部 session 配置传给 engine。engine 默认继承同一份 restrict list，如果继续使用 `spark.*` 通配限制，会把可信 profile 误判为客户端注入并拒绝连接。因此每套受信任 profile 都要将传给 engine 的 `kyuubi.session.conf.restrict.list` 覆写为空。这个覆写发生在 Server 完成外部配置校验之后，不会取消 Kyuubi Server 自身的限制。
+
+### 公共 Kyuubi 配置
+
+`$KYUUBI_CONF_DIR/kyuubi-defaults.conf` 的推荐结构如下。密码和 keytab 路径应使用实际值，并限制该文件仅 Kyuubi 运行账号可读；不要提交到 SparkOne 仓库。
+
+```properties
+# Hadoop/Kerberos
+hadoop.security.authentication              kerberos
+hadoop.security.authorization               true
+hadoop.security.auth_to_local                RULE:[1:$1@$0](odep@HADOOP.COM)s/.*/odep/ DEFAULT
+kyuubi.kinit.principal                       odep@HADOOP.COM
+kyuubi.kinit.keytab                          /etc/security/keytabs/odep.keytab
+
+# 所有 Spark engine 共用的身份、依赖和 SparkOne 扩展
+spark.kerberos.principal                     odep@HADOOP.COM
+spark.kerberos.keytab                        /etc/security/keytabs/odep.keytab
+spark.jars                                   /opt/sparkone/sparkone-hdfs-overwrite-extension.jar,/opt/sparkone/sparkone-mysql-provider.jar,/opt/connectors/spark-doris-connector.jar,/opt/connectors/mysql-connector-j.jar
+spark.driver.userClassPathFirst              true
+spark.executor.userClassPathFirst            true
+spark.sql.extensions                         ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
+spark.sparkone.overwrite.zk.connect          zk-1:2181,zk-2:2181,zk-3:2181
+spark.sparkone.overwrite.zk.root             /sparkone/overwrite
+spark.sparkone.overwrite.workspaceRoot       /public/odep/user
+spark.sparkone.overwrite.zk.sessionTimeoutMs 60000
+spark.sparkone.overwrite.zk.connectionTimeoutMs 15000
+
+# 所有运行环境共用的 Catalog；敏感值只保留在 Kyuubi 主机
+spark.sql.catalog.mysql                      org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog
+spark.sql.catalog.mysql.url                  jdbc:mysql://mysql-host:3306/?databaseTerm=SCHEMA
+spark.sql.catalog.mysql.driver               com.mysql.cj.jdbc.Driver
+spark.sql.catalog.mysql.user                 <mysql-user>
+spark.sql.catalog.mysql.password             <mysql-password>
+spark.sql.catalog.mysql.fetchsize            1000
+spark.sql.catalog.doris                      org.apache.doris.spark.catalog.DorisTableCatalog
+spark.sql.catalog.doris.doris.fenodes        doris-fe-1:8030,doris-fe-2:8030
+spark.sql.catalog.doris.doris.user           <doris-user>
+spark.sql.catalog.doris.doris.password       <doris-password>
+spark.sql.catalog.doris.doris.query.port     9030
+spark.sql.catalog.doris.doris.request.retries 3
+
+# Kyuubi engine 启动日志，以及 Spark UI、YARN 和 event log 中的敏感配置脱敏
+kyuubi.server.redaction.regex                 (?i)secret|password|token|access[.]?key
+spark.redaction.regex                         (?i)secret|password|token|access[.]?key
+
+# Kyuubi 服务和 engine 共享策略
+kyuubi.authentication                        NONE
+kyuubi.frontend.bind.host                    192.168.202.187
+kyuubi.frontend.protocols                    THRIFT_BINARY,REST
+kyuubi.frontend.thrift.binary.bind.port      10009
+kyuubi.frontend.rest.bind.port               10099
+kyuubi.engine.type                           SPARK_SQL
+kyuubi.engine.share.level                    USER
+kyuubi.engine.doAs.enabled                   false
+kyuubi.engine.single.spark.session           false
+
+# 只允许客户端选择管理员定义的 profile，不允许直接改 Spark 或 engine 分组
+kyuubi.session.conf.advisor                  org.apache.kyuubi.session.FileSessionConfAdvisor
+kyuubi.session.conf.file.reload.interval     PT1M
+kyuubi.session.conf.restrict.list            spark.*,kyuubi.engine.share.level,kyuubi.engine.share.level.subdomain,kyuubi.session.conf.restrict.list,kyuubi.session.conf.ignore.list
+```
+
+这里故意不设置 `spark.master`、`spark.submit.deployMode`、`spark.driver.host` 和 YARN 资源参数。`spark.jars` 使用 Kyuubi gateway 本机可读的路径，`spark-submit` 会在 YARN 模式下负责上传和分发；JAR 必须与实际 `SPARK_HOME` 的 Spark/Scala 版本匹配。
+
+`kyuubi.server.redaction.regex` 负责 Kyuubi Server 日志中的 engine 启动命令和配置，`spark.redaction.regex` 负责 Spark UI、YARN 与 event log。两者只影响后续输出，不会清理已有日志，也不会加密 `kyuubi-defaults.conf`；配置文件仍应限制为 Kyuubi 运行账号可读。
+
+### 三套运行 profile
+
+Local profile `$KYUUBI_CONF_DIR/kyuubi-session-local.conf`：
+
+```properties
+kyuubi.engine.share.level.subdomain          local
+kyuubi.session.conf.restrict.list=
+kyuubi.session.idle.timeout                  PT6H
+kyuubi.session.engine.idle.timeout           PT30M
+
+spark.app.name                               SparkOne-Kyuubi-Local
+spark.master                                 local[2]
+spark.driver.host                            192.168.202.187
+spark.driver.bindAddress                     0.0.0.0
+spark.eventLog.enabled                       false
+```
+
+YARN client profile `$KYUUBI_CONF_DIR/kyuubi-session-yarn-client.conf`：
+
+```properties
+kyuubi.engine.share.level.subdomain          yarn-client
+kyuubi.session.conf.restrict.list=
+kyuubi.session.idle.timeout                  PT30M
+kyuubi.session.engine.idle.timeout           PT30M
+
+spark.app.name                               SparkOne-Kyuubi-YarnClient
+spark.master                                 yarn
+spark.submit.deployMode                      client
+spark.yarn.queue                             test
+spark.driver.host                            192.168.202.187
+spark.driver.bindAddress                     0.0.0.0
+spark.driver.memory                          1g
+spark.yarn.am.memory                         512m
+
+spark.dynamicAllocation.enabled              true
+spark.dynamicAllocation.shuffleTracking.enabled true
+spark.dynamicAllocation.minExecutors         0
+spark.dynamicAllocation.initialExecutors     1
+spark.dynamicAllocation.maxExecutors         1
+spark.executor.cores                         1
+spark.executor.memory                        1g
+spark.shuffle.service.enabled                false
+
+spark.eventLog.enabled                       true
+spark.eventLog.dir                           hdfs://nameservice1/tmp/spark/applicationHistory
+```
+
+YARN cluster profile `$KYUUBI_CONF_DIR/kyuubi-session-yarn-cluster.conf`：
+
+```properties
+kyuubi.engine.share.level.subdomain          yarn-cluster
+kyuubi.session.conf.restrict.list=
+kyuubi.session.idle.timeout                  PT30M
+kyuubi.session.engine.idle.timeout           PT30M
+
+spark.app.name                               SparkOne-Kyuubi-YarnCluster
+spark.master                                 yarn
+spark.submit.deployMode                      cluster
+spark.yarn.queue                             test
+spark.driver.memory                          1g
+
+spark.dynamicAllocation.enabled              true
+spark.dynamicAllocation.shuffleTracking.enabled true
+spark.dynamicAllocation.minExecutors         0
+spark.dynamicAllocation.initialExecutors     1
+spark.dynamicAllocation.maxExecutors         1
+spark.executor.cores                         1
+spark.executor.memory                        1g
+spark.shuffle.service.enabled                false
+
+spark.eventLog.enabled                       true
+spark.eventLog.dir                           hdfs://nameservice1/tmp/spark/applicationHistory
+```
+
+当前 YARN NodeManager 没有 Spark external shuffle service，因此这里使用 shuffle tracking。cluster profile 不设置 `spark.driver.host`；driver 由 YARN ApplicationMaster 所在容器发布地址。client profile 的 driver 位于 Kyuubi gateway，YARN NodeManager 必须能访问配置的地址和端口范围。
+
+三个 `subdomain` 不能相同。固定服务账号、`USER` share level 和不同 subdomain 共同形成三套独立的 engine 池；同一 profile 的多个 SparkOne session 会复用对应 engine。
+
+### SparkOne 入口
 
 ```hocon
 engines {
-  default = "kyuubi"
+  default = "kyuubi_yarn_cluster"
 
-  kyuubi {
+  kyuubi_local {
     type = "kyuubi"
     enabled = true
-    label = "Kyuubi"
-    url = "jdbc:kyuubi://kyuubi-host:10009/default"
+    label = "Kyuubi Local"
+    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=local"
+  }
 
-    # 默认不传 user。业务执行身份以 Kyuubi engine 侧配置为准。
-    # 只有 Kyuubi Server 开启客户端认证时，才配置 user/password/options。
-    # user = "sparkone"
-    # password = "change-me"
-    # options {
-    #   kyuubiClientPrincipal = "sparkone@HADOOP.COM"
-    #   kyuubiClientKeytab = "/path/to/sparkone.keytab"
-    #   kyuubiServerPrincipal = "kyuubi/kyuubi-host@HADOOP.COM"
-    # }
+  kyuubi_yarn_client {
+    type = "kyuubi"
+    enabled = true
+    label = "YARN Client"
+    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=yarn-client"
+  }
+
+  kyuubi_yarn_cluster {
+    type = "kyuubi"
+    enabled = true
+    label = "YARN Cluster"
+    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=yarn-cluster"
   }
 }
 ```
 
-SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户。统一执行身份应放在 Kyuubi Server/engine 配置中，例如本地单用户测试可在 Kyuubi 侧设置 `kyuubi.engine.share.level=SERVER`、`kyuubi.engine.doAs.enabled=false`，并由 `spark.kerberos.principal`、`spark.kerberos.keytab` 决定 Spark engine 登录身份。
+`?kyuubi.session.conf.profile=...` 位于 Kyuubi JDBC URL 的 `kyuubiConfs` 段；`#` 后的内容是 Spark/Hive 变量，不能用于选择 profile。SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户；统一执行身份由 Kyuubi 的 `spark.kerberos.principal` 和 `spark.kerberos.keytab` 决定。当前使用固定服务账号时，三个 SparkOne engine 都不需要配置 JDBC `user/password`。
+
+profile 文件在缓存过期后只影响新 session；已经启动的 engine 不会原地切换 master、deploy mode 或资源。修改 profile 后应停止对应旧 engine，再由 SparkOne 新连接按新配置拉起。
 
 ## 交互边界
 
@@ -53,6 +215,13 @@ SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户。统�
 | `run_isolated` | 每次 Run 新建并在结束后关闭 connection | 不支持 | 支持 | 定时任务 |
 
 省略 `sessionMode` 时默认使用 `tenant_shared`。编辑器固定发送该值；定时任务提交方必须显式发送 `run_isolated`，并保证 `view -> select/save` 位于同一次 Run 内。`/api/preview` 只读取租户共享 session，不用于隔离任务。
+
+这里的“长驻 engine”是按需启动、可跨 Run 复用的 YARN Application，不是永久不退出，也不是每个任务启动一个 Application：
+
+- `run_isolated` 在 Run 结束后立即关闭 JDBC session。对应 engine 没有其他 session 时，`kyuubi.session.engine.idle.timeout=PT30M` 开始计时，约 30 分钟后回收；实际时间还会受 engine check interval 影响。
+- `tenant_shared` 会保留 JDBC connection 以维持临时视图。engine 仍有活动 session 时，即使暂时没有 SQL，也不会只按 engine idle TTL 退出；先由 session idle timeout 或 SparkOne 关闭连接释放 session，之后才进入 30 分钟 engine idle 倒计时。
+- 当前 YARN profile 的 session idle 和 engine idle 都是 30 分钟，因此完全空闲后的回收通常接近两段超时之和，而不是“最后一条 SQL 后精确 30 分钟”。Local profile 把 session idle 设为 6 小时，优先保留编辑器状态。
+- engine 被回收后，下一次连接会重新创建同一 profile 的 YARN Application，产生一次冷启动；动态分配只增减该 Application 内的 executor，不会为每个 Run 创建新的 Application。
 
 共享模式只保证单个 Run 内语句顺序，不提供多个并发 Run 之间的脚本级事务。同租户并发修改同名临时视图、临时 UDF、当前 database 或 Spark SQL 配置时，最后生效的操作取决于实际执行顺序。不同目标写入可以并发；相同受控 HDFS overwrite 目标仍由 Spark engine extension 的 ZK 锁保证只有一个任务进入写入流程。
 

@@ -128,11 +128,13 @@ engines {
     }
   }
 
-  kyuubi {
+  # 三个 Kyuubi 入口连接同一个 gateway，只通过受信任 profile 选择运行环境。
+  # Spark master、deploy mode、资源、Catalog、keytab、扩展和依赖 JAR 均由 Kyuubi 侧管理。
+  kyuubi_local {
     type = "kyuubi"
     enabled = false
-    label = "Kyuubi"
-    url = "jdbc:kyuubi://192.168.202.187:10009/default"
+    label = "Kyuubi Local"
+    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=local"
 
     # 默认不传 user，业务执行身份以 Kyuubi engine 侧配置为准。
     # 只有 Kyuubi Server 开启客户端认证时，才配置 user/password/options。
@@ -187,5 +189,19 @@ engines {
     # spark.sparkone.overwrite.zk.connect=zk-1:2181,zk-2:2181
     # spark.sparkone.overwrite.zk.root=/sparkone/overwrite
     # spark.sparkone.overwrite.workspaceRoot=/public/sparkone/user
+  }
+
+  kyuubi_yarn_client {
+    type = "kyuubi"
+    enabled = false
+    label = "YARN Client"
+    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=yarn-client"
+  }
+
+  kyuubi_yarn_cluster {
+    type = "kyuubi"
+    enabled = false
+    label = "YARN Cluster"
+    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=yarn-cluster"
   }
 }

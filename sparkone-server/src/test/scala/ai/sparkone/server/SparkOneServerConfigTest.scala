@@ -361,9 +361,14 @@ final class SparkOneServerConfigTest {
     assertEquals("local", properties("sparkone.engine.default"))
     assertEquals("local", properties("sparkone.engine.local.type"))
     assertEquals("true", properties("sparkone.engine.local.enabled"))
-    assertEquals("kyuubi", properties("sparkone.engine.kyuubi.type"))
-    assertEquals("false", properties("sparkone.engine.kyuubi.enabled"))
-    assertEquals("jdbc:kyuubi://192.168.202.187:10009/default", properties("sparkone.engine.kyuubi.kyuubi.url"))
+    assertEquals("kyuubi", properties("sparkone.engine.kyuubi_local.type"))
+    assertEquals("false", properties("sparkone.engine.kyuubi_local.enabled"))
+    assertEquals("jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=local",
+      properties("sparkone.engine.kyuubi_local.kyuubi.url"))
+    assertEquals("jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=yarn-client",
+      properties("sparkone.engine.kyuubi_yarn_client.kyuubi.url"))
+    assertEquals("jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=yarn-cluster",
+      properties("sparkone.engine.kyuubi_yarn_cluster.kyuubi.url"))
     assertEquals("jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",
       properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.url"))
     assertEquals("1000", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.option.fetchsize"))
