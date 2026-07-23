@@ -131,7 +131,7 @@ value   = operationId=<uuid> + qualified target
 
 锁节点按“租户父节点 + 可读相对路径 + 完整 qualified path SHA-256”组织。可读路径只用于展示，会清理特殊字符并限制长度；锁唯一性仍完全由最终 qualified HDFS path 的完整 hash 保证。临时节点 value 只保存 `operationId` 和完整 qualified target，租户可从节点层级识别。
 
-锁粒度是最终 qualified HDFS path：同一目标并发 overwrite 立即失败，不同目标互不影响。冲突错误会返回现有锁的 `lockPath`、`operationId` 和 `target`。锁覆盖 staging、发布、回滚和清理全过程；Spark driver 退出或 session 丢失后 ephemeral node 由 ZooKeeper 删除。固定 work 目录不会无限增长，下次取得锁的任务会先恢复 backup，再清理残留 staging。
+锁粒度是最终 qualified HDFS path：同一目标并发 overwrite 立即失败，不同目标互不影响。冲突错误会返回现有锁的 `lockPath`、`operationId` 和 `target`。ZooKeeper session 正常期间，锁覆盖 staging、发布、回滚和清理全过程；Spark driver 退出或 session 丢失后 ephemeral node 由 ZooKeeper 删除。固定 work 目录不会无限增长，下次取得锁的任务会先恢复 backup，再清理残留 staging。外置 ZooKeeper 停止或丢失 quorum 时的处理边界见 [资源缩容与停止语义](../engines/resource-lifecycle.md)。
 
 staging 位于正式目标的同级隐藏目录，不会被读取正式 `final` path 的查询命中。发布依赖同一 HDFS FileSystem 内的 rename；`workspaceRoot` 不应跨文件系统或指向 S3/OSS 等对象存储。
 

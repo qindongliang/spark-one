@@ -163,7 +163,7 @@ final class KyuubiJdbcEngine(
       sessionMode: SessionMode): RunResult = {
     sessionMode match {
       case SessionMode.TenantShared =>
-        runWithSession(tenantSession(tenant), script, limit)
+        runWithSession(validatedTenantSession(tenant), script, limit)
       case SessionMode.RunIsolated =>
         val session = new TenantJdbcSession(tenant)
         try {
@@ -181,10 +181,14 @@ final class KyuubiJdbcEngine(
     val previewLimit = PreviewConfig.current.clampRows(Some(limit))
     val sources = compiler.splitStatements(script)
     val variables = mutable.LinkedHashMap[String, String]()
-    val results: Seq[StatementResult] = sources.zipWithIndex.map { case (source, offset) =>
+    val results = mutable.ArrayBuffer.empty[StatementResult]
+    val remaining = sources.iterator.zipWithIndex
+    var continue = true
+    while (continue && remaining.hasNext) {
+      val (source, offset) = remaining.next()
       val started = System.nanoTime()
       var statement: Option[CompiledStatement] = None
-      try {
+      val result = try {
         val compiledStatement = compiler.compileStatementWithVariables(
           session.tenant,
           source,
@@ -216,17 +220,19 @@ final class KyuubiJdbcEngine(
             durationMs = elapsedMs(started),
             error = Some(errorMessage(e)))
       }
+      results += result
+      continue = result.success
     }
 
     val success = results.forall(_.success)
     val visibleResults =
       if (success && results.nonEmpty && results.forall(_.previewTable.nonEmpty)) results.takeRight(1)
-      else results
+      else results.toSeq
     RunResult(success, visibleResults)
   }
 
   override def previewTable(tenant: TenantContext, table: String, limit: Int): StatementResult = {
-    val session = tenantSession(tenant)
+    val session = validatedTenantSession(tenant)
     val started = System.nanoTime()
     val previewLimit = PreviewConfig.current.clampRows(Some(limit))
     val sql = s"SELECT * FROM `${table.replace("`", "``")}` LIMIT ${previewLimit + 1}"
@@ -467,13 +473,12 @@ final class KyuubiJdbcEngine(
       retryOnReconnect: Boolean): T = {
     var statement: Statement = null
     var currentConnection: Connection = null
-    val hadConnection = session.connectionRef != null
     try {
       currentConnection = connection(session)
       statement = currentConnection.createStatement()
       body(statement)
     } catch {
-      case NonFatal(e) if retryOnReconnect && hadConnection && shouldReconnect(e) =>
+      case NonFatal(e) if retryOnReconnect && shouldReconnect(e) =>
         logger.warn(
           s"Kyuubi connection for engine $id and tenant ${session.tenant.username} is stale, " +
             s"reconnecting once: ${errorMessage(e)}")
@@ -591,6 +596,30 @@ final class KyuubiJdbcEngine(
     tenantSessions.getOrElseUpdate(tenant.username, new TenantJdbcSession(tenant))
   }
 
+  private def validatedTenantSession(tenant: TenantContext): TenantJdbcSession = {
+    val session = tenantSession(tenant)
+    val current = session.connectionRef
+    if (current != null && !isConnectionValid(session, current)) {
+      logger.info(
+        s"Kyuubi connection for engine $id and tenant ${tenant.username} failed validation; reconnecting")
+      invalidateConnection(session, current)
+    }
+    session
+  }
+
+  private def isConnectionValid(session: TenantJdbcSession, connection: Connection): Boolean = {
+    try {
+      !connection.isClosed &&
+        connection.isValid(KyuubiJdbcEngine.ConnectionValidationTimeoutSeconds)
+    } catch {
+      case NonFatal(e) =>
+        logger.warn(
+          s"Failed to validate Kyuubi connection for engine $id and tenant " +
+            s"${session.tenant.username}: ${errorMessage(e)}")
+        false
+    }
+  }
+
 }
 
 private final class TenantJdbcSession(val tenant: TenantContext) {
@@ -599,6 +628,8 @@ private final class TenantJdbcSession(val tenant: TenantContext) {
 }
 
 private object KyuubiJdbcEngine {
+  val ConnectionValidationTimeoutSeconds: Int = 5
+
   def openConnection(config: KyuubiJdbcConfig): Connection = {
     Class.forName(config.driver)
     val properties = new Properties()

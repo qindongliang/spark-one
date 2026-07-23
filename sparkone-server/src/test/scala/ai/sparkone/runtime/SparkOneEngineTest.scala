@@ -476,6 +476,88 @@ final class SparkOneEngineTest {
   }
 
   @Test
+  def kyuubiTenantSharedRunReplacesConnectionWhoseServerSessionExpired(): Unit = {
+    val openedConnections = ArrayBuffer.empty[RecordingJdbcConnection]
+    val engine = kyuubiEngine { _ =>
+      val fake = new RecordingJdbcConnection()
+      openedConnections += fake
+      fake.connection
+    }
+
+    try {
+      val first = engine.run(tenant, "select 1 as id", 10, SessionMode.TenantShared)
+      assertTrue(first.statements.flatMap(_.error).mkString("\n"), first.success)
+      assertEquals(1, openedConnections.size)
+
+      openedConnections.head.valid = false
+      val second = engine.run(tenant, "select 2 as id", 10, SessionMode.TenantShared)
+
+      assertTrue(second.statements.flatMap(_.error).mkString("\n"), second.success)
+      assertEquals(2, openedConnections.size)
+      assertEquals(1, openedConnections.head.validationCount)
+      assertTrue(openedConnections.head.closed)
+      assertEquals(Seq("select 1 as id"), openedConnections.head.executedSql)
+      assertEquals(Seq("select 2 as id"), openedConnections.last.executedSql)
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiReadStatementReconnectsWhenFirstConnectionHasInvalidSessionHandle(): Unit = {
+    val openedConnections = ArrayBuffer.empty[RecordingJdbcConnection]
+    val engine = kyuubiEngine { _ =>
+      val connectionIndex = openedConnections.size
+      val fake = new RecordingJdbcConnection(
+        executeFailure = _ =>
+          if (connectionIndex == 0) Some(new SQLException("Invalid SessionHandle [expired]"))
+          else None)
+      openedConnections += fake
+      fake.connection
+    }
+
+    try {
+      val result = engine.run(tenant, "view users as select 1 as id", 10, SessionMode.TenantShared)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(2, openedConnections.size)
+      assertTrue(openedConnections.head.closed)
+      assertEquals(
+        Seq("CREATE OR REPLACE TEMPORARY VIEW users AS select 1 as id"),
+        openedConnections.head.executedSql)
+      assertEquals(openedConnections.head.executedSql, openedConnections.last.executedSql)
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiRunStopsAfterFirstFailedStatement(): Unit = {
+    val fake = new RecordingJdbcConnection(
+      executeFailure = sql =>
+        if (sql == "select missing from unknown_table") {
+          Some(new SQLException("TABLE_OR_VIEW_NOT_FOUND"))
+        } else None)
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """select missing from unknown_table;
+          |select 2 as should_not_run;
+          |""".stripMargin,
+        10,
+        SessionMode.TenantShared)
+
+      assertFalse(result.success)
+      assertEquals(1, result.statements.size)
+      assertEquals(Seq("select missing from unknown_table"), fake.executedSql)
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
   def kyuubiRunIsolatedRunsUseIndependentConnectionsAndCloseThem(): Unit = {
     val started = new CountDownLatch(2)
     val release = new CountDownLatch(1)
@@ -877,6 +959,7 @@ final class SparkOneEngineTest {
       method.getName match {
         case "createStatement" => statement
         case "isClosed" => Boolean.box(closed)
+        case "isValid" => Boolean.box(!closed)
         case "close" =>
           closed = true
           null
@@ -904,6 +987,7 @@ final class SparkOneEngineTest {
       method.getName match {
         case "createStatement" => statement
         case "isClosed" => Boolean.box(closed)
+        case "isValid" => Boolean.box(!closed)
         case "close" =>
           closed = true
           null
@@ -918,7 +1002,9 @@ final class SparkOneEngineTest {
       queryColumns: String => Seq[String] = sql =>
         if (sql.startsWith("SELECT * FROM")) Seq("id") else Nil) {
     val executedSql: ArrayBuffer[String] = ArrayBuffer.empty
-    @volatile private var closed: Boolean = false
+    @volatile var closed: Boolean = false
+    @volatile var valid: Boolean = true
+    @volatile var validationCount: Int = 0
 
     private def resultSet(columns: Seq[String]): ResultSet = proxy(classOf[ResultSet]) { method =>
       method.getName match {
@@ -960,6 +1046,9 @@ final class SparkOneEngineTest {
       method.getName match {
         case "createStatement" => statement
         case "isClosed" => Boolean.box(closed)
+        case "isValid" =>
+          validationCount += 1
+          Boolean.box(valid && !closed)
         case "close" =>
           closed = true
           null

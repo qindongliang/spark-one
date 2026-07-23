@@ -115,13 +115,14 @@ spark.driver.memory                          1g
 spark.yarn.am.memory                         512m
 
 spark.dynamicAllocation.enabled              true
-spark.dynamicAllocation.shuffleTracking.enabled true
+spark.dynamicAllocation.shuffleTracking.enabled false
 spark.dynamicAllocation.minExecutors         0
 spark.dynamicAllocation.initialExecutors     1
 spark.dynamicAllocation.maxExecutors         1
+spark.dynamicAllocation.executorIdleTimeout  60s
 spark.executor.cores                         1
 spark.executor.memory                        1g
-spark.shuffle.service.enabled                false
+spark.shuffle.service.enabled                true
 
 spark.eventLog.enabled                       true
 spark.eventLog.dir                           hdfs://nameservice1/tmp/spark/applicationHistory
@@ -142,19 +143,22 @@ spark.yarn.queue                             test
 spark.driver.memory                          1g
 
 spark.dynamicAllocation.enabled              true
-spark.dynamicAllocation.shuffleTracking.enabled true
+spark.dynamicAllocation.shuffleTracking.enabled false
 spark.dynamicAllocation.minExecutors         0
 spark.dynamicAllocation.initialExecutors     1
 spark.dynamicAllocation.maxExecutors         1
+spark.dynamicAllocation.executorIdleTimeout  60s
 spark.executor.cores                         1
 spark.executor.memory                        1g
-spark.shuffle.service.enabled                false
+spark.shuffle.service.enabled                true
 
 spark.eventLog.enabled                       true
 spark.eventLog.dir                           hdfs://nameservice1/tmp/spark/applicationHistory
 ```
 
-当前 YARN NodeManager 没有 Spark external shuffle service，因此这里使用 shuffle tracking。cluster profile 不设置 `spark.driver.host`；driver 由 YARN ApplicationMaster 所在容器发布地址。client profile 的 driver 位于 Kyuubi gateway，YARN NodeManager 必须能访问配置的地址和端口范围。
+当前集群的 YARN NodeManager 已启用与 Spark 3.3.4 匹配的 `spark_shuffle` auxiliary service，因此 profile 使用 external shuffle service，并显式关闭 shuffle tracking。`spark.shuffle.service.enabled=true` 只提供 shuffle 文件托管能力，必须同时开启 dynamic allocation 才会增减 executor。`spark_shuffle` 运行在 NodeManager 进程内，不会出现独立的 `spark_shuffle` 进程。
+
+cluster profile 不设置 `spark.driver.host`；driver 由 YARN ApplicationMaster 所在容器发布地址。client profile 的 driver 位于 Kyuubi gateway，YARN NodeManager 必须能访问配置的地址和端口范围。
 
 三个 `subdomain` 不能相同。固定服务账号、`USER` share level 和不同 subdomain 共同形成三套独立的 engine 池；同一 profile 的多个 SparkOne session 会复用对应 engine。
 
@@ -189,7 +193,7 @@ engines {
 
 `?kyuubi.session.conf.profile=...` 位于 Kyuubi JDBC URL 的 `kyuubiConfs` 段；`#` 后的内容是 Spark/Hive 变量，不能用于选择 profile。SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户；统一执行身份由 Kyuubi 的 `spark.kerberos.principal` 和 `spark.kerberos.keytab` 决定。当前使用固定服务账号时，三个 SparkOne engine 都不需要配置 JDBC `user/password`。
 
-profile 文件在缓存过期后只影响新 session；已经启动的 engine 不会原地切换 master、deploy mode 或资源。修改 profile 后应停止对应旧 engine，再由 SparkOne 新连接按新配置拉起。
+profile 文件在缓存过期后只影响新连接的 engine 启动配置和 backend session 配置；它不会重配 Kyuubi Server 已初始化的 frontend SessionManager，已经启动的 engine 也不会原地切换 master、deploy mode 或资源。修改 profile 后应停止对应旧 engine，再由 SparkOne 新连接按新配置拉起。
 
 ## 交互边界
 
@@ -209,19 +213,25 @@ profile 文件在缓存过期后只影响新 session；已经启动的 engine �
 
 `POST /api/run` 支持请求级 `sessionMode`，不需要创建或管理显式 session id：
 
-| 值 | Kyuubi JDBC session | 跨 Run 临时视图 | 同租户并发 | 用途 |
-| --- | --- | --- | --- | --- |
-| `tenant_shared` | 按逻辑租户复用一个 connection | 支持 | 支持 | SQL 编辑器 |
-| `run_isolated` | 每次 Run 新建并在结束后关闭 connection | 不支持 | 支持 | 定时任务 |
+| 值 | Kyuubi JDBC session | 关闭方式 | 跨 Run 临时视图 | 同租户并发 | 用途 |
+| --- | --- | --- | --- | --- | --- |
+| `tenant_shared` | 按逻辑租户复用一个 connection | Kyuubi timeout 被动回收 | 支持 | 支持 | SQL 编辑器 |
+| `run_isolated` | 每次 Run 新建 connection | Run 结束时 SparkOne 主动关闭 | 不支持 | 支持 | 定时任务 |
 
 省略 `sessionMode` 时默认使用 `tenant_shared`。编辑器固定发送该值；定时任务提交方必须显式发送 `run_isolated`，并保证 `view -> select/save` 位于同一次 Run 内。`/api/preview` 只读取租户共享 session，不用于隔离任务。
 
 这里的“长驻 engine”是按需启动、可跨 Run 复用的 YARN Application，不是永久不退出，也不是每个任务启动一个 Application：
 
-- `run_isolated` 在 Run 结束后立即关闭 JDBC session。对应 engine 没有其他 session 时，`kyuubi.session.engine.idle.timeout=PT30M` 开始计时，约 30 分钟后回收；实际时间还会受 engine check interval 影响。
-- `tenant_shared` 会保留 JDBC connection 以维持临时视图。engine 仍有活动 session 时，即使暂时没有 SQL，也不会只按 engine idle TTL 退出；先由 session idle timeout 或 SparkOne 关闭连接释放 session，之后才进入 30 分钟 engine idle 倒计时。
-- 当前 YARN profile 的 session idle 和 engine idle 都是 30 分钟，因此完全空闲后的回收通常接近两段超时之和，而不是“最后一条 SQL 后精确 30 分钟”。Local profile 把 session idle 设为 6 小时，优先保留编辑器状态。
+- `run_isolated` 在 Run 的 `finally` 中主动执行 `Connection.close()`。Kyuubi 会立即关闭 frontend session 中的 operation 和对应 backend session，正常路径不等待 `kyuubi.operation.idle.timeout` 或 `kyuubi.session.idle.timeout`。对应 engine 没有其他 session 时，才开始等待 `kyuubi.session.engine.idle.timeout=PT30M`；实际退出时间还会受 engine check interval 影响。
+- `tenant_shared` 会保留 JDBC connection 以维持临时视图，依赖 Kyuubi checker 被动回收。Server frontend session 中的 `LaunchEngine` 或其他终态 operation 未清理时，“无 operation”时间为 `0`；checker 必须先等待 `kyuubi.operation.idle.timeout` 清理 operation，然后才开始等待 `kyuubi.session.idle.timeout`。
+- `kyuubi.operation.idle.timeout` 只清理长期未访问且已经进入终态的 operation handle，不终止运行中的查询。限制运行中 SQL 应使用 `kyuubi.operation.query.timeout`。
+- frontend `LaunchEngine` operation 使用 Server 启动配置中的 `kyuubi.operation.idle.timeout`。只在 profile 中设置同名参数仅影响新 engine 的 backend operation；要测试 frontend 被动回收，必须在 `kyuubi-defaults.conf` 同时配置 operation idle、session idle 和 session check interval，并重启 Kyuubi Server。
+- YARN engine 内的 backend session 被回收后，engine 才进入 30 分钟 idle 倒计时。Kyuubi 日志中的 `current count` 表示 frontend/backend SessionManager 中的 session 数，不表示仍有多少个 YARN Application。
+- Kyuubi Server frontend session 与 engine backend session 是两层。profile 中的 `kyuubi.session.idle.timeout` 只进入新 engine；当前 `kyuubi-defaults.conf` 没有覆写 Server 全局值，因此 frontend session 仍是默认 6 小时。backend session/engine 被回收后，SparkOne 会在下一次只读操作发现失效连接并重连一次，但 session 状态已经丢失，写操作不会自动重试。
+- `tenant_shared` 的 YARN backend session idle 和 engine idle 都是 30 分钟，因此 Application 回收通常包含这两段超时；遗留终态 backend operation 时，还可能先叠加 engine 中的 operation idle timeout。`run_isolated` 主动关闭 backend session，不等待第一段 session idle。Local profile 把 backend session idle 设为 6 小时，优先保留编辑器状态。
 - engine 被回收后，下一次连接会重新创建同一 profile 的 YARN Application，产生一次冷启动；动态分配只增减该 Application 内的 executor，不会为每个 Run 创建新的 Application。
+
+executor 缩容、engine/Application 退出、Kyuubi Server 停止，以及内嵌/外置 ZooKeeper 故障时的完整时间线见 [资源缩容与停止语义](resource-lifecycle.md)。
 
 共享模式只保证单个 Run 内语句顺序，不提供多个并发 Run 之间的脚本级事务。同租户并发修改同名临时视图、临时 UDF、当前 database 或 Spark SQL 配置时，最后生效的操作取决于实际执行顺序。不同目标写入可以并发；相同受控 HDFS overwrite 目标仍由 Spark engine extension 的 ZK 锁保证只有一个任务进入写入流程。
 

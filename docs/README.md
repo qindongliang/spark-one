@@ -14,6 +14,7 @@
 - [执行引擎概览](engines/overview.md)：HTTP API、engine 选择、preview 和当前限制。
 - [Local engine](engines/local.md)：本地 `SparkSession` 调试台和 Spark submit 风格配置。
 - [Kyuubi engine](engines/kyuubi.md)：远程 SQL gateway、session、UI、依赖和配置归属。
+- [资源缩容与停止语义](engines/resource-lifecycle.md)：Spark executor、Spark engine、YARN Application、Kyuubi Server 和 ZooKeeper 的生命周期与 Kyuubi 参数总表。
 - [Local 与 Kyuubi 能力差异](engines/capability-diff.md)：哪些能力对等、哪些只属于 local 或 Kyuubi。
 
 ## Data
