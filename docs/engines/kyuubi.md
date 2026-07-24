@@ -28,6 +28,10 @@ hadoop.security.auth_to_local                RULE:[1:$1@$0](odep@HADOOP.COM)s/.*
 kyuubi.kinit.principal                       odep@HADOOP.COM
 kyuubi.kinit.keytab                          /etc/security/keytabs/odep.keytab
 
+# Kyuubi Server/engine 服务发现
+kyuubi.ha.addresses                          192.168.200.69:2181
+kyuubi.ha.namespace                          sparkone-kyuubi
+
 # 所有 Spark engine 共用的身份、依赖和 SparkOne 扩展
 spark.kerberos.principal                     odep@HADOOP.COM
 spark.kerberos.keytab                        /etc/security/keytabs/odep.keytab
@@ -35,7 +39,7 @@ spark.jars                                   /opt/sparkone/sparkone-hdfs-overwri
 spark.driver.userClassPathFirst              true
 spark.executor.userClassPathFirst            true
 spark.sql.extensions                         ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
-spark.sparkone.overwrite.zk.connect          zk-1:2181,zk-2:2181,zk-3:2181
+spark.sparkone.overwrite.zk.connect          192.168.200.69:2181
 spark.sparkone.overwrite.zk.root             /sparkone/overwrite
 spark.sparkone.overwrite.workspaceRoot       /public/odep/user
 spark.sparkone.overwrite.zk.sessionTimeoutMs 60000
@@ -172,32 +176,32 @@ engines {
     type = "kyuubi"
     enabled = true
     label = "Kyuubi Local"
-    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=local"
+    url = "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi?kyuubi.session.conf.profile=local"
   }
 
   kyuubi_yarn_client {
     type = "kyuubi"
     enabled = true
     label = "YARN Client"
-    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=yarn-client"
+    url = "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi?kyuubi.session.conf.profile=yarn-client"
   }
 
   kyuubi_yarn_cluster {
     type = "kyuubi"
     enabled = true
     label = "YARN Cluster"
-    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=yarn-cluster"
+    url = "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi?kyuubi.session.conf.profile=yarn-cluster"
   }
 }
 ```
 
-`?kyuubi.session.conf.profile=...` 位于 Kyuubi JDBC URL 的 `kyuubiConfs` 段；`#` 后的内容是 Spark/Hive 变量，不能用于选择 profile。SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户；统一执行身份由 Kyuubi 的 `spark.kerberos.principal` 和 `spark.kerberos.keytab` 决定。当前使用固定服务账号时，三个 SparkOne engine 都不需要配置 JDBC `user/password`。
+`;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi` 位于 JDBC session 参数段，使客户端从外置 ZooKeeper 发现可用 Kyuubi Server。`?kyuubi.session.conf.profile=...` 位于 Kyuubi JDBC URL 的 `kyuubiConfs` 段，继续选择管理员维护的 profile；`#` 后的内容是 Spark/Hive 变量，不能用于选择 profile。SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户；统一执行身份由 Kyuubi 的 `spark.kerberos.principal` 和 `spark.kerberos.keytab` 决定。当前使用固定服务账号时，三个 SparkOne engine 都不需要配置 JDBC `user/password`。
 
 profile 文件在缓存过期后只影响新连接的 engine 启动配置和 backend session 配置；它不会重配 Kyuubi Server 已初始化的 frontend SessionManager，已经启动的 engine 也不会原地切换 master、deploy mode 或资源。修改 profile 后应停止对应旧 engine，再由 SparkOne 新连接按新配置拉起。
 
 ## 交互边界
 
-- SparkOne 使用 Kyuubi 官方推荐的 JDBC driver，默认 URL 形如 `jdbc:kyuubi://host:10009/default`。
+- SparkOne 使用 Kyuubi 官方推荐的 JDBC driver，当前通过 `192.168.200.69:2181` 和 `sparkone-kyuubi` namespace 动态发现 Kyuubi Server。
 - Kyuubi JDBC 协议兼容 HiveServer2，但连接的是 Kyuubi Server，不是把请求转发给 HiveServer2。
 - 预览数据来自 JDBC `ResultSet`，和 Kyuubi Spark engine 是 client/cluster、运行在 YARN/Kubernetes/Standalone 无直接绑定。
 - Kyuubi 模式下临时视图存在于 JDBC session 对应的远端 Spark engine 中；SparkOne 按逻辑租户复用独立 connection，以支持同一租户 `load ... as t` 后续 preview，同时避免不同租户共享临时视图。
@@ -256,7 +260,7 @@ kyuubi.engine.single.spark.session=false
 
 ```properties
 spark.sql.extensions=ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
-spark.sparkone.overwrite.zk.connect=zk-1:2181,zk-2:2181
+spark.sparkone.overwrite.zk.connect=192.168.200.69:2181
 spark.sparkone.overwrite.zk.root=/sparkone/overwrite
 spark.sparkone.overwrite.workspaceRoot=/public/sparkone/user
 spark.sparkone.overwrite.zk.sessionTimeoutMs=60000

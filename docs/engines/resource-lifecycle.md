@@ -152,8 +152,8 @@ Engine / YARN Application 实际退出时间
 
 | 参数 | Kyuubi 默认值 | SparkOne 当前值 | 生命周期作用 |
 | --- | --- | --- | --- |
-| `kyuubi.ha.addresses` | 空 | 未配置，使用内嵌 ZK | 空值使 Kyuubi Server 启动内嵌 ZK；配置 ensemble 地址后改用外置 ZK |
-| `kyuubi.ha.namespace` | `kyuubi` | 继承默认值 | 隔离 ServerSpace 和 EngineSpace；Server/engine 必须使用同一 namespace 才能互相发现 |
+| `kyuubi.ha.addresses` | 空 | `192.168.200.69:2181` | 空值使 Kyuubi Server 启动内嵌 ZK；当前使用外置 ZK |
+| `kyuubi.ha.namespace` | `kyuubi` | `sparkone-kyuubi` | 隔离 ServerSpace 和 EngineSpace；Server、engine 和 JDBC service discovery 必须使用同一 namespace |
 | `kyuubi.ha.zookeeper.session.timeout` | `60000ms` | 继承默认值 | ZK session 在持续断连后失效的基础窗口；进入 `LOST` 后 ephemeral 注册失效 |
 | `kyuubi.ha.zookeeper.connection.timeout` | `15000ms` | 继承默认值 | 新建到 ZK ensemble 连接的超时，不是已连接 session 的失效时间 |
 | `kyuubi.ha.zookeeper.connection.retry.policy` | `EXPONENTIAL_BACKOFF` | 继承默认值 | `LOST` 后额外重连宽限期所使用的重试策略 |
@@ -319,14 +319,14 @@ Kyuubi Server 是长驻 gateway，没有“没有 SQL 就自动缩成 0”的机
 
 ## 两类 ZooKeeper
 
-当前配置中存在两个职责不同的 ZooKeeper，不能混为一个生命周期：
+当前配置使用同一个外置 ZooKeeper，但包含两个职责和路径相互独立的客户端：
 
 | 用途 | 配置 | 当前形态 |
 | --- | --- | --- |
-| Kyuubi Server/engine 服务发现 | `kyuubi.ha.addresses` | 未配置时由 Kyuubi Server 启动内嵌 ZK |
-| SparkOne 受控 HDFS overwrite 锁 | `spark.sparkone.overwrite.zk.connect` | 独立外置 ZK ensemble |
+| Kyuubi Server/engine 服务发现 | `kyuubi.ha.addresses` | `192.168.200.69:2181`，namespace 为 `sparkone-kyuubi` |
+| SparkOne 受控 HDFS overwrite 锁 | `spark.sparkone.overwrite.zk.connect` | `192.168.200.69:2181`，root 为 `/sparkone/overwrite` |
 
-即使两个用途将来复用同一个外置 ensemble，也仍是不同 namespace、不同客户端和不同故障影响。
+两个用途虽然复用同一个外置 ensemble，仍然使用不同 namespace/root 和不同客户端；单个 ZooKeeper 故障会同时影响 Kyuubi 服务发现和 overwrite 排他锁。
 
 ## Kyuubi 内嵌 ZooKeeper 停止
 
@@ -352,13 +352,14 @@ Kyuubi Server JVM 停止
 
 ## Kyuubi 使用外置 ZooKeeper
 
-生产 HA 模式应配置：
+当前测试环境配置为：
 
 ```properties
-kyuubi.ha.addresses=zk-1:2181,zk-2:2181,zk-3:2181
+kyuubi.ha.addresses=192.168.200.69:2181
+kyuubi.ha.namespace=sparkone-kyuubi
 ```
 
-外置 ZooKeeper 使 Server 和 engine 注册信息独立于某个 Kyuubi Server，但是否具备 gateway 高可用，还取决于 Kyuubi Server 实例数量和 SparkOne 的 JDBC 入口：
+该地址目前是单节点外置 ZooKeeper，使 Server 和 engine 注册信息独立于某个 Kyuubi Server，但不提供 ZooKeeper quorum 高可用。生产环境应改为至少三个 ZooKeeper 节点的 ensemble。是否具备 gateway 高可用，还取决于 Kyuubi Server 实例数量和 SparkOne 的 JDBC 入口：
 
 | 维度 | 单 Kyuubi Server | 多 Kyuubi Server |
 | --- | --- | --- |
@@ -418,7 +419,7 @@ Server 停止不会让 engine 的 ZK client 进入 `LOST`，因为外置 ZK 仍�
 - 使用 Kyuubi JDBC 的 ZooKeeper service discovery，让新 connection 从 ServerSpace 选择存活 Server；或
 - 在多个 Kyuubi Server 前提供健康检查和负载均衡入口。
 
-当前示例 `jdbc:kyuubi://192.168.202.187:10009/default` 是单主机直连。即使后端启动了多个 Kyuubi Server，该 URL 对应的节点停止后也不会自动切换，除非入口地址本身由负载均衡器接管。
+当前 SparkOne 使用 `jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi?...`。新 connection 会从 ServerSpace 选择存活的 Kyuubi Server；已有 JDBC session 仍固定在最初选中的 Server，不会因节点停止而迁移。
 
 同一个 engine 是否退出取决于所有 Kyuubi Server 打开的 engine session 总数：
 

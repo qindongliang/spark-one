@@ -56,7 +56,7 @@ engines {
 
     overwrite {
       # workspaceRoot 同时用于受控 HDFS load/overwrite；只有 overwrite 需要 ZooKeeper 排他。
-      zkConnect = "127.0.0.1:2181"
+      zkConnect = "192.168.200.69:2181"
       zkRoot = "/sparkone/overwrite"
       workspaceRoot = "/public/sparkone/user"
       zkSessionTimeoutMs = 60000
@@ -128,13 +128,13 @@ engines {
     }
   }
 
-  # 三个 Kyuubi 入口连接同一个 gateway，只通过受信任 profile 选择运行环境。
+  # 三个 Kyuubi 入口通过同一个 ZooKeeper ServerSpace 发现 gateway，只通过受信任 profile 选择运行环境。
   # Spark master、deploy mode、资源、Catalog、keytab、扩展和依赖 JAR 均由 Kyuubi 侧管理。
   kyuubi_local {
     type = "kyuubi"
     enabled = false
     label = "Kyuubi Local"
-    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=local"
+    url = "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi?kyuubi.session.conf.profile=local"
 
     # 默认不传 user，业务执行身份以 Kyuubi engine 侧配置为准。
     # 只有 Kyuubi Server 开启客户端认证时，才配置 user/password/options。
@@ -186,7 +186,7 @@ engines {
     # 受控 HDFS load/overwrite 由 Kyuubi 拉起的 Spark engine 执行。扩展 jar 和以下 Spark 配置
     # 必须放到 Kyuubi/Spark engine 侧，不通过本 HOCON 或 LOAD/SAVE OPTIONS 下发：
     # spark.sql.extensions=ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
-    # spark.sparkone.overwrite.zk.connect=zk-1:2181,zk-2:2181
+    # spark.sparkone.overwrite.zk.connect=192.168.200.69:2181
     # spark.sparkone.overwrite.zk.root=/sparkone/overwrite
     # spark.sparkone.overwrite.workspaceRoot=/public/sparkone/user
   }
@@ -195,13 +195,13 @@ engines {
     type = "kyuubi"
     enabled = false
     label = "YARN Client"
-    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=yarn-client"
+    url = "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi?kyuubi.session.conf.profile=yarn-client"
   }
 
   kyuubi_yarn_cluster {
     type = "kyuubi"
     enabled = false
     label = "YARN Cluster"
-    url = "jdbc:kyuubi://192.168.202.187:10009/default?kyuubi.session.conf.profile=yarn-cluster"
+    url = "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi?kyuubi.session.conf.profile=yarn-cluster"
   }
 }
