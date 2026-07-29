@@ -1,7 +1,7 @@
 # Assert 测试用例
 
-本文用于验证 SparkOne `assert` 在 Local 和 Kyuubi 引擎上的编译、执行、结果展示和
-失败短路行为。
+本文用于验证 SparkOne `assert` 在 Local 和 Kyuubi 引擎上的编译、执行、结果展示、
+失败动作和短路行为。
 
 ## 自动化测试
 
@@ -32,6 +32,11 @@ mvn -pl sparkone-server -am \
 | A13 | 内联检查执行 | Local 上通过时继续，失败时返回样本并短路。 |
 | A14 | 内联 Kyuubi 对等 | Kyuubi 执行与 Local 相同的违规 SQL 和失败语义。 |
 | A15 | 非法内联输入 | 空查询、括号不匹配和原生文件 provider 路径在编译期拒绝。 |
+| A16 | 失败动作编译 | 省略动作和显式 `fail` 都生成 `Fail`，`stop` 生成 `Stop`，其他值拒绝。 |
+| A17 | 默认失败 | 违规行触发 `assertion_failed`，整次 Run 失败并停止后续 SQL。 |
+| A18 | 成功停止 | `on failure stop` 触发 `assertion_stopped`，整次 Run 成功但停止后续 SQL。 |
+| A19 | 异常不可降级 | 即使声明 `stop`，SQL/连接/权限异常仍触发 `execution_error` 和 Run 失败。 |
+| A20 | Local/Kyuubi 三态对等 | 两个引擎按 `Continue/StopAsSuccess/StopAsFailure` 得到相同结果。 |
 
 ## 页面测试准备
 
@@ -81,7 +86,8 @@ select 'must-not-run' as marker;
 
 - 检查显示 `Check failed` 和“存在空分区”。
 - 只展示 `Rows` 上限内的违规分区；设置为 `1` 时 `truncated=true`。
-- 整次 Run 失败，最后一条查询不执行。
+- 整次 Run 为 `success=false`、`outcome=assertion_failed`、`stoppedEarly=true`，最后一条
+  查询不执行。
 
 ## T03 NULL 谓词
 
@@ -246,13 +252,58 @@ message "分类数据量不足";
 预期：检查失败，违规样本包含分类 `B`；内层查询的括号和 `WHERE` 不会被识别为
 SparkOne DSL 边界。
 
+## T12 检查失败但任务成功
+
+```sql
+assert (
+  select * from values
+    ('2026-07-28', 10),
+    ('2026-07-29', 0)
+  as metrics(dt, row_count)
+)
+where "row_count > 0"
+message "存在空分区"
+on failure stop;
+
+select 'must-not-run' as marker;
+```
+
+预期：
+
+- 页面顶部显示 `Success · stopped by check`，检查卡片显示
+  `Check failed · stopped as success`。
+- assert statement 仍是 `success=false`、`status=failed`、`failureAction=stop`，并返回
+  `2026-07-29` 违规样本。
+- 整次 Run 为 `success=true`、`outcome=assertion_stopped`、`stoppedEarly=true`。
+- 最后一条查询不执行。
+
+## T13 stop 不吞 SQL 异常
+
+```sql
+assert missing_metrics
+where "row_count > 0"
+message "row_count 必须大于 0"
+on failure stop;
+
+select 'must-not-run' as marker;
+```
+
+预期：检查状态为 `error`，展示真实的 `TABLE_OR_VIEW_NOT_FOUND` 类错误；整次 Run 为
+`success=false`、`outcome=execution_error`、`stoppedEarly=true`，后续查询不执行。
+
 ## API 验收
 
 检查 `/api/run` 响应中的对应 statement：
 
 - `assertion.status` 只能是 `passed`、`failed` 或 `error`。
-- `failed` 时 `success=false`，`error` 等于 DSL 的 `message`。
+- statement 的 `failed` 始终保持 `success=false`，`error` 等于 DSL 的 `message`。
 - `error` 时 `error` 是实际的违规查询执行错误。
 - `failed` 时后续 statement 不应出现在 `statements` 数组。
 - `rows.size <= Rows`，存在更多违规行时 `truncated=true`。
 - 内联查询保持现有响应结构，`assertion.table="inline query"`。
+- 顶层 `outcome` 只能是 `succeeded`、`assertion_failed`、`assertion_stopped` 或
+  `execution_error`。
+- 默认 `fail` 的顶层 `success=false`；`stop` 命中业务违规时顶层 `success=true`。
+- `assertion.failureAction` 为 `fail` 或 `stop`。
+- `stoppedEarly=true` 时，脚本中必须确实存在被跳过的后续语句。
+- 调度接入必须读取响应体的 `success/outcome`，不能只检查 HTTP 请求是否成功。

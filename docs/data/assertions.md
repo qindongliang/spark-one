@@ -5,7 +5,8 @@ SparkOne 使用薄 DSL 完成结果检查。稳定、可复用的检查推荐先
 ```sql
 assert result_table
 where "<Spark SQL predicate>"
-message "<failure message>";
+message "<failure message>"
+on failure fail;
 ```
 
 一次性检查也可以直接内联完整查询：
@@ -15,11 +16,13 @@ assert (
   <Spark SQL SELECT>
 )
 where "<Spark SQL predicate>"
-message "<failure message>";
+message "<failure message>"
+on failure stop;
 ```
 
-两种写法具有完全相同的语义。`where` 是结果中每一行必须满足的布尔表达式，不是
-普通筛选条件；SparkOne 不引入第二套表达式语言，也不要求结果必须恰好一行。
+`on failure` 可以省略，默认值是 `fail`。两种数据来源具有完全相同的检查和失败动作
+语义。`where` 是结果中每一行必须满足的布尔表达式，不是普通筛选条件；SparkOne
+不引入第二套表达式语言，也不要求结果必须恰好一行。
 
 ## 语义
 
@@ -44,8 +47,38 @@ WHERE NOT COALESCE((<predicate>), FALSE)
 | 查询结果 | Assert 状态 | 脚本行为 |
 | --- | --- | --- |
 | 0 行 | `passed` | 检查通过，继续执行后续语句。 |
-| 1 行或更多 | `failed` | 检查失败，返回受 `preview.maxRows` 限制的违规样本，停止后续语句。 |
-| 违规行查询执行异常 | `error` | 返回真实错误并停止后续语句。 |
+| 1 行或更多 | `failed` | 返回受 `preview.maxRows` 限制的违规样本，并按 `on failure` 停止脚本。 |
+| 违规行查询执行异常 | `error` | 返回真实错误并停止脚本；不受 `on failure stop` 影响。 |
+
+## 失败动作与三态控制
+
+`on failure` 只控制“查询成功执行，但发现违规行”这种主动检查失败：
+
+| 场景 | `on failure` | 单条 statement | 整次 Run | `outcome` | 后续 SQL |
+| --- | --- | --- | --- | --- | --- |
+| 无违规行 | `fail` 或 `stop` | `success=true`、`passed` | `success=true` | `succeeded` | 继续 |
+| 有违规行 | 省略或 `fail` | `success=false`、`failed` | `success=false` | `assertion_failed` | 停止 |
+| 有违规行 | `stop` | `success=false`、`failed` | `success=true` | `assertion_stopped` | 停止 |
+| SQL、连接、权限等执行异常 | `fail` 或 `stop` | `success=false`、`error` | `success=false` | `execution_error` | 停止 |
+
+runtime 内部只做三个控制决策：
+
+- `Continue`：当前语句成功，继续脚本。
+- `StopAsSuccess`：检查未通过且动作是 `stop`，停止脚本，但整次 Run 成功。
+- `StopAsFailure`：默认检查失败或任意执行异常，停止脚本且整次 Run 失败。
+
+这三个状态刻意把“单条检查事实”和“任务调度结果”分开。`on failure stop` 不会把检查
+伪装成通过：对应 assert statement 仍是 `success=false`、`status=failed`，违规样本和
+`message` 也完整保留，通知系统可以根据 `outcome=assertion_stopped` 定向发送数据质量
+通知。
+
+需要注意两个边界：
+
+- `stop` 只停止同一脚本中尚未执行的 SQL。由于整次 Run 成功，外部调度 DAG 是否继续
+  执行下游节点由调度器决定；需要阻断 DAG 下游时应使用默认的 `fail`，或让调度器显式
+  判断 `outcome`。
+- `assert` 不是事务边界。它之前已经完成的查询或写入不会回滚，只保证它之后的语句
+  不再执行。
 
 补充约定：
 
@@ -160,10 +193,14 @@ flowchart TB
   inline --> assertion
 
   assertion --> violations["违规行查询<br/>NOT COALESCE(predicate, FALSE)"]
+  violations -->|"查询异常"| executionError["error / StopAsFailure<br/>Run 失败"]
   violations --> decision{"是否存在违规行"}
-  decision -->|"否"| passed["passed<br/>继续执行"]
-  decision -->|"是"| failed["failed<br/>返回有限样本"]
-  failed --> stopped["停止后续语句"]
+  decision -->|"否"| passed["passed / Continue<br/>继续执行"]
+  decision -->|"是"| action{"on failure"}
+  action -->|"fail（默认）"| failed["failed / StopAsFailure<br/>Run 失败"]
+  action -->|"stop"| stopped["failed / StopAsSuccess<br/>Run 成功"]
+  failed --> stopSql["停止后续 SQL"]
+  stopped --> stopSql
 
   direct["直接支持<br/>完整性、唯一性、有效性、对账、时效性"] -.-> assertion
   conditional["条件支持<br/>历史基线、分布异常需先用 SQL 建模"] -.-> baseline
@@ -172,31 +209,43 @@ flowchart TB
 
 ## 运行结果
 
-每条 `assert` 的 statement 结果包含：
+例如 `on failure stop` 命中违规行且后面仍有 SQL 时，`/api/run` 返回：
 
 ```json
 {
-  "success": false,
-  "error": "订单表完整性检查失败",
-  "assertion": {
-    "table": "order_metrics",
-    "predicate": "row_count > 0 and null_count = 0",
-    "status": "failed",
-    "message": "订单表完整性检查失败"
-  },
-  "schema": [],
-  "rows": [],
-  "truncated": false
+  "success": true,
+  "outcome": "assertion_stopped",
+  "stoppedEarly": true,
+  "statements": [
+    {
+      "success": false,
+      "error": "订单表完整性检查失败",
+      "assertion": {
+        "table": "order_metrics",
+        "predicate": "row_count > 0 and null_count = 0",
+        "status": "failed",
+        "message": "订单表完整性检查失败",
+        "failureAction": "stop"
+      },
+      "schema": [],
+      "rows": [],
+      "truncated": false
+    }
+  ]
 }
 ```
 
 失败时 `schema` 和 `rows` 是违规样本；示例省略了实际列。通过时前端只展示检查
 状态，不展示空的违规结果表。为保持 API 兼容，内联查询的 `assertion.table` 显示为
-`inline query`。
+`inline query`。`stoppedEarly` 只表示确实存在未执行的后续 SQL；assert 恰好是最后一条
+语句时，即使它触发停止决策，该字段也是 `false`。
+
+`/api/run` 的运行结果使用响应体表达成功或失败，调度接入不能只判断 HTTP 请求是否
+成功，还必须读取 `success` 和 `outcome`。
 
 ## 明确不做
 
-- 不增加 `expect`、`warn` 或规则中心。
+- 不增加 `expect`、`warn`、继续执行模式或规则中心。
 - 不把检查结果自动 `save -> reload -> verify`。
 - 不替代 Spark SQL parser。
 - 不提供内置指标函数或历史基线存储；这些仍需通过 `view` 或内联 SELECT 使用普通

@@ -15,10 +15,10 @@ load doris.`app.orders` where "biz_date = '2026-06-17'" as doris_orders;
 set biz_date = "2026-06-17";
 set start_date as select date_sub(current_date(), 1) as dt;
 view city_stats as select city, count(*) as cnt from users group by city;
-assert city_stats where "cnt > 0" message "城市统计存在空结果";
+assert city_stats where "cnt > 0" message "城市统计存在空结果" on failure fail;
 assert (
   select city, count(*) as cnt from users group by city
-) where "cnt > 0" message "城市统计存在空结果";
+) where "cnt > 0" message "城市统计存在空结果" on failure stop;
 save overwrite users as parquet.`reports/users_out`;
 save append city_stats as hive.`default.city_stats` partitionBy dt;
 save append city_stats as mysql.`analytics.city_stats`;
@@ -75,6 +75,7 @@ select * from city_stats;
 - 不支持尾部 `select ... as table` 这种自定义糖，避免跟 Spark 原生列别名、表别名冲突。
 - 推荐使用 `view name as select ...` 语法糖，编译成 Spark 原生 `CREATE OR REPLACE TEMPORARY VIEW name AS SELECT ...`。
 - `assert table where "<predicate>" message "<message>"` 检查已有结果表；`assert (<select>) where ...` 是一次性检查的内联语法糖。二者都编译成只读违规行查询：零条违规行通过，有违规行返回有限样本并停止脚本。
+- `on failure fail|stop` 只改变违规行命中后的顶层任务结果，默认是 `fail`。`fail` 停止脚本并使 Run 失败；`stop` 停止脚本但使 Run 成功。违规查询自身的 SQL、连接或权限异常始终使 Run 失败。
 - ANTLR 对内联 `assert` 只识别外层和嵌套括号边界，不解析 SELECT 语义；内层查询和谓词都由 Spark SQL parser 校验。完整语义见[数据质量 Assert](../data/assertions.md)。
 - `set name = "literal"` 是 SparkOne 脚本变量，后续语句可用 `${name}` 引用；变量只在单次脚本运行内有效。
 - `set name as select ...` 是 SQL 变量语法，会在 runtime 执行查询，取第一行第一列转成字符串后写入变量；纯 compile 接口不会执行 Spark 查询。

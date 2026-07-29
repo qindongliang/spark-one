@@ -1,5 +1,7 @@
 package ai.sparkone.runtime
 
+import ai.sparkone.sql.AssertionFailureAction
+
 sealed trait SessionMode {
   def name: String
 }
@@ -32,7 +34,8 @@ final case class AssertionResult(
     table: String,
     predicate: String,
     status: String,
-    message: String)
+    message: String,
+    failureAction: String = AssertionFailureAction.Default.name)
 
 object AssertionStatus {
   val Passed: String = "passed"
@@ -56,4 +59,44 @@ final case class StatementResult(
 
 final case class RunResult(
     success: Boolean,
-    statements: Seq[StatementResult])
+    statements: Seq[StatementResult],
+    outcome: String = RunOutcome.Succeeded,
+    stoppedEarly: Boolean = false)
+
+object RunOutcome {
+  val Succeeded: String = "succeeded"
+  val AssertionFailed: String = "assertion_failed"
+  val AssertionStopped: String = "assertion_stopped"
+  val ExecutionError: String = "execution_error"
+
+  private[runtime] def from(
+      decision: ExecutionDecision,
+      lastResult: Option[StatementResult]): String = decision match {
+    case ExecutionDecision.Continue => Succeeded
+    case ExecutionDecision.StopAsSuccess => AssertionStopped
+    case ExecutionDecision.StopAsFailure
+        if lastResult.flatMap(_.assertion).exists(_.status == AssertionStatus.Failed) =>
+      AssertionFailed
+    case ExecutionDecision.StopAsFailure => ExecutionError
+  }
+}
+
+private[runtime] sealed trait ExecutionDecision
+
+private[runtime] object ExecutionDecision {
+  case object Continue extends ExecutionDecision
+  case object StopAsSuccess extends ExecutionDecision
+  case object StopAsFailure extends ExecutionDecision
+
+  def from(result: StatementResult): ExecutionDecision = {
+    if (result.success) {
+      Continue
+    } else if (result.assertion.exists(assertion =>
+        assertion.status == AssertionStatus.Failed &&
+          assertion.failureAction == AssertionFailureAction.Stop.name)) {
+      StopAsSuccess
+    } else {
+      StopAsFailure
+    }
+  }
+}

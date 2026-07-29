@@ -149,7 +149,12 @@ final class SparkOneCompiler(
     if (message.isEmpty) {
       throw new CompileException("ASSERT message must not be empty")
     }
-    val plan = AssertionPlan(source, predicate, message)
+    val failureAction = Option(assertion.failureAction).map(_.getText.toLowerCase) match {
+      case None | Some(AssertionFailureAction.Fail.name) => AssertionFailureAction.Fail
+      case Some(AssertionFailureAction.Stop.name) => AssertionFailureAction.Stop
+      case Some(other) => throw new CompileException(s"Unsupported ASSERT failure action: $other")
+    }
+    val plan = AssertionPlan(source, predicate, message, failureAction)
     CompileResult(
       SparkOneSqlRender.renderAssertionFailures(plan),
       assertion = Some(plan),

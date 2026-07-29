@@ -431,6 +431,11 @@ th {
   background: #fff5f3;
 }
 
+.assertion-stopped {
+  border-left-color: #b7791f;
+  background: #fff8e6;
+}
+
 .assertion-title {
   font-weight: 650;
 }
@@ -442,6 +447,10 @@ th {
 .assertion-failed .assertion-title,
 .assertion-error .assertion-title {
   color: var(--danger);
+}
+
+.assertion-stopped .assertion-title {
+  color: #805b10;
 }
 
 .assertion-detail {

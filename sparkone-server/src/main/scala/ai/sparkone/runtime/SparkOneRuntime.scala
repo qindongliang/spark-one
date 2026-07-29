@@ -47,8 +47,8 @@ final class SparkOneRuntime(
       val variables = mutable.LinkedHashMap[String, String]()
       val results = mutable.ArrayBuffer.empty[StatementResult]
       val remaining = sources.iterator.zipWithIndex
-      var continue = true
-      while (continue && remaining.hasNext) {
+      var executionDecision: ExecutionDecision = ExecutionDecision.Continue
+      while (executionDecision == ExecutionDecision.Continue && remaining.hasNext) {
         val (source, offset) = remaining.next()
         val started = System.nanoTime()
         var statement: Option[CompiledStatement] = None
@@ -67,13 +67,19 @@ final class SparkOneRuntime(
             val status =
               if (collected.isEmpty) AssertionStatus.Passed
               else AssertionStatus.Failed
-            AssertionResult(plan.table, plan.predicate, status, plan.message)
+            AssertionResult(
+              plan.table,
+              plan.predicate,
+              status,
+              plan.message,
+              plan.failureAction.name)
           }
           val assertionPassed = assertion.forall(_.status == AssertionStatus.Passed)
           if (!assertionPassed) {
             executableStatement.assertion.foreach { plan =>
               logger.warn(
                 s"Assertion failed, statement=${offset + 1}, table=${plan.table}, " +
+                  s"failureAction=${plan.failureAction.name}, " +
                   s"predicate=${summarizeSql(plan.predicate)}, message=${summarizeSql(plan.message)}")
             }
           }
@@ -115,18 +121,21 @@ final class SparkOneRuntime(
                   plan.table,
                   plan.predicate,
                   AssertionStatus.Error,
-                  plan.message)
+                  plan.message,
+                  plan.failureAction.name)
               })
         }
         results += result
-        continue = result.success
+        executionDecision = ExecutionDecision.from(result)
       }
 
-      val success = results.forall(_.success)
+      val success = executionDecision != ExecutionDecision.StopAsFailure
+      val outcome = RunOutcome.from(executionDecision, results.lastOption)
+      val stoppedEarly = executionDecision != ExecutionDecision.Continue && remaining.hasNext
       val visibleResults =
         if (success && results.nonEmpty && results.forall(_.previewTable.nonEmpty)) results.takeRight(1)
         else results.toSeq
-      RunResult(success, visibleResults)
+      RunResult(success, visibleResults, outcome, stoppedEarly)
     }
   }
 

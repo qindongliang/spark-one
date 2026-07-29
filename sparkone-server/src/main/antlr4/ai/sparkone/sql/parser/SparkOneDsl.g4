@@ -32,6 +32,12 @@ setStatement
 assertStatement
     : ASSERT (table=identifier | LPAREN query=sqlStatement RPAREN)
       WHERE predicate=quotedValue MESSAGE message=quotedValue
+      (ON FAILURE failureAction=assertionFailureAction)?
+    ;
+
+assertionFailureAction
+    : FAIL
+    | STOP
     ;
 
 source
@@ -103,6 +109,10 @@ sqlToken
     | VIEW
     | ASSERT
     | MESSAGE
+    | ON
+    | FAILURE
+    | FAIL
+    | STOP
     | AS
     | WHERE
     | OPTIONS
@@ -133,6 +143,10 @@ SET: S E T;
 VIEW: V I E W;
 ASSERT: A S S E R T;
 MESSAGE: M E S S A G E;
+ON: O N;
+FAILURE: F A I L U R E;
+FAIL: F A I L;
+STOP: S T O P;
 AS: A S;
 WHERE: W H E R E;
 OPTIONS: O P T I O N S;
@@ -179,6 +193,7 @@ fragment P: [pP];
 fragment R: [rR];
 fragment S: [sS];
 fragment T: [tT];
+fragment U: [uU];
 fragment V: [vV];
 fragment W: [wW];
 fragment X: [xX];

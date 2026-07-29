@@ -173,13 +173,17 @@ final class SparkOneRuntimePreviewTest {
         """view quality_metrics as select 1 as row_count, 0 as null_count;
           |assert quality_metrics
           |where "row_count > 0 and null_count = 0"
-          |message "quality metrics are invalid";
+          |message "quality metrics are invalid"
+          |on failure stop;
           |select 2 as continued;
           |""".stripMargin)
 
       assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(RunOutcome.Succeeded, result.outcome)
+      assertFalse(result.stoppedEarly)
       assertEquals(3, result.statements.size)
       assertEquals(Some(AssertionStatus.Passed), result.statements(1).assertion.map(_.status))
+      assertEquals(Some("stop"), result.statements(1).assertion.map(_.failureAction))
       assertEquals(Seq("2"), result.statements.last.rows.head)
     } finally {
       spark.stop()
@@ -214,7 +218,7 @@ final class SparkOneRuntimePreviewTest {
   }
 
   @Test
-  def inlineQueryAssertReturnsViolationsAndStopsLaterStatements(): Unit = {
+  def inlineQueryAssertCanStopLaterStatementsWithoutFailingTheRun(): Unit = {
     val root = Files.createTempDirectory("sparkone-runtime-inline-assert-fail-")
     val spark = localSpark(root)
     try {
@@ -224,15 +228,20 @@ final class SparkOneRuntimePreviewTest {
           |  select * from values (1), (0), (-1) as metrics(row_count)
           |)
           |where "row_count > 0"
-          |message "row_count must be positive";
+          |message "row_count must be positive"
+          |on failure stop;
           |select 3 as should_not_run;
           |""".stripMargin,
         limit = 1)
 
-      assertFalse(result.success)
+      assertTrue(result.success)
+      assertEquals(RunOutcome.AssertionStopped, result.outcome)
+      assertTrue(result.stoppedEarly)
       assertEquals(1, result.statements.size)
       val assertion = result.statements.head
+      assertFalse(assertion.success)
       assertEquals(Some(AssertionStatus.Failed), assertion.assertion.map(_.status))
+      assertEquals(Some("stop"), assertion.assertion.map(_.failureAction))
       assertEquals(Some("row_count must be positive"), assertion.error)
       assertEquals(1, assertion.rowCount)
       assertTrue(assertion.truncated)
@@ -260,9 +269,13 @@ final class SparkOneRuntimePreviewTest {
         limit = 1)
 
       assertFalse(result.success)
+      assertEquals(RunOutcome.AssertionFailed, result.outcome)
+      assertTrue(result.stoppedEarly)
       assertEquals(2, result.statements.size)
       val assertion = result.statements.last
+      assertFalse(assertion.success)
       assertEquals(Some(AssertionStatus.Failed), assertion.assertion.map(_.status))
+      assertEquals(Some("fail"), assertion.assertion.map(_.failureAction))
       assertEquals(Some("row_count must be positive"), assertion.error)
       assertEquals(1, assertion.rowCount)
       assertTrue(assertion.truncated)
@@ -326,13 +339,19 @@ final class SparkOneRuntimePreviewTest {
       val result = runtime.run(
         """assert missing_metrics
           |where "row_count > 0"
-          |message "row_count must be positive";
+          |message "row_count must be positive"
+          |on failure stop;
+          |select 2 as should_not_run;
           |""".stripMargin)
 
       assertFalse(result.success)
+      assertEquals(RunOutcome.ExecutionError, result.outcome)
+      assertTrue(result.stoppedEarly)
       assertEquals(1, result.statements.size)
       val assertion = result.statements.head
+      assertFalse(assertion.success)
       assertEquals(Some(AssertionStatus.Error), assertion.assertion.map(_.status))
+      assertEquals(Some("stop"), assertion.assertion.map(_.failureAction))
       assertFalse(assertion.error.contains("row_count must be positive"))
       assertTrue(assertion.error.get.contains("TABLE_OR_VIEW_NOT_FOUND"))
     } finally {

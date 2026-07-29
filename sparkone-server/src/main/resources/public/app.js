@@ -207,7 +207,7 @@ function registerSparkOneSqlMode() {
   const keywords = Object.assign(
     {},
     sparkSqlMode.keywords || {},
-    keywordSet('view load save assert message options partitionby mysql doris'));
+    keywordSet('view load save assert message on failure fail stop options partitionby mysql doris'));
 
   window.CodeMirror.defineMIME('text/x-sparkone-sql', Object.assign({}, sparkSqlMode, {
     keywords
@@ -246,7 +246,13 @@ function setBusy(busy) {
 function render(data, path, scope) {
   output.innerHTML = '';
   const scopeLabel = scope ? ` · ${scope.label}` : '';
-  summary.textContent = (data.success ? 'Success' : 'Failed') + scopeLabel;
+  const outcomeLabels = {
+    succeeded: 'Success',
+    assertion_failed: 'Failed by check',
+    assertion_stopped: 'Success · stopped by check',
+    execution_error: 'Execution error'
+  };
+  summary.textContent = (outcomeLabels[data.outcome] || (data.success ? 'Success' : 'Failed')) + scopeLabel;
 
   if (!data.success && data.error) {
     output.appendChild(errorBlock(data.error));
@@ -340,7 +346,9 @@ function warningBlock(text) {
 function assertionBlock(assertion) {
   const node = document.createElement('div');
   const status = assertion.status || 'error';
-  node.className = `assertion assertion-${status}`;
+  const failureAction = assertion.failureAction || 'fail';
+  const stoppedAsSuccess = status === 'failed' && failureAction === 'stop';
+  node.className = `assertion assertion-${stoppedAsSuccess ? 'stopped' : status}`;
 
   const title = document.createElement('div');
   title.className = 'assertion-title';
@@ -349,7 +357,8 @@ function assertionBlock(assertion) {
     failed: 'Check failed',
     error: 'Check error'
   };
-  title.textContent = `${labels[status] || labels.error} · ${assertion.table}`;
+  const actionLabel = stoppedAsSuccess ? ' · stopped as success' : '';
+  title.textContent = `${labels[status] || labels.error}${actionLabel} · ${assertion.table}`;
   node.appendChild(title);
 
   const detail = document.createElement('div');

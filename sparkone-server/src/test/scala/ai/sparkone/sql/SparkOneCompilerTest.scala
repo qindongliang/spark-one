@@ -54,6 +54,9 @@ final class SparkOneCompilerTest {
     assertEquals(
       Some("quality metrics are invalid"),
       statement.assertion.map(_.message))
+    assertEquals(
+      Some(AssertionFailureAction.Fail),
+      statement.assertion.map(_.failureAction))
   }
 
   @Test
@@ -65,7 +68,8 @@ final class SparkOneCompilerTest {
         |  group by dt
         |)
         |where "row_count > 0"
-        |message "partition is empty";
+        |message "partition is empty"
+        |on failure stop;
         |""".stripMargin).head
 
     assertEquals(
@@ -80,6 +84,35 @@ final class SparkOneCompilerTest {
           |  group by dt""".stripMargin)),
       statement.assertion.map(_.source))
     assertEquals(Some("inline query"), statement.assertion.map(_.table))
+    assertEquals(
+      Some(AssertionFailureAction.Stop),
+      statement.assertion.map(_.failureAction))
+  }
+
+  @Test
+  def compilesExplicitAssertFailureActionFail(): Unit = {
+    val statement = compiler.compile(
+      """assert quality_metrics
+        |where "row_count > 0"
+        |message "quality metrics are invalid"
+        |on failure fail;
+        |""".stripMargin).head
+
+    assertEquals(
+      Some(AssertionFailureAction.Fail),
+      statement.assertion.map(_.failureAction))
+  }
+
+  @Test
+  def rejectsUnsupportedAssertFailureAction(): Unit = {
+    val error = tryCompile(
+      """assert quality_metrics
+        |where "row_count > 0"
+        |message "quality metrics are invalid"
+        |on failure continue;
+        |""".stripMargin)
+
+    assertFalse(error.getMessage.trim.isEmpty)
   }
 
   @Test

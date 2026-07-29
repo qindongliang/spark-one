@@ -149,6 +149,8 @@ object SparkOneServer {
         val result = engine.run(tenant, request.script, request.limit, request.sessionMode)
         json(ctx, Map(
           "success" -> result.success,
+          "outcome" -> result.outcome,
+          "stoppedEarly" -> result.stoppedEarly,
           "engine" -> engine.id,
           "showCompiledSql" -> showCompiledSql,
           "statements" -> result.statements.map(statement =>

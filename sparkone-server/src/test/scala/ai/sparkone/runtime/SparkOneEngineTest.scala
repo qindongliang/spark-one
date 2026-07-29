@@ -574,14 +574,18 @@ final class SparkOneEngineTest {
         """view quality_metrics as select 1 as row_count;
           |assert quality_metrics
           |where "row_count > 0"
-          |message "row_count must be positive";
+          |message "row_count must be positive"
+          |on failure stop;
           |select 2 as continued;
           |""".stripMargin,
         10)
 
       assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(RunOutcome.Succeeded, result.outcome)
+      assertFalse(result.stoppedEarly)
       assertEquals(3, result.statements.size)
       assertEquals(Some(AssertionStatus.Passed), result.statements(1).assertion.map(_.status))
+      assertEquals(Some("stop"), result.statements(1).assertion.map(_.failureAction))
       assertEquals(assertionSql, result.statements(1).sql)
       assertEquals(
         Seq(
@@ -621,9 +625,13 @@ final class SparkOneEngineTest {
         1)
 
       assertFalse(result.success)
+      assertEquals(RunOutcome.AssertionFailed, result.outcome)
+      assertTrue(result.stoppedEarly)
       assertEquals(2, result.statements.size)
       val assertion = result.statements.last
+      assertFalse(assertion.success)
       assertEquals(Some(AssertionStatus.Failed), assertion.assertion.map(_.status))
+      assertEquals(Some("fail"), assertion.assertion.map(_.failureAction))
       assertEquals(Some("row_count must be positive"), assertion.error)
       assertEquals(Seq(Seq("0")), assertion.rows)
       assertTrue(assertion.truncated)
@@ -638,7 +646,7 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiInlineQueryAssertUsesTheSameFailureSemantics(): Unit = {
+  def kyuubiInlineQueryAssertCanStopWithoutFailingTheRun(): Unit = {
     val assertionSql =
       "SELECT * FROM (select * from values (1), (0) as metrics(row_count)) " +
         "sparkone_assert_input WHERE NOT COALESCE((row_count > 0), FALSE)"
@@ -660,16 +668,21 @@ final class SparkOneEngineTest {
           |  select * from values (1), (0) as metrics(row_count)
           |)
           |where "row_count > 0"
-          |message "row_count must be positive";
+          |message "row_count must be positive"
+          |on failure stop;
           |select 2 as should_not_run;
           |""".stripMargin,
         10)
 
-      assertFalse(result.success)
+      assertTrue(result.success)
+      assertEquals(RunOutcome.AssertionStopped, result.outcome)
+      assertTrue(result.stoppedEarly)
       assertEquals(1, result.statements.size)
       val assertion = result.statements.head
+      assertFalse(assertion.success)
       assertEquals(Some(AssertionStatus.Failed), assertion.assertion.map(_.status))
       assertEquals(Some("inline query"), assertion.assertion.map(_.table))
+      assertEquals(Some("stop"), assertion.assertion.map(_.failureAction))
       assertEquals(Seq(Seq("0")), assertion.rows)
       assertEquals(Seq(assertionSql), fake.executedSql)
     } finally {
@@ -692,14 +705,20 @@ final class SparkOneEngineTest {
         tenant,
         """assert missing_metrics
           |where "row_count > 0"
-          |message "row_count must be positive";
+          |message "row_count must be positive"
+          |on failure stop;
+          |select 2 as should_not_run;
           |""".stripMargin,
         10)
 
       assertFalse(result.success)
+      assertEquals(RunOutcome.ExecutionError, result.outcome)
+      assertTrue(result.stoppedEarly)
       assertEquals(1, result.statements.size)
       val assertion = result.statements.head
+      assertFalse(assertion.success)
       assertEquals(Some(AssertionStatus.Error), assertion.assertion.map(_.status))
+      assertEquals(Some("stop"), assertion.assertion.map(_.failureAction))
       assertEquals(Some("TABLE_OR_VIEW_NOT_FOUND"), assertion.error)
       assertEquals(Seq(assertionSql), fake.executedSql)
     } finally {

@@ -34,10 +34,27 @@ object AssertionSource {
   }
 }
 
+sealed trait AssertionFailureAction {
+  def name: String
+}
+
+object AssertionFailureAction {
+  case object Fail extends AssertionFailureAction {
+    override val name: String = "fail"
+  }
+
+  case object Stop extends AssertionFailureAction {
+    override val name: String = "stop"
+  }
+
+  val Default: AssertionFailureAction = Fail
+}
+
 final case class AssertionPlan(
     source: AssertionSource,
     predicate: String,
-    message: String) {
+    message: String,
+    failureAction: AssertionFailureAction = AssertionFailureAction.Default) {
   def table: String = source.displayName
 }
 

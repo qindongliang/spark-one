@@ -183,8 +183,8 @@ final class KyuubiJdbcEngine(
     val variables = mutable.LinkedHashMap[String, String]()
     val results = mutable.ArrayBuffer.empty[StatementResult]
     val remaining = sources.iterator.zipWithIndex
-    var continue = true
-    while (continue && remaining.hasNext) {
+    var executionDecision: ExecutionDecision = ExecutionDecision.Continue
+    while (executionDecision == ExecutionDecision.Continue && remaining.hasNext) {
       val (source, offset) = remaining.next()
       val started = System.nanoTime()
       var statement: Option[CompiledStatement] = None
@@ -224,18 +224,21 @@ final class KyuubiJdbcEngine(
                 plan.table,
                 plan.predicate,
                 AssertionStatus.Error,
-                plan.message)
+                plan.message,
+                plan.failureAction.name)
             })
       }
       results += result
-      continue = result.success
+      executionDecision = ExecutionDecision.from(result)
     }
 
-    val success = results.forall(_.success)
+    val success = executionDecision != ExecutionDecision.StopAsFailure
+    val outcome = RunOutcome.from(executionDecision, results.lastOption)
+    val stoppedEarly = executionDecision != ExecutionDecision.Continue && remaining.hasNext
     val visibleResults =
       if (success && results.nonEmpty && results.forall(_.previewTable.nonEmpty)) results.takeRight(1)
       else results.toSeq
-    RunResult(success, visibleResults)
+    RunResult(success, visibleResults, outcome, stoppedEarly)
   }
 
   override def previewTable(tenant: TenantContext, table: String, limit: Int): StatementResult = {
@@ -307,6 +310,7 @@ final class KyuubiJdbcEngine(
                 logger.warn(
                   s"Assertion failed, engine=$id, tenant=${session.tenant.username}, " +
                     s"statement=$index, table=${plan.table}, " +
+                    s"failureAction=${plan.failureAction.name}, " +
                     s"predicate=${summarizeSql(plan.predicate)}, message=${summarizeSql(plan.message)}")
               }
               StatementResult(
@@ -325,7 +329,8 @@ final class KyuubiJdbcEngine(
                   plan.table,
                   plan.predicate,
                   if (passed) AssertionStatus.Passed else AssertionStatus.Failed,
-                  plan.message)))
+                  plan.message,
+                  plan.failureAction.name)))
             }
           case None =>
             try {
