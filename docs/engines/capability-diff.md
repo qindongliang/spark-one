@@ -10,6 +10,7 @@
 | `view name as select ...` | 两边都编译成 `CREATE OR REPLACE TEMPORARY VIEW`，并在各自 session 中生效。 |
 | `set name = literal` | 两边都在 SparkOne runtime 层维护变量 map。 |
 | `set name as select ...` | 两边都执行查询取第一行第一列；local 通过 DataFrame，Kyuubi 通过 JDBC ResultSet。 |
+| `assert table where ... message ...` | 两边执行同一条违规行查询；零行通过，有违规行返回有限样本并停止后续语句，`NULL` 谓词统一按失败处理。 |
 | `load hive/doris ... as t` | 编译 SQL 一致；Kyuubi 需要在 Kyuubi/Spark engine 侧配置好 Hive/Doris catalog。 |
 | 受控 HDFS 文件 load | 两边都只接受 workspace 相对路径，并使用相同内部命令和 driver extension 注册临时视图；原生文件 provider relation 统一拒绝。 |
 | 固定写入能力矩阵 | 两边都在提交前使用同一个 `WritePlan` 和矩阵；Hive/Doris/MySQL overwrite 永久拒绝。 |

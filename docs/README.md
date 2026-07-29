@@ -20,6 +20,7 @@
 ## Data
 
 - [数据源扩展](data/datasources.md)：`load/save`、Hive、MySQL、Doris、外部 provider。
+- [数据质量 Assert](data/assertions.md)：结果表或内联 SELECT 的逐行谓词、失败短路、能力边界和支持图。
 - [HDFS 与 Hive 对接](data/hadoop-hive.md)：本地 Hadoop/Hive/Kerberos 配置与排障。
 - [写入安全](data/safe-save.md)：固定能力矩阵、`WritePlan`、受控 HDFS workspace 和原生写入旁路保护。
 
@@ -27,6 +28,7 @@
 
 - [前端页面](ui/frontend.md)：静态前端资源、API 调用和后续页面演进。
 - [SQL 编辑器测试](ui/editor-testing.md)：编辑器、DSL、数据源、Kyuubi provider、HDFS/Hive 测试手册。
+- [Assert 测试用例](ui/assertion-testing.md)：Local/Kyuubi 的通过、失败、短路与常用数据质量场景。
 
 ## Ops
 

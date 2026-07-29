@@ -35,6 +35,155 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesAssertAsViolationQueryWithMetadata(): Unit = {
+    val statement = compiler.compile(
+      """assert quality_metrics
+        |where "row_count > 0 and null_count = 0"
+        |message "quality metrics are invalid";
+        |""".stripMargin).head
+
+    assertEquals(
+      "SELECT * FROM quality_metrics " +
+        "WHERE NOT COALESCE((row_count > 0 and null_count = 0), FALSE)",
+      statement.sql)
+    assertEquals(StatementIntent.Assert, statement.intent)
+    assertEquals(Some("quality_metrics"), statement.assertion.map(_.table))
+    assertEquals(
+      Some("row_count > 0 and null_count = 0"),
+      statement.assertion.map(_.predicate))
+    assertEquals(
+      Some("quality metrics are invalid"),
+      statement.assertion.map(_.message))
+  }
+
+  @Test
+  def compilesInlineQueryAssertAsViolationQuery(): Unit = {
+    val statement = compiler.compile(
+      """assert (
+        |  select dt, count(*) as row_count
+        |  from orders
+        |  group by dt
+        |)
+        |where "row_count > 0"
+        |message "partition is empty";
+        |""".stripMargin).head
+
+    assertEquals(
+      """SELECT * FROM (select dt, count(*) as row_count
+        |  from orders
+        |  group by dt) sparkone_assert_input WHERE NOT COALESCE((row_count > 0), FALSE)""".stripMargin,
+      statement.sql)
+    assertEquals(
+      Some(AssertionSource.InlineQuery(
+        """select dt, count(*) as row_count
+          |  from orders
+          |  group by dt""".stripMargin)),
+      statement.assertion.map(_.source))
+    assertEquals(Some("inline query"), statement.assertion.map(_.table))
+  }
+
+  @Test
+  def inlineQueryAssertSupportsNestedSqlAndVariables(): Unit = {
+    val statements = compiler.compile(
+      """set minimum_rows = "1";
+        |assert (
+        |  select category, count(*) as row_count
+        |  from (
+        |    select category
+        |    from source_data
+        |    where id > 0 and category in ('A', 'B')
+        |  ) filtered
+        |  group by category
+        |)
+        |where "coalesce(row_count, 0) >= ${minimum_rows}"
+        |message "category is empty";
+        |""".stripMargin)
+
+    val assertion = statements.last
+    assertTrue(assertion.sql.contains("from (\n    select category"))
+    assertTrue(assertion.sql.contains("where id > 0 and category in ('A', 'B')"))
+    assertEquals(
+      Some("coalesce(row_count, 0) >= 1"),
+      assertion.assertion.map(_.predicate))
+  }
+
+  @Test
+  def rejectsEmptyOrUnbalancedInlineQueryAssert(): Unit = {
+    val empty = tryCompile(
+      """assert () where "row_count > 0" message "invalid";""")
+    val unbalanced = tryCompile(
+      """assert (select count(*) as row_count from source
+        |where "row_count > 0" message "invalid";
+        |""".stripMargin)
+
+    assertTrue(
+      empty.getMessage,
+      empty.getMessage.contains("Parse error") ||
+        empty.getMessage.contains("Spark SQL parser rejected statement"))
+    assertTrue(
+      unbalanced.getMessage,
+      unbalanced.getMessage.contains("Parse error") ||
+        unbalanced.getMessage.contains("Spark SQL parser rejected statement"))
+  }
+
+  @Test
+  def inlineQueryAssertCannotBypassNativeProviderPathPolicy(): Unit = {
+    val error = tryCompile(
+      """assert (
+        |  select * from parquet.`/tmp/quality_metrics`
+        |)
+        |where "row_count > 0"
+        |message "invalid";
+        |""".stripMargin)
+
+    assertTrue(error.getMessage.contains("Native provider path 'parquet' is disabled"))
+  }
+
+  @Test
+  def assertUsesSparkSqlPredicatesAndSubstitutesVariables(): Unit = {
+    val statement = compiler.compile(
+      """set max_nulls = "3";
+        |assert quality_metrics
+        |where "coalesce(null_count, 0) <= ${max_nulls} and max_event_time >= current_timestamp() - interval 1 day"
+        |message "null_count must be <= ${max_nulls}";
+        |""".stripMargin).last
+
+    assertEquals(
+      Some("coalesce(null_count, 0) <= 3 and max_event_time >= current_timestamp() - interval 1 day"),
+      statement.assertion.map(_.predicate))
+    assertEquals(
+      Some("null_count must be <= 3"),
+      statement.assertion.map(_.message))
+  }
+
+  @Test
+  def rejectsEmptyOrMultiStatementAssertValues(): Unit = {
+    val emptyPredicate = tryCompile(
+      """assert quality_metrics where "" message "invalid";""")
+    val emptyMessage = tryCompile(
+      """assert quality_metrics where "row_count > 0" message "";""")
+    val semicolonPredicate = tryCompile(
+      """assert quality_metrics where "row_count > 0; select 1" message "invalid";""")
+
+    assertTrue(emptyPredicate.getMessage.contains("predicate must not be empty"))
+    assertTrue(emptyMessage.getMessage.contains("message must not be empty"))
+    assertTrue(semicolonPredicate.getMessage.contains("must not contain semicolons"))
+  }
+
+  @Test
+  def generatedAssertSqlIsAcceptedBySparkSqlParser(): Unit = {
+    val validatingCompiler = new SparkOneCompiler(new SparkSqlValidator)
+
+    val statement = validatingCompiler.compile(
+      """assert quality_metrics
+        |where "row_count > 0 and coalesce(null_count, 0) = 0"
+        |message "quality metrics are invalid";
+        |""".stripMargin).head
+
+    assertEquals(StatementIntent.Assert, statement.intent)
+  }
+
+  @Test
   def compilesLiteralSetAndSubstitutesLaterStatements(): Unit = {
     val sql = compiler.compile(
       """set biz_date = "2026-03-14";

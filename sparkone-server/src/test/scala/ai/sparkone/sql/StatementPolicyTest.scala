@@ -59,6 +59,7 @@ final class StatementPolicyTest {
       """load parquet.`source` as source_view;
         |view projected as select * from source_view;
         |set biz_date = "2026-07-13";
+        |assert projected where "id is not null" message "id must not be null";
         |save append projected as hive.`default.target`;
         |""".stripMargin)
 
@@ -67,6 +68,7 @@ final class StatementPolicyTest {
         StatementIntent.Load,
         StatementIntent.View,
         StatementIntent.SetVariable,
+        StatementIntent.Assert,
         StatementIntent.Save),
       statements.map(_.intent))
   }

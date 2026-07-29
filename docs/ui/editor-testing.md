@@ -2,6 +2,8 @@
 
 这个页面是 SparkOne MVP 的本地测试台，用来快速验证 Spark SQL、SparkOne 薄 DSL 转译、HDFS/Hive 配置和数据源读写。
 
+数据质量 `assert` 的完整用例单独见 [Assert 测试用例](assertion-testing.md)。
+
 访问地址通常是：
 
 ```text

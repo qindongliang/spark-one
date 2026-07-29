@@ -26,6 +26,9 @@ final class StatementPolicy {
         }
       }
     case Save => requireMetadata(statement.writePlan.nonEmpty, "SAVE")
+    case Assert =>
+      requireMetadata(statement.assertion.nonEmpty, "ASSERT")
+      validateNativeReadOnly(statement.sql)
   }
 
   private def validateNativeReadOnly(sql: String): Unit = {

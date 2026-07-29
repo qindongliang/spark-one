@@ -163,6 +163,184 @@ final class SparkOneRuntimePreviewTest {
     }
   }
 
+  @Test
+  def assertPassesAndContinuesWithLaterStatements(): Unit = {
+    val root = Files.createTempDirectory("sparkone-runtime-assert-pass-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """view quality_metrics as select 1 as row_count, 0 as null_count;
+          |assert quality_metrics
+          |where "row_count > 0 and null_count = 0"
+          |message "quality metrics are invalid";
+          |select 2 as continued;
+          |""".stripMargin)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(3, result.statements.size)
+      assertEquals(Some(AssertionStatus.Passed), result.statements(1).assertion.map(_.status))
+      assertEquals(Seq("2"), result.statements.last.rows.head)
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def inlineQueryAssertPassesAndContinuesWithLaterStatements(): Unit = {
+    val root = Files.createTempDirectory("sparkone-runtime-inline-assert-pass-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """assert (
+          |  select * from values (1), (2) as metrics(row_count)
+          |)
+          |where "row_count > 0"
+          |message "row_count must be positive";
+          |select 3 as continued;
+          |""".stripMargin)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(2, result.statements.size)
+      assertEquals(Some(AssertionStatus.Passed), result.statements.head.assertion.map(_.status))
+      assertEquals(Some("inline query"), result.statements.head.assertion.map(_.table))
+      assertEquals(Seq("3"), result.statements.last.rows.head)
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def inlineQueryAssertReturnsViolationsAndStopsLaterStatements(): Unit = {
+    val root = Files.createTempDirectory("sparkone-runtime-inline-assert-fail-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """assert (
+          |  select * from values (1), (0), (-1) as metrics(row_count)
+          |)
+          |where "row_count > 0"
+          |message "row_count must be positive";
+          |select 3 as should_not_run;
+          |""".stripMargin,
+        limit = 1)
+
+      assertFalse(result.success)
+      assertEquals(1, result.statements.size)
+      val assertion = result.statements.head
+      assertEquals(Some(AssertionStatus.Failed), assertion.assertion.map(_.status))
+      assertEquals(Some("row_count must be positive"), assertion.error)
+      assertEquals(1, assertion.rowCount)
+      assertTrue(assertion.truncated)
+      assertTrue(Set("0", "-1").contains(assertion.rows.head.head))
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def assertFailureReturnsLimitedViolationsAndStopsLaterStatements(): Unit = {
+    val root = Files.createTempDirectory("sparkone-runtime-assert-fail-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """view quality_metrics as
+          |select * from values (1), (0), (-1) as metrics(row_count);
+          |assert quality_metrics
+          |where "row_count > 0"
+          |message "row_count must be positive";
+          |select 2 as should_not_run;
+          |""".stripMargin,
+        limit = 1)
+
+      assertFalse(result.success)
+      assertEquals(2, result.statements.size)
+      val assertion = result.statements.last
+      assertEquals(Some(AssertionStatus.Failed), assertion.assertion.map(_.status))
+      assertEquals(Some("row_count must be positive"), assertion.error)
+      assertEquals(1, assertion.rowCount)
+      assertTrue(assertion.truncated)
+      assertTrue(Set("0", "-1").contains(assertion.rows.head.head))
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def assertTreatsNullPredicateAsFailure(): Unit = {
+    val root = Files.createTempDirectory("sparkone-runtime-assert-null-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """view quality_metrics as select cast(null as bigint) as row_count;
+          |assert quality_metrics
+          |where "row_count > 0"
+          |message "row_count must be positive";
+          |""".stripMargin)
+
+      assertFalse(result.success)
+      assertEquals(Some(AssertionStatus.Failed), result.statements.last.assertion.map(_.status))
+      assertNull(result.statements.last.rows.head.head)
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def assertTreatsEmptyResultTableAsPassed(): Unit = {
+    val root = Files.createTempDirectory("sparkone-runtime-assert-empty-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """view empty_metrics as select 1 as row_count where false;
+          |assert empty_metrics
+          |where "row_count > 0"
+          |message "row_count must be positive";
+          |""".stripMargin)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(Some(AssertionStatus.Passed), result.statements.last.assertion.map(_.status))
+      assertEquals(0, result.statements.last.rowCount)
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def assertReportsQueryExecutionErrorsSeparatelyFromBusinessFailures(): Unit = {
+    val root = Files.createTempDirectory("sparkone-runtime-assert-error-")
+    val spark = localSpark(root)
+    try {
+      val runtime = new SparkOneRuntime(spark)
+      val result = runtime.run(
+        """assert missing_metrics
+          |where "row_count > 0"
+          |message "row_count must be positive";
+          |""".stripMargin)
+
+      assertFalse(result.success)
+      assertEquals(1, result.statements.size)
+      val assertion = result.statements.head
+      assertEquals(Some(AssertionStatus.Error), assertion.assertion.map(_.status))
+      assertFalse(assertion.error.contains("row_count must be positive"))
+      assertTrue(assertion.error.get.contains("TABLE_OR_VIEW_NOT_FOUND"))
+    } finally {
+      spark.stop()
+      deleteRecursively(root)
+    }
+  }
+
   private def localSpark(root: Path): SparkSession = {
     SparkSession.builder()
       .appName("SparkOne RuntimePreviewTest")

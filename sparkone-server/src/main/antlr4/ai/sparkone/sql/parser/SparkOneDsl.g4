@@ -9,6 +9,7 @@ statement
     | saveStatement
     | setStatement
     | viewStatement
+    | assertStatement
     | sqlStatement
     ;
 
@@ -26,6 +27,11 @@ viewStatement
 
 setStatement
     : SET key=identifier (EQ value=setValue | AS query=sqlStatement)
+    ;
+
+assertStatement
+    : ASSERT (table=identifier | LPAREN query=sqlStatement RPAREN)
+      WHERE predicate=quotedValue MESSAGE message=quotedValue
     ;
 
 source
@@ -78,7 +84,16 @@ identifier
     ;
 
 sqlStatement
-    : sqlToken+
+    : sqlElement+
+    ;
+
+sqlElement
+    : sqlToken
+    | parenthesizedSql
+    ;
+
+parenthesizedSql
+    : LPAREN sqlElement* RPAREN
     ;
 
 sqlToken
@@ -86,6 +101,8 @@ sqlToken
     | SAVE
     | SET
     | VIEW
+    | ASSERT
+    | MESSAGE
     | AS
     | WHERE
     | OPTIONS
@@ -114,6 +131,8 @@ LOAD: L O A D;
 SAVE: S A V E;
 SET: S E T;
 VIEW: V I E W;
+ASSERT: A S S E R T;
+MESSAGE: M E S S A G E;
 AS: A S;
 WHERE: W H E R E;
 OPTIONS: O P T I O N S;
@@ -134,6 +153,8 @@ DOT: '.';
 EQ: '=';
 COMMA: ',';
 SEMICOLON: ';';
+LPAREN: '(';
+RPAREN: ')';
 
 LINE_COMMENT: '--' ~[\r\n]* -> skip;
 BLOCK_COMMENT: '/*' .*? '*/' -> skip;
@@ -151,6 +172,7 @@ fragment G: [gG];
 fragment H: [hH];
 fragment I: [iI];
 fragment L: [lL];
+fragment M: [mM];
 fragment N: [nN];
 fragment O: [oO];
 fragment P: [pP];

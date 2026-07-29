@@ -8,6 +8,7 @@
   --accent: #106b5f;
   --accent-strong: #0a4d45;
   --danger: #a33a2f;
+  --success: #18794e;
   --code: #111827;
 }
 
@@ -409,6 +410,45 @@ th {
   color: #6f4e08;
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;
+}
+
+.assertion {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--line);
+  background: #f7fafc;
+  font-size: 12px;
+}
+
+.assertion-passed {
+  border-left-color: var(--success);
+  background: #f1f8f4;
+}
+
+.assertion-failed,
+.assertion-error {
+  border-left-color: var(--danger);
+  background: #fff5f3;
+}
+
+.assertion-title {
+  font-weight: 650;
+}
+
+.assertion-passed .assertion-title {
+  color: var(--success);
+}
+
+.assertion-failed .assertion-title,
+.assertion-error .assertion-title {
+  color: var(--danger);
+}
+
+.assertion-detail {
+  margin-top: 4px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 880px) {

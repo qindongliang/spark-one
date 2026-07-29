@@ -218,7 +218,14 @@ final class KyuubiJdbcEngine(
             truncated = false,
             previewTable = None,
             durationMs = elapsedMs(started),
-            error = Some(errorMessage(e)))
+            error = Some(errorMessage(e)),
+            assertion = statement.flatMap(_.assertion).map { plan =>
+              AssertionResult(
+                plan.table,
+                plan.predicate,
+                AssertionStatus.Error,
+                plan.message)
+            })
       }
       results += result
       continue = result.success
@@ -284,45 +291,83 @@ final class KyuubiJdbcEngine(
         StatementResult(index, statement.source, statement.sql, success = true, Nil, Nil, 0,
           truncated = false, None, elapsedMs(started), None)
       case None =>
-        try {
-          withStatement(session, retryOnReconnect = statement.writePlan.isEmpty) { jdbcStatement =>
-            jdbcStatement.setMaxRows(previewLimit + 1)
-            jdbcStatement.setFetchSize(previewLimit + 1)
-            val hasResultSet = jdbcStatement.execute(statement.sql)
-            val collected =
-              if (hasResultSet) {
-                val resultSet = jdbcStatement.getResultSet
-                try {
-                  collectResultSet(resultSet, previewLimit)
-                } finally {
-                  resultSet.close()
-                }
-              } else if (statement.load.nonEmpty) {
-                collectSchema(session, statement.load.get.table, previewLimit)
-              } else {
-                JdbcResult(Nil, Nil, truncated = false)
+        statement.assertion match {
+          case Some(plan) =>
+            withStatement(session) { jdbcStatement =>
+              jdbcStatement.setMaxRows(previewLimit + 1)
+              jdbcStatement.setFetchSize(previewLimit + 1)
+              val resultSet = jdbcStatement.executeQuery(statement.sql)
+              val collected = try {
+                collectResultSet(resultSet, previewLimit)
+              } finally {
+                resultSet.close()
               }
+              val passed = collected.rows.isEmpty
+              if (!passed) {
+                logger.warn(
+                  s"Assertion failed, engine=$id, tenant=${session.tenant.username}, " +
+                    s"statement=$index, table=${plan.table}, " +
+                    s"predicate=${summarizeSql(plan.predicate)}, message=${summarizeSql(plan.message)}")
+              }
+              StatementResult(
+                index = index,
+                source = statement.source,
+                sql = statement.sql,
+                success = passed,
+                schema = collected.schema,
+                rows = collected.rows,
+                rowCount = collected.rows.size,
+                truncated = collected.truncated,
+                previewTable = None,
+                durationMs = elapsedMs(started),
+                error = if (passed) None else Some(plan.message),
+                assertion = Some(AssertionResult(
+                  plan.table,
+                  plan.predicate,
+                  if (passed) AssertionStatus.Passed else AssertionStatus.Failed,
+                  plan.message)))
+            }
+          case None =>
+            try {
+              withStatement(session, retryOnReconnect = statement.writePlan.isEmpty) { jdbcStatement =>
+                jdbcStatement.setMaxRows(previewLimit + 1)
+                jdbcStatement.setFetchSize(previewLimit + 1)
+                val hasResultSet = jdbcStatement.execute(statement.sql)
+                val collected =
+                  if (hasResultSet) {
+                    val resultSet = jdbcStatement.getResultSet
+                    try {
+                      collectResultSet(resultSet, previewLimit)
+                    } finally {
+                      resultSet.close()
+                    }
+                  } else if (statement.load.nonEmpty) {
+                    collectSchema(session, statement.load.get.table, previewLimit)
+                  } else {
+                    JdbcResult(Nil, Nil, truncated = false)
+                  }
 
-            StatementResult(
-              index = index,
-              source = statement.source,
-              sql = statement.sql,
-              success = true,
-              schema = collected.schema,
-              rows = collected.rows,
-              rowCount = collected.rows.size,
-              truncated = collected.truncated,
-              previewTable = statement.load.map(_.table),
-              durationMs = elapsedMs(started),
-              error = None)
-          }
-        } catch {
-          case NonFatal(e) if statement.writePlan.nonEmpty && shouldReconnect(e) =>
-            val target = statement.writePlan.map(_.target.identifier).getOrElse("unknown")
-            throw new CompileException(
-              s"SAVE connection was interrupted; write status is unknown and SparkOne did not retry. " +
-                s"Verify target before submitting again: $target",
-              e)
+                StatementResult(
+                  index = index,
+                  source = statement.source,
+                  sql = statement.sql,
+                  success = true,
+                  schema = collected.schema,
+                  rows = collected.rows,
+                  rowCount = collected.rows.size,
+                  truncated = collected.truncated,
+                  previewTable = statement.load.map(_.table),
+                  durationMs = elapsedMs(started),
+                  error = None)
+              }
+            } catch {
+              case NonFatal(e) if statement.writePlan.nonEmpty && shouldReconnect(e) =>
+                val target = statement.writePlan.map(_.target.identifier).getOrElse("unknown")
+                throw new CompileException(
+                  s"SAVE connection was interrupted; write status is unknown and SparkOne did not retry. " +
+                    s"Verify target before submitting again: $target",
+                  e)
+            }
         }
     }
   }

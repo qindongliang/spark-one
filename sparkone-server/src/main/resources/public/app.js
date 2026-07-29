@@ -204,7 +204,10 @@ function createEditor(textarea) {
 
 function registerSparkOneSqlMode() {
   const sparkSqlMode = window.CodeMirror.resolveMode('text/x-sparksql');
-  const keywords = Object.assign({}, sparkSqlMode.keywords || {}, keywordSet('view load save options partitionby mysql doris'));
+  const keywords = Object.assign(
+    {},
+    sparkSqlMode.keywords || {},
+    keywordSet('view load save assert message options partitionby mysql doris'));
 
   window.CodeMirror.defineMIME('text/x-sparkone-sql', Object.assign({}, sparkSqlMode, {
     keywords
@@ -266,9 +269,13 @@ function render(data, path, scope) {
 
   for (const statement of data.statements || []) {
     const parts = [];
+    const assertion = statement.assertion || null;
     if (showCompiledSql) parts.push(compiledSqlBlock(statement.sql + ';'));
-    if (statement.error) parts.push(errorBlock(statement.error));
-    if (statement.schema && statement.schema.length) {
+    if (assertion) parts.push(assertionBlock(assertion));
+    if (statement.error && (!assertion || assertion.status !== 'failed')) {
+      parts.push(errorBlock(statement.error));
+    }
+    if (statement.schema && statement.schema.length && (!assertion || assertion.status !== 'passed')) {
       parts.push(resultTabs(statement));
     }
     if (!parts.length) parts.push(emptyBlock('Statement executed with no result rows.'));
@@ -327,6 +334,30 @@ function warningBlock(text) {
   const node = document.createElement('div');
   node.className = 'warning';
   node.textContent = text;
+  return node;
+}
+
+function assertionBlock(assertion) {
+  const node = document.createElement('div');
+  const status = assertion.status || 'error';
+  node.className = `assertion assertion-${status}`;
+
+  const title = document.createElement('div');
+  title.className = 'assertion-title';
+  const labels = {
+    passed: 'Check passed',
+    failed: 'Check failed',
+    error: 'Check error'
+  };
+  title.textContent = `${labels[status] || labels.error} · ${assertion.table}`;
+  node.appendChild(title);
+
+  const detail = document.createElement('div');
+  detail.className = 'assertion-detail';
+  detail.textContent = status === 'failed'
+    ? assertion.message
+    : `Predicate: ${assertion.predicate}`;
+  node.appendChild(detail);
   return node;
 }
 

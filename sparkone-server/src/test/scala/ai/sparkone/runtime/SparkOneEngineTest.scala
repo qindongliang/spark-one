@@ -558,6 +558,156 @@ final class SparkOneEngineTest {
   }
 
   @Test
+  def kyuubiAssertPassesAndContinuesWithLaterStatements(): Unit = {
+    val assertionSql =
+      "SELECT * FROM quality_metrics WHERE NOT COALESCE((row_count > 0), FALSE)"
+    val fake = new RecordingJdbcConnection(
+      queryColumns = {
+        case `assertionSql` => Seq("row_count")
+        case _ => Nil
+      })
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """view quality_metrics as select 1 as row_count;
+          |assert quality_metrics
+          |where "row_count > 0"
+          |message "row_count must be positive";
+          |select 2 as continued;
+          |""".stripMargin,
+        10)
+
+      assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      assertEquals(3, result.statements.size)
+      assertEquals(Some(AssertionStatus.Passed), result.statements(1).assertion.map(_.status))
+      assertEquals(assertionSql, result.statements(1).sql)
+      assertEquals(
+        Seq(
+          "CREATE OR REPLACE TEMPORARY VIEW quality_metrics AS select 1 as row_count",
+          assertionSql,
+          "select 2 as continued"),
+        fake.executedSql)
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiAssertFailureReturnsLimitedViolationsAndStopsLaterStatements(): Unit = {
+    val assertionSql =
+      "SELECT * FROM quality_metrics WHERE NOT COALESCE((row_count > 0), FALSE)"
+    val fake = new RecordingJdbcConnection(
+      queryColumns = {
+        case `assertionSql` => Seq("row_count")
+        case _ => Nil
+      },
+      queryRows = {
+        case `assertionSql` => Seq(Seq("0"), Seq("-1"))
+        case _ => Nil
+      })
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """view quality_metrics as select 0 as row_count;
+          |assert quality_metrics
+          |where "row_count > 0"
+          |message "row_count must be positive";
+          |select 2 as should_not_run;
+          |""".stripMargin,
+        1)
+
+      assertFalse(result.success)
+      assertEquals(2, result.statements.size)
+      val assertion = result.statements.last
+      assertEquals(Some(AssertionStatus.Failed), assertion.assertion.map(_.status))
+      assertEquals(Some("row_count must be positive"), assertion.error)
+      assertEquals(Seq(Seq("0")), assertion.rows)
+      assertTrue(assertion.truncated)
+      assertEquals(
+        Seq(
+          "CREATE OR REPLACE TEMPORARY VIEW quality_metrics AS select 0 as row_count",
+          assertionSql),
+        fake.executedSql)
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiInlineQueryAssertUsesTheSameFailureSemantics(): Unit = {
+    val assertionSql =
+      "SELECT * FROM (select * from values (1), (0) as metrics(row_count)) " +
+        "sparkone_assert_input WHERE NOT COALESCE((row_count > 0), FALSE)"
+    val fake = new RecordingJdbcConnection(
+      queryColumns = {
+        case `assertionSql` => Seq("row_count")
+        case _ => Nil
+      },
+      queryRows = {
+        case `assertionSql` => Seq(Seq("0"))
+        case _ => Nil
+      })
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """assert (
+          |  select * from values (1), (0) as metrics(row_count)
+          |)
+          |where "row_count > 0"
+          |message "row_count must be positive";
+          |select 2 as should_not_run;
+          |""".stripMargin,
+        10)
+
+      assertFalse(result.success)
+      assertEquals(1, result.statements.size)
+      val assertion = result.statements.head
+      assertEquals(Some(AssertionStatus.Failed), assertion.assertion.map(_.status))
+      assertEquals(Some("inline query"), assertion.assertion.map(_.table))
+      assertEquals(Seq(Seq("0")), assertion.rows)
+      assertEquals(Seq(assertionSql), fake.executedSql)
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiAssertReportsQueryExecutionErrorsSeparatelyFromBusinessFailures(): Unit = {
+    val assertionSql =
+      "SELECT * FROM missing_metrics WHERE NOT COALESCE((row_count > 0), FALSE)"
+    val fake = new RecordingJdbcConnection(
+      queryFailure = sql =>
+        if (sql == assertionSql) Some(new SQLException("TABLE_OR_VIEW_NOT_FOUND"))
+        else None)
+    val engine = kyuubiEngine(_ => fake.connection)
+
+    try {
+      val result = engine.run(
+        tenant,
+        """assert missing_metrics
+          |where "row_count > 0"
+          |message "row_count must be positive";
+          |""".stripMargin,
+        10)
+
+      assertFalse(result.success)
+      assertEquals(1, result.statements.size)
+      val assertion = result.statements.head
+      assertEquals(Some(AssertionStatus.Error), assertion.assertion.map(_.status))
+      assertEquals(Some("TABLE_OR_VIEW_NOT_FOUND"), assertion.error)
+      assertEquals(Seq(assertionSql), fake.executedSql)
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
   def kyuubiRunIsolatedRunsUseIndependentConnectionsAndCloseThem(): Unit = {
     val started = new CountDownLatch(2)
     val release = new CountDownLatch(1)
@@ -1000,17 +1150,30 @@ final class SparkOneEngineTest {
       queryFailure: String => Option[SQLException] = _ => None,
       executeFailure: String => Option[SQLException] = _ => None,
       queryColumns: String => Seq[String] = sql =>
-        if (sql.startsWith("SELECT * FROM")) Seq("id") else Nil) {
+        if (sql.startsWith("SELECT * FROM")) Seq("id") else Nil,
+      queryRows: String => Seq[Seq[String]] = _ => Nil) {
     val executedSql: ArrayBuffer[String] = ArrayBuffer.empty
     @volatile var closed: Boolean = false
     @volatile var valid: Boolean = true
     @volatile var validationCount: Int = 0
 
-    private def resultSet(columns: Seq[String]): ResultSet = proxy(classOf[ResultSet]) { method =>
-      method.getName match {
-        case "getMetaData" => resultSetMetadata(columns)
-        case "next" => Boolean.box(false)
-        case _ => defaultValue(method.getReturnType)
+    private def resultSet(columns: Seq[String], rows: Seq[Seq[String]]): ResultSet = {
+      var rowIndex = -1
+      var lastWasNull = false
+      proxyWithArgs(classOf[ResultSet]) { (method, args) =>
+        method.getName match {
+          case "getMetaData" => resultSetMetadata(columns)
+          case "next" =>
+            rowIndex += 1
+            Boolean.box(rowIndex < rows.size)
+          case "getString" | "getObject" =>
+            val columnIndex = args(0).asInstanceOf[Integer].intValue() - 1
+            val value = rows(rowIndex)(columnIndex)
+            lastWasNull = value == null
+            value
+          case "wasNull" => Boolean.box(lastWasNull)
+          case _ => defaultValue(method.getReturnType)
+        }
       }
     }
 
@@ -1032,7 +1195,7 @@ final class SparkOneEngineTest {
           val sql = args(0).asInstanceOf[String]
           executedSql += sql
           queryFailure(sql).foreach(error => throw error)
-          resultSet(queryColumns(sql))
+          resultSet(queryColumns(sql), queryRows(sql))
         case "execute" =>
           val sql = args(0).asInstanceOf[String]
           executedSql += sql

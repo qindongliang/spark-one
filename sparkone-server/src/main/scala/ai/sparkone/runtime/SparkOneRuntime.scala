@@ -45,10 +45,14 @@ final class SparkOneRuntime(
       val previewLimit = PreviewConfig.current.clampRows(Some(limit))
       val sources = compiler.splitStatements(script)
       val variables = mutable.LinkedHashMap[String, String]()
-      val results: Seq[StatementResult] = sources.zipWithIndex.map { case (source, offset) =>
+      val results = mutable.ArrayBuffer.empty[StatementResult]
+      val remaining = sources.iterator.zipWithIndex
+      var continue = true
+      while (continue && remaining.hasNext) {
+        val (source, offset) = remaining.next()
         val started = System.nanoTime()
         var statement: Option[CompiledStatement] = None
-        try {
+        val result = try {
           val compiledStatement = compiler.compileStatementWithVariables(tenant, source, variables.toMap)
           statement = Some(compiledStatement)
           val executableStatement = prepareWriteStatement(compiledStatement)
@@ -59,18 +63,33 @@ final class SparkOneRuntime(
             if (shouldCollectRows) dataFrame.limit(previewLimit + 1).collect().toSeq
             else Seq.empty[Row]
           val visibleRows = collected.take(previewLimit).map(rowToStrings)
+          val assertion = executableStatement.assertion.map { plan =>
+            val status =
+              if (collected.isEmpty) AssertionStatus.Passed
+              else AssertionStatus.Failed
+            AssertionResult(plan.table, plan.predicate, status, plan.message)
+          }
+          val assertionPassed = assertion.forall(_.status == AssertionStatus.Passed)
+          if (!assertionPassed) {
+            executableStatement.assertion.foreach { plan =>
+              logger.warn(
+                s"Assertion failed, statement=${offset + 1}, table=${plan.table}, " +
+                  s"predicate=${summarizeSql(plan.predicate)}, message=${summarizeSql(plan.message)}")
+            }
+          }
           StatementResult(
             index = offset + 1,
             source = executableStatement.source,
             sql = executableStatement.sql,
-            success = true,
+            success = assertionPassed,
             schema = schemaInfo(dataFrame),
             rows = visibleRows,
             rowCount = visibleRows.size,
             truncated = shouldCollectRows && collected.size > previewLimit,
             previewTable = executableStatement.load.map(_.table),
             durationMs = elapsedMs(started),
-            error = None)
+            error = executableStatement.assertion.filter(_ => !assertionPassed).map(_.message),
+            assertion = assertion)
         } catch {
           case e: Exception =>
             val sourceSummary = statement.map(_.source).getOrElse(source)
@@ -90,14 +109,23 @@ final class SparkOneRuntime(
               truncated = false,
               previewTable = None,
               durationMs = elapsedMs(started),
-              error = Some(errorMessage(e)))
+              error = Some(errorMessage(e)),
+              assertion = statement.flatMap(_.assertion).map { plan =>
+                AssertionResult(
+                  plan.table,
+                  plan.predicate,
+                  AssertionStatus.Error,
+                  plan.message)
+              })
         }
+        results += result
+        continue = result.success
       }
 
       val success = results.forall(_.success)
       val visibleResults =
         if (success && results.nonEmpty && results.forall(_.previewTable.nonEmpty)) results.takeRight(1)
-        else results
+        else results.toSeq
       RunResult(success, visibleResults)
     }
   }

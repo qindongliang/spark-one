@@ -6,7 +6,8 @@ final case class CompiledStatement(
     load: Option[LoadStatementMetadata] = None,
     writePlan: Option[WritePlan] = None,
     set: Option[SetStatementMetadata] = None,
-    intent: StatementIntent = StatementIntent.NativeSql)
+    intent: StatementIntent = StatementIntent.NativeSql,
+    assertion: Option[AssertionPlan] = None)
 
 sealed trait StatementIntent
 
@@ -16,6 +17,28 @@ object StatementIntent {
   case object View extends StatementIntent
   case object SetVariable extends StatementIntent
   case object Save extends StatementIntent
+  case object Assert extends StatementIntent
+}
+
+sealed trait AssertionSource {
+  def displayName: String
+}
+
+object AssertionSource {
+  final case class Table(name: String) extends AssertionSource {
+    override val displayName: String = name
+  }
+
+  final case class InlineQuery(sql: String) extends AssertionSource {
+    override val displayName: String = "inline query"
+  }
+}
+
+final case class AssertionPlan(
+    source: AssertionSource,
+    predicate: String,
+    message: String) {
+  def table: String = source.displayName
 }
 
 final case class SetStatementMetadata(

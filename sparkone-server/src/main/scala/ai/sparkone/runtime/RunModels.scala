@@ -28,6 +28,18 @@ object SessionMode {
 
 final case class FieldInfo(name: String, dataType: String, nullable: Boolean)
 
+final case class AssertionResult(
+    table: String,
+    predicate: String,
+    status: String,
+    message: String)
+
+object AssertionStatus {
+  val Passed: String = "passed"
+  val Failed: String = "failed"
+  val Error: String = "error"
+}
+
 final case class StatementResult(
     index: Int,
     source: String,
@@ -39,7 +51,8 @@ final case class StatementResult(
     truncated: Boolean,
     previewTable: Option[String],
     durationMs: Long,
-    error: Option[String])
+    error: Option[String],
+    assertion: Option[AssertionResult] = None)
 
 final case class RunResult(
     success: Boolean,

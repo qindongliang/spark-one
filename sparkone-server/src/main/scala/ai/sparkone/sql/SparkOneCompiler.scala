@@ -67,7 +67,8 @@ final class SparkOneCompiler(
         compiled.load,
         compiled.writePlan,
         compiled.set,
-        compiled.intent)
+        compiled.intent,
+        compiled.assertion)
       statementPolicy.validate(statement)
       compiled.set.foreach { metadata =>
         if (metadata.valueType == SetValueType.Literal) {
@@ -101,6 +102,8 @@ final class SparkOneCompiler(
       compileSet(script, statement.setStatement())
     } else if (statement.viewStatement() != null) {
       CompileResult(compileView(script, statement.viewStatement()), intent = StatementIntent.View)
+    } else if (statement.assertStatement() != null) {
+      compileAssert(script, statement.assertStatement())
     } else {
       val sql = originalText(script, statement).trim
       rejectMalformedSparkOneDsl(sql)
@@ -122,6 +125,35 @@ final class SparkOneCompiler(
       SparkOneSqlRender.renderSparkOneAction("SET", key),
       set = Some(SetStatementMetadata(key, value, valueType)),
       intent = StatementIntent.SetVariable)
+  }
+
+  private def compileAssert(
+      script: String,
+      assertion: SparkOneDslParser.AssertStatementContext): CompileResult = {
+    val source =
+      if (assertion.table != null) {
+        AssertionSource.Table(
+          SparkOneSqlRender.requireIdentifier(assertion.table.getText, "ASSERT result table"))
+      } else {
+        val query = hiveCatalogAliasRewriter.rewrite(originalText(script, assertion.query).trim)
+        AssertionSource.InlineQuery(query)
+      }
+    val predicate = stripQuoted(assertion.predicate.getText).trim
+    val message = stripQuoted(assertion.message.getText).trim
+    if (predicate.isEmpty) {
+      throw new CompileException("ASSERT predicate must not be empty")
+    }
+    if (predicate.contains(";")) {
+      throw new CompileException("ASSERT predicate must not contain semicolons")
+    }
+    if (message.isEmpty) {
+      throw new CompileException("ASSERT message must not be empty")
+    }
+    val plan = AssertionPlan(source, predicate, message)
+    CompileResult(
+      SparkOneSqlRender.renderAssertionFailures(plan),
+      assertion = Some(plan),
+      intent = StatementIntent.Assert)
   }
 
   private def rejectLegacyDslWhere(sql: String): Unit = {
@@ -277,6 +309,7 @@ private final case class CompileResult(
     writePlan: Option[WritePlan] = None,
     load: Option[LoadStatementMetadata] = None,
     set: Option[SetStatementMetadata] = None,
+    assertion: Option[AssertionPlan] = None,
     intent: StatementIntent = StatementIntent.NativeSql)
 
 private object SparkOneCompiler {
@@ -309,6 +342,14 @@ private object SparkOneCompiler {
 }
 
 private[sql] object SparkOneSqlRender {
+  def renderAssertionFailures(plan: AssertionPlan): String = {
+    val sourceSql = plan.source match {
+      case AssertionSource.Table(name) => name
+      case AssertionSource.InlineQuery(sql) => s"($sql) sparkone_assert_input"
+    }
+    s"SELECT * FROM $sourceSql WHERE NOT COALESCE((${plan.predicate}), FALSE)"
+  }
+
   def renderCreateTempViewUsing(
       table: String,
       provider: String,
