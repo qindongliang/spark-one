@@ -16,6 +16,81 @@ Kyuubi engine 通过 Kyuubi JDBC 提交 Spark SQL，是 SparkOne 面向远程 SQ
 
 Kyuubi Server 启动 Spark SQL engine 后，还会把合并后的 profile 作为内部 session 配置传给 engine。engine 默认继承同一份 restrict list，如果继续使用 `spark.*` 通配限制，会把可信 profile 误判为客户端注入并拒绝连接。因此每套受信任 profile 都要将传给 engine 的 `kyuubi.session.conf.restrict.list` 覆写为空。这个覆写发生在 Server 完成外部配置校验之后，不会取消 Kyuubi Server 自身的限制。
 
+### 配置加载与优先级
+
+`kyuubi-defaults.conf` 和 profile 不是两个同时修改 Kyuubi Server 全局状态的配置文件。Kyuubi 中至少有两个独立的配置作用域：
+
+| 配置对象 | 何时创建 | 配置来源 | 主要影响 |
+| --- | --- | --- | --- |
+| Kyuubi Server frontend | Server 启动时 | `kyuubi-defaults.conf` | frontend SessionManager、operation、认证、端口、服务发现 |
+| Spark engine/backend | 首次连接某个 engine space、启动 engine 时 | `kyuubi-defaults.conf` 公共基线 + JDBC OpenSession 配置 + 当前所选 profile | `spark-submit`、Spark engine 的 backend SessionManager、资源和 engine 生命周期 |
+
+启用 `FileSessionConfAdvisor` 后，一条连接只会加载一个 `$KYUUBI_CONF_DIR/kyuubi-session-<profile>.conf`。`local`、`yarn-client` 和 `yarn-cluster` 是三个并列 profile，不会彼此继承；它们都以 `kyuubi-defaults.conf` 为公共基线：
+
+| JDBC 中的 profile 值 | 实际加载文件 | engine subdomain | Spark 运行方式 |
+| --- | --- | --- | --- |
+| `local` | `kyuubi-session-local.conf` | `local` | `local[2]` |
+| `yarn-client` | `kyuubi-session-yarn-client.conf` | `yarn-client` | `yarn` + `client` |
+| `yarn-cluster` | `kyuubi-session-yarn-cluster.conf` | `yarn-cluster` | `yarn` + `cluster` |
+
+三份文件都必须位于每个 Kyuubi Server 的同一个 `$KYUUBI_CONF_DIR` 下，文件名由 profile 值严格拼接得到。对一个尚未启动的新 engine，其有效配置优先级可以简化为：
+
+```text
+Kyuubi 内置默认值
+  < kyuubi-defaults.conf
+  < JDBC OpenSession 中允许客户端设置的配置
+  < 当前选中的 kyuubi-session-<profile>.conf
+```
+
+profile 在最后合并，因此同名键由 profile 覆盖 JDBC 和公共基线。客户端配置会先经过 `kyuubi.session.conf.restrict.list` 校验；被限制的键不是“优先级较低”，而是直接拒绝，根本不会进入合并。
+
+这个优先级只适用于所选 engine 的启动配置和 backend 配置，不适用于已经初始化的 Kyuubi Server frontend。profile 中的 `kyuubi.session.idle.timeout` 不会反向修改 Server frontend SessionManager；profile 中的 master、资源和生命周期参数也不会原地重配已经运行的 engine。修改公共 Server 参数必须重启每个 Kyuubi Server；修改 profile 后要让 engine 级全局参数确定生效，应等待 profile 缓存刷新并停止旧 engine，再由新连接重新拉起。
+
+### ODEP 数据源进程快照
+
+`sparkone-kyuubi-odep-plugin` 是 Kyuubi Server 侧的 `SessionConfAdvisor`。Kyuubi 1.9.4 在每个 Server 的首个 Session 创建时初始化 advisor，插件使用 OpenAPI 签名从 ODEP 拉取一次 `/api/datasource/snapshot`，把完整快照保存在当前 Server 进程内存，并把可映射的数据源转换为 Spark Catalog session overlay。本阶段不定时刷新；ODEP 注册信息变化后重启所有 Kyuubi Server，共享模式下再停止旧 engine。
+
+构建插件：
+
+```bash
+scripts/build.sh sparkone-kyuubi-odep-plugin
+```
+
+把 `sparkone-kyuubi-odep-plugin/target/sparkone-kyuubi-odep-plugin-0.1.0-SNAPSHOT.jar` 放入每个 Kyuubi Server 的 `$KYUUBI_HOME/jars`。插件依赖的 Jackson、SLF4J 和 `kyuubi-server-plugin` 已由 Kyuubi 1.9.4 提供，不需要重复复制。
+
+Kyuubi Server 进程必须配置：
+
+```bash
+export ODEP_API_URL=https://odep-api.example
+export ODEP_KYUUBI_APP_ID=app_kyuubi
+export ODEP_KYUUBI_SIGN_KEY='<sign-key>'
+export ODEP_CONNECT_TIMEOUT_SECONDS=5
+export ODEP_REQUEST_TIMEOUT_SECONDS=60
+```
+
+`ODEP_API_URL` 是 ODEP API 根地址，插件固定请求其 `/api/datasource/snapshot`。`ODEP_API_URL`、`ODEP_KYUUBI_APP_ID`、`ODEP_KYUUBI_SIGN_KEY` 中任意一个缺失、HTTP/业务响应失败、JSON 结构非法或仍包含 `${...}` 占位符，首个 Session 创建失败；Kyuubi Server 进程本身仍保持运行。日志只记录数据源数量、生成的 Catalog 数量以及不支持映射的 `type/alias`，不记录 options、URL、用户或密码。
+
+`kyuubi-defaults.conf` 中把 ODEP advisor 放在文件 advisor 后面：
+
+```properties
+kyuubi.session.conf.advisor org.apache.kyuubi.session.FileSessionConfAdvisor,ai.sparkone.kyuubi.odep.OdepDatasourceSessionConfAdvisor
+kyuubi.session.conf.restrict.list spark.*,kyuubi.engine.share.level,kyuubi.engine.share.level.subdomain
+kyuubi.server.redaction.regex (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
+spark.redaction.regex (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
+```
+
+Kyuubi 1.9.4 按 advisor 声明顺序合并 overlay，后面的 ODEP 配置覆盖 profile 中同名的静态 Catalog。客户端配置仍先经过 Server restrict list，不能覆盖受控 Catalog。两条 redaction 正则还会分别遮蔽 Kyuubi Engine 启动命令和 Spark 日志/UI 中的 Catalog URL、用户名、密码及 Doris FE 地址。当前映射规则为：
+
+| ODEP type | Spark Catalog 名 | 实现 |
+| --- | --- | --- |
+| `jdbc` 且 URL/driver 为 MySQL | `mysql_<alias>` | Spark `JDBCTableCatalog`，URL 自动补 `databaseTerm=SCHEMA` |
+| `doris` | `doris_<alias>` | Doris `DorisTableCatalog` |
+| `es`、`solr` 和其他类型 | 暂不生成 | 保留在 Server 内存快照并记录告警 |
+
+例如 ODEP 中 `jdbc/dworks` 和 `doris/recommend` 分别注册为 `mysql_dworks`、`doris_recommend`。插件只负责 Catalog 配置；MySQL driver、Doris connector 等运行依赖仍必须安装在 Spark engine classpath。
+
+该方案使用 Kyuubi 1.9.4 原生的 advisor 懒加载行为，不修改 Kyuubi 源码，也不需要维护自定义 Kyuubi 构建。部署后可主动创建一次测试连接进行预热，使 ODEP 配置错误在业务流量进入前暴露。
+
 ### 公共 Kyuubi 配置
 
 `$KYUUBI_CONF_DIR/kyuubi-defaults.conf` 的推荐结构如下。密码和 keytab 路径应使用实际值，并限制该文件仅 Kyuubi 运行账号可读；不要提交到 SparkOne 仓库。
@@ -60,8 +135,8 @@ spark.sql.catalog.doris.doris.query.port     9030
 spark.sql.catalog.doris.doris.request.retries 3
 
 # Kyuubi engine 启动日志，以及 Spark UI、YARN 和 event log 中的敏感配置脱敏
-kyuubi.server.redaction.regex                 (?i)secret|password|token|access[.]?key
-spark.redaction.regex                         (?i)secret|password|token|access[.]?key
+kyuubi.server.redaction.regex                 (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
+spark.redaction.regex                         (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
 
 # Kyuubi 服务和 engine 共享策略
 kyuubi.authentication                        NONE
@@ -82,7 +157,7 @@ kyuubi.session.conf.restrict.list            spark.*,kyuubi.engine.share.level,k
 
 这里故意不设置 `spark.master`、`spark.submit.deployMode`、`spark.driver.host` 和 YARN 资源参数。`spark.jars` 使用 Kyuubi gateway 本机可读的路径，`spark-submit` 会在 YARN 模式下负责上传和分发；JAR 必须与实际 `SPARK_HOME` 的 Spark/Scala 版本匹配。
 
-`kyuubi.server.redaction.regex` 负责 Kyuubi Server 日志中的 engine 启动命令和配置，`spark.redaction.regex` 负责 Spark UI、YARN 与 event log。两者只影响后续输出，不会清理已有日志，也不会加密 `kyuubi-defaults.conf`；配置文件仍应限制为 Kyuubi 运行账号可读。
+`kyuubi.server.redaction.regex` 负责 Kyuubi Server 日志中的 engine 启动命令和配置，`spark.redaction.regex` 负责 Spark UI、YARN 与 event log。两者会遮蔽通用密钥和 ODEP Catalog 的连接地址、用户、密码，只影响后续输出，不会清理已有日志，也不会加密 `kyuubi-defaults.conf`；配置文件仍应限制为 Kyuubi 运行账号可读。redaction 也不会遮蔽操作系统进程列表中的 `spark-submit --conf` 参数，MVP 环境必须限制其他账号查看 Kyuubi/Spark 进程；生产化前应进一步改为不经过进程命令行传递 Catalog 密钥。
 
 ### 三套运行 profile
 
@@ -195,9 +270,70 @@ engines {
 }
 ```
 
-`;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi` 位于 JDBC session 参数段，使客户端从外置 ZooKeeper 发现可用 Kyuubi Server。`?kyuubi.session.conf.profile=...` 位于 Kyuubi JDBC URL 的 `kyuubiConfs` 段，继续选择管理员维护的 profile；`#` 后的内容是 Spark/Hive 变量，不能用于选择 profile。SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户；统一执行身份由 Kyuubi 的 `spark.kerberos.principal` 和 `spark.kerberos.keytab` 决定。当前使用固定服务账号时，三个 SparkOne engine 都不需要配置 JDBC `user/password`。
+### JDBC URL 如何生效
+
+以 YARN cluster 入口为例：
+
+```text
+jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi?kyuubi.session.conf.profile=yarn-cluster
+```
+
+这条 URL 不是把所有参数原样交给 Kyuubi Server，而是由 JDBC 客户端和 Kyuubi Server 分段处理：
+
+| URL 片段 | 处理方 | 实际作用 |
+| --- | --- | --- |
+| `jdbc:kyuubi://` | JDBC 客户端 | 使用 Kyuubi JDBC/HiveServer2 兼容协议 |
+| `192.168.200.69:2181` | JDBC 客户端 | 在 service discovery 模式下表示 ZooKeeper 地址，不是 Kyuubi Thrift 端口 |
+| `/default` | Kyuubi Server/engine session | 打开 Session 后使用 `default` database |
+| `serviceDiscoveryMode=zooKeeper` | JDBC 客户端 | 连接前先从 ZooKeeper 解析 Kyuubi Server |
+| `zooKeeperNamespace=sparkone-kyuubi` | JDBC 客户端 | 从 `/sparkone-kyuubi` 读取 Server 注册节点，必须匹配 Server 的 `kyuubi.ha.namespace` |
+| `kyuubi.session.conf.profile=yarn-cluster` | Kyuubi Server | 随 `OpenSession` 请求进入 Server，触发加载 `kyuubi-session-yarn-cluster.conf` |
+
+完整链路如下：
+
+1. 每个 Kyuubi Server 根据 `kyuubi.ha.addresses=192.168.200.69:2181` 和 `kyuubi.ha.namespace=sparkone-kyuubi`，把自身可连接的 Thrift 地址注册到 `/sparkone-kyuubi`。
+2. SparkOne 新建 JDBC connection 时，Kyuubi JDBC driver 连接 ZooKeeper，从存活节点中随机选择一个 Server，再连接该 Server 的实际 Thrift 地址。
+3. JDBC driver 发送 `OpenSession`，其中包含初始 database 和 `kyuubi.session.conf.profile=yarn-cluster`。service discovery 两个参数已经在客户端完成使命，不负责选择 Spark master 或 deploy mode。
+4. Kyuubi Server 先校验客户端配置，再由 `FileSessionConfAdvisor` 读取 `$KYUUBI_CONF_DIR/kyuubi-session-yarn-cluster.conf`，并把 profile 覆盖到当前 Session 的 engine 配置上。
+5. `kyuubi.engine.share.level=USER`、固定执行账号和 `kyuubi.engine.share.level.subdomain=yarn-cluster` 共同确定 engine space。已存在时复用对应 engine，不存在时按合并后的 `spark.master=yarn`、`spark.submit.deployMode=cluster` 等参数启动新 YARN Application。
+
+所以 ZooKeeper 只负责“选中哪个 Kyuubi Server”，profile 负责“选中哪套 Spark 运行配置”。一个 connection 建立后会固定在选中的 Server 和 backend engine session 上，不会逐条 SQL 重新轮询；Server 故障后需要建立新 connection 才会重新发现。两个 Kyuubi Server 必须使用相同的 `kyuubi.ha.namespace`、`kyuubi-defaults.conf` 和 profile 文件，否则同一条 SparkOne URL 会因随机选中的 Server 不同而产生不一致行为。
+
+SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户；统一执行身份由 Kyuubi 的 `spark.kerberos.principal` 和 `spark.kerberos.keytab` 决定。当前使用固定服务账号时，三个 SparkOne engine 都不需要配置 JDBC `user/password`。
 
 profile 文件在缓存过期后只影响新连接的 engine 启动配置和 backend session 配置；它不会重配 Kyuubi Server 已初始化的 frontend SessionManager，已经启动的 engine 也不会原地切换 master、deploy mode 或资源。修改 profile 后应停止对应旧 engine，再由 SparkOne 新连接按新配置拉起。
+
+### 生命周期同名参数示例
+
+假设 `kyuubi-defaults.conf` 中启用以下测试配置，并重启两个 Kyuubi Server：
+
+```properties
+kyuubi.session.idle.timeout                 PT1M
+kyuubi.operation.idle.timeout               PT1M
+kyuubi.session.check.interval                PT10S
+kyuubi.session.engine.check.interval         PT10S
+```
+
+同时 `kyuubi-session-yarn-cluster.conf` 中配置：
+
+```properties
+kyuubi.session.idle.timeout                 PT1M
+kyuubi.session.engine.idle.timeout          PT1M
+```
+
+最终有效值不是把两份文件简单合成一套，而是按 frontend 和 backend 分开：
+
+| 参数 | Kyuubi Server frontend | YARN cluster engine/backend | 关系 |
+| --- | --- | --- | --- |
+| `kyuubi.operation.idle.timeout` | `PT1M` | `PT1M` | profile 未配置，engine 继承公共值 |
+| `kyuubi.session.idle.timeout` | `PT1M` | `PT1M` | frontend 使用 defaults；backend 使用 profile 覆盖值，本例恰好相同 |
+| `kyuubi.session.check.interval` | `PT10S` | `PT10S` | profile 未配置，engine 继承公共值；两层各自运行 checker |
+| `kyuubi.session.engine.idle.timeout` | 不控制 Server 退出 | `PT1M` | profile 覆盖 Kyuubi 内置默认值 `PT30M` |
+| `kyuubi.session.engine.check.interval` | 不会让 Server 自我退出 | `PT10S` | engine 继承公共值，用它检查 engine idle timeout |
+
+如果把 cluster profile 的 `kyuubi.session.idle.timeout` 改为 `PT5M`，结果是 Server frontend 仍按 defaults 的 `PT1M`，新 cluster engine 的 backend session 按 profile 的 `PT5M`。这不是 defaults 与 profile 谁“全局优先”的问题，而是两层 SessionManager 读取了不同配置对象。
+
+`run_isolated` 正常结束会主动 `CloseSession`，不等待 operation/session idle；最后一个 backend session 关闭后，cluster engine 按 `PT1M` idle timeout 加最多约 `PT10S` checker 间隔退出。`tenant_shared` 不主动关闭，frontend 与 backend 分别依赖各自的 operation/session checker；详细时序和保守估算见 [资源缩容与停止语义](resource-lifecycle.md)。
 
 ## 交互边界
 
