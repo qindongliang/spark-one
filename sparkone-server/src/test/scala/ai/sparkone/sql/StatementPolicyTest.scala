@@ -78,12 +78,22 @@ final class StatementPolicyTest {
     Seq(
       "select * from parquet.`/public/sparkone/user/alice/result`",
       "select * from csv.`relative/result.csv`",
+      "select * from jdbc.`jdbc:mysql://mysql.internal/app`",
       "select * from avro.`/public/sparkone/user/alice/result`",
       "select * from custom.`relative/result`",
       "view leaked as select * from orc.`/public/sparkone/user/bob/result`").foreach { sql =>
       val error = expectCompileException(sql)
       assertTrue(sql, error.getMessage.contains("use SparkOne LOAD"))
     }
+  }
+
+  @Test
+  def allowsThreePartCatalogTablesWithProviderLikeCatalogNames(): Unit = {
+    val readOnly = Seq(
+      "select * from jdbc.sync_search.drugs_suggest_new_category limit 10",
+      "select * from parquet.analytics.daily_events")
+
+    readOnly.foreach(sql => assertEquals(1, compiler.compile(sql).size))
   }
 
   @Test

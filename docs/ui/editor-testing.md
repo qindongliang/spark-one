@@ -35,18 +35,17 @@ http://127.0.0.1:7070
 select 1 as id;
 ```
 
-查看当前 catalog：
+查看当前 Catalog 和 Hive namespace：
 
 ```sql
-show databases;
-show tables;
+show catalogs;
+show namespaces in hive;
+show tables in hive.default;
 ```
 
-如果已经启用 Hive，可以指定库：
-
-```sql
-show tables in default;
-```
+`hive` 是 SparkOne 对内置 `spark_catalog` 的逻辑别名。注意 Spark SQL 使用复数
+`SHOW DATABASES`，不支持 `show database in hive`；测试手册统一使用等价且更清晰的
+`SHOW NAMESPACES IN hive`。
 
 ## 默认结果 Tab
 
@@ -395,6 +394,7 @@ SELECT * FROM spark_catalog.default.some_table WHERE dt = date '2026-06-17';
 原生只读 SQL 也支持同一个 Hive 逻辑别名：
 
 ```sql
+show namespaces in hive;
 show tables in hive.default;
 select * from hive.default.some_table limit 20;
 ```
@@ -403,7 +403,7 @@ select * from hive.default.some_table limit 20;
 
 Doris：
 
-先在 `conf/sparkone.conf` 配置 Spark Doris Catalog。SparkOne 本地运行时会把它转成 `spark.sql.catalog.doris.*`；接 Kyuubi 时，把同样的 Spark 配置放到 Kyuubi/Spark engine：
+先在 `conf/sparkone.conf` 配置 Spark Doris Catalog。SparkOne 本地运行时会把它转成 `spark.sql.catalog.doris.*`；非 ODEP Kyuubi 环境也可以使用同样的静态配置。ODEP 模式使用后文单独的 alias 测试，不重复配置 `spark.sql.catalog.doris.*`：
 
 ```hocon
 engines {
@@ -444,15 +444,7 @@ show namespaces in doris;
 show databases in doris;
 ```
 
-有多个 Doris 集群时，在 Kyuubi/Spark engine 分别注册 `doris_prod`、`doris_ads`，原生 SQL 保持三段式：
-
-```sql
-show tables in doris_prod.dataagent;
-select * from doris_prod.dataagent.r_qa_log limit 10;
-load doris.`doris_ads.dataagent.r_qa_log` as ads_qa_log;
-```
-
-查看某个 Doris 库下的表列表：
+查看 Local `catalogs.doris` 中某个 Doris 库下的表列表：
 
 ```sql
 show tables in doris.dataagent;
@@ -1079,12 +1071,106 @@ as mysql.`analytics.sparkone_city_result`;
 
 说明：
 
-- SparkOne DSL 不支持 `load/save jdbc`；MySQL 统一使用 `load/save mysql`。
+- `load jdbc` 是 Kyuubi/ODEP 路由读取语法，不读取 local engine 的 MySQL HOCON；ODEP MySQL alias 可以使用 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize`，连接参数仍禁止出现在 SQL。`save jdbc` 当前不支持。本节 local MySQL adapter 仍统一使用 `load/save mysql`。
 - `mysql.\`analytics.sparkone_mysql_seed\`` 中 `analytics` 是 HOCON 连接名，`sparkone_mysql_seed` 是 MySQL 表名。
 - `save append ... as mysql` 要求目标表已存在；SparkOne 不会自动创建 MySQL 表。表结构、主键、索引等用 MySQL DDL 先建好。
 - SQL 里的 `options` 只能补充 `fetchsize`、`batchsize` 等非连接参数，不能覆盖 `url/user/password/driver/dbtable`。
 - 缺列、多列或类型不兼容会在 JDBC write 前失败，目标表不会因为 schema 预检失败而新增数据。
 - `load` 会注册临时视图；普通 `Run` 默认只展示 schema，不自动拉取数据。需要看样例数据时，在该结果的 Preview tab 里点 `Preview`，预览行数受 `preview.maxRows` 和页面 `Rows` 共同限制。需要更精确抽样时，仍建议在后续 `select * from mysql_seed limit 10` 中显式限制。
+
+## 测试 Kyuubi 三段式 Catalog
+
+Kyuubi 页面测试统一使用下面五组用户可见标识：
+
+| 数据源 | 三段式表名 | `load` 写法 |
+| --- | --- | --- |
+| Hive | `hive.<database>.<table>` | `load hive.\`database.table\`` |
+| ODEP JDBC | `jdbc.<alias>.<table>` | `load jdbc.\`alias.table\`` |
+| ODEP Doris | `doris.<alias>.<table>` | `load doris.\`alias.table\`` |
+| 静态 MySQL | `mysql_static.<database>.<table>` | `load mysql.\`mysql_static.database.table\`` |
+| 静态 Doris | `doris_static.<database>.<table>` | `load doris.\`doris_static.database.table\`` |
+
+其中 ODEP 的第二段是注册别名，由路由 Catalog 映射到 `physicalNamespace`；静态数据源的第二段就是真实数据库名。`hive` 会由 SparkOne 改写为 Spark 内置的 `spark_catalog`。
+
+### Hive 三段式
+
+```sql
+show namespaces in hive;
+show tables in hive.default;
+select * from hive.default.some_table limit 10;
+
+load hive.`default.some_table` as hive_table;
+select * from hive_table limit 10;
+```
+
+不要写 `show database in hive`。Spark SQL 没有单数 `SHOW DATABASE` 语法；使用上面的 `SHOW NAMESPACES`，或者使用复数 `SHOW DATABASES IN hive`。
+
+### ODEP 数据源
+
+前置检查：
+
+- ODEP snapshot 中待测试的 JDBC/Doris 数据源已有非空 `physicalNamespace`。
+- `sparkone-kyuubi-odep-plugin` JAR 同时位于 Kyuubi Server `$KYUUBI_HOME/jars` 和 Spark Engine 的 `spark.jars`。
+- `sparkone-mysql-provider` JAR 位于 Spark Engine 的 `spark.jars`，用于 ODEP MySQL alias 的分区读取。
+- JDBC driver、Doris connector 已放入 Spark Engine classpath。
+- `kyuubi-defaults.conf` 和 session profile 中没有静态 `spark.sql.catalog.jdbc.*`、`spark.sql.catalog.doris.*`。
+
+重启 Kyuubi Server；共享 Engine 还需人工停止旧 Engine，确保后续连接创建新 Engine。然后在 SparkOne 页面选择 Kyuubi engine，依次执行：
+
+```sql
+show catalogs;
+
+show namespaces in jdbc;
+show tables in jdbc.sync_search;
+select * from jdbc.sync_search.drug_ai_drug_decision limit 10;
+
+load jdbc.`sync_search.drug_ai_drug_decision` as odep_drugs;
+select * from odep_drugs limit 10;
+
+load jdbc.`sync_search.drug_ai_drug_decision`
+where "menu_id = '1_0' AND section_id = 5"
+options partitionColumn="modify_time"
+as odep_drugs_parallel;
+
+select count(*) from odep_drugs_parallel;
+```
+
+Doris 使用相同结构：
+
+```sql
+show namespaces in doris;
+show tables in doris.recommend_prod;
+select * from doris.recommend_prod.r_qa_log limit 10;
+
+load doris.`recommend_prod.r_qa_log` as qa_log;
+select * from qa_log limit 10;
+```
+
+`show namespaces` 返回 ODEP alias，不返回真实数据库；路由 Catalog 在 Engine 内将 alias 转成 `physicalNamespace`。如果 `show catalogs` 有 `jdbc/doris`，但首次 `show namespaces` 报静态配置冲突，删除同名前缀的旧 Catalog 配置后重建 Engine。
+
+### 静态数据源
+
+当前 `kyuubi-defaults.conf` 中静态 Catalog 使用 `mysql_static` 和 `doris_static`，与 ODEP 独占的 `jdbc`、`doris` 前缀不冲突。验证 MySQL：
+
+```sql
+show namespaces in mysql_static;
+show tables in mysql_static.Dworks;
+select * from mysql_static.Dworks.cloud_host_info limit 10;
+
+load mysql.`mysql_static.Dworks.cloud_host_info` as static_mysql_hosts;
+select * from static_mysql_hosts limit 10;
+```
+
+验证 Doris：
+
+```sql
+show namespaces in doris_static;
+show tables in doris_static.dataagent;
+select * from doris_static.dataagent.r_qa_log limit 10;
+
+load doris.`doris_static.dataagent.r_qa_log` as static_qa_log;
+select * from static_qa_log limit 10;
+```
 
 ## 测试 Kyuubi sparkone_mysql Provider
 
@@ -1092,14 +1178,14 @@ as mysql.`analytics.sparkone_city_result`;
 
 前置检查：
 
-- Kyuubi/Spark engine 已配置 `spark.sql.catalog.mysql=org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog` 以及 `spark.sql.catalog.mysql.url/user/password/driver`。
+- Kyuubi/Spark engine 已配置 `spark.sql.catalog.mysql_static=org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog` 以及 `spark.sql.catalog.mysql_static.url/user/password/driver`。
 - `sparkone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar` 已放入 Kyuubi/Spark engine classpath，例如 `spark.jars`。
 - SparkOne 页面右上角选择 Kyuubi engine。
 
 在编辑器里执行：
 
 ```sql
-load mysql.`mysql.Dworks.cloud_host_info`
+load mysql.`mysql_static.Dworks.cloud_host_info`
 options partitionColumn="id"
 as orders_big;
 
@@ -1112,7 +1198,7 @@ select count(*) from orders_big;
 CREATE OR REPLACE TEMPORARY VIEW orders_big
 USING sparkone_mysql
 OPTIONS (
-  catalog 'mysql',
+  catalog 'mysql_static',
   dbtable 'Dworks.cloud_host_info',
   partitionColumn 'id',
   numPartitions '10',
@@ -1145,15 +1231,16 @@ SELECT * FROM `orders_big` LIMIT 101
 
 注意：
 
-- `load mysql.\`mysql.Dworks.cloud_host_info\`` 中第一个 `mysql` 是 Kyuubi/Spark engine 侧 catalog 名，不是 SparkOne local HOCON 的连接名。
+- `load mysql.\`mysql_static.Dworks.cloud_host_info\`` 中的 `mysql_static` 是 Kyuubi/Spark engine 侧静态 Catalog 名，不是 SparkOne local HOCON 的连接名。
 - 不带大表参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成 catalog SQL；带 `partitionColumn` 或其他大表读取参数时编译成 `USING sparkone_mysql`。
 - SQL options 禁止传 `url/user/password/driver/dbtable/query`；这些敏感配置留在 Kyuubi/Spark engine 侧。
 - `lowerBound/upperBound` 只决定 Spark JDBC 分区步长，不做业务过滤。业务过滤写 `where "..."`，例如 `where "biz_date = '2026-07-07'"`。
 - `numPartitions` 会增加对 MySQL 的并发连接和 IO 压力。验证通过后再按 MySQL 监控、Spark task 耗时和源表索引情况调大。
+- `load jdbc/mysql ... options partitionColumn=...` 会并行读取完整的过滤结果，不支持源端全局 `LIMIT`。后续 `select * from orders_big limit 10` 只限制 Spark 输出；需要 MySQL 端下推 `LIMIT` 时直接查询三段式 Catalog 表，不要同时使用分区 LOAD。
 
 ### 测试 Kyuubi MySQL append
 
-先通过 MySQL 管理入口预建测试目标表，SparkOne 内禁止执行 `CREATE TABLE`。以下示例假设远端 JDBC Catalog 中已存在 `mysql.Dworks.sparkone_3b_target`，列为 `name string, id int`，且页面选择 Kyuubi engine：
+先通过 MySQL 管理入口预建测试目标表，SparkOne 内禁止执行 `CREATE TABLE`。以下示例假设远端 JDBC Catalog 中已存在 `mysql_static.Dworks.sparkone_3b_target`，列为 `name string, id int`，且页面选择 Kyuubi engine：
 
 ```sql
 view stage3b_mysql_source as
@@ -1163,10 +1250,10 @@ select * from values
 as stage3b_mysql_source(id, name);
 
 save append stage3b_mysql_source
-as mysql.`mysql.Dworks.sparkone_3b_target`;
+as mysql.`mysql_static.Dworks.sparkone_3b_target`;
 
 select name, id
-from mysql.Dworks.sparkone_3b_target
+from mysql_static.Dworks.sparkone_3b_target
 where id in (101, 102)
 order by id;
 ```
@@ -1174,7 +1261,7 @@ order by id;
 Run 结果中的最终写入 SQL 应为显式列写入，源列顺序不会决定目标映射：
 
 ```sql
-INSERT INTO TABLE mysql.Dworks.sparkone_3b_target (`name`, `id`)
+INSERT INTO TABLE mysql_static.Dworks.sparkone_3b_target (`name`, `id`)
 SELECT `name`, `id` FROM stage3b_mysql_source
 ```
 
@@ -1373,8 +1460,9 @@ select * from users limit 20;
 Hive：
 
 ```sql
-show databases;
-show tables in default;
+show namespaces in hive;
+show tables in hive.default;
+select * from hive.default.some_table limit 10;
 
 load hive.`default.some_table` as t;
 select * from t limit 20;
@@ -1454,6 +1542,10 @@ engines {
 `load hive...` 带 options 报错：
 
 - 当前 `hive` 是 catalog 表语义，不支持 `options` 参数。
+
+`show database in hive` 报 Spark SQL 解析错误：
+
+- `SHOW DATABASE` 没有单数形式。使用 `show namespaces in hive`，或者使用 `show databases in hive`。
 
 临时视图查不到：
 

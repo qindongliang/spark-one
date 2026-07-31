@@ -53,6 +53,7 @@ public class OdepDatasourceClientTest {
                 + "\"id\":1,"
                 + "\"type\":\"jdbc\","
                 + "\"alias\":\"dworks\","
+                + "\"physicalNamespace\":\"Dworks\","
                 + "\"description\":\"Dworks\","
                 + "\"options\":{"
                 + "\"url\":\"jdbc:mysql://mysql.internal:3306/Dworks\","
@@ -68,6 +69,7 @@ public class OdepDatasourceClientTest {
         OdepDatasourceSnapshot.Datasource datasource = snapshot.getDatasources().get(0);
         assertEquals("jdbc", datasource.getType());
         assertEquals("dworks", datasource.getAlias());
+        assertEquals("Dworks", datasource.getPhysicalNamespace());
         assertEquals("reader", datasource.getOptions().get("user"));
     }
 

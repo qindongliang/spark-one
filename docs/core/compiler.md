@@ -9,6 +9,7 @@ load parquet.`datasets/users` as users;
 load hive.`default.users` as hive_users;
 load hive.`default.users` where "dt = date '2026-06-17'" as hive_users_0617;
 load excel.`imports/users.xlsx` options header="true" as users_excel;
+load jdbc.`search_prod.users` as users_jdbc;
 load mysql.`analytics.users` as users_mysql;
 load doris.`app.users` as users_doris;
 load doris.`app.orders` where "biz_date = '2026-06-17'" as doris_orders;
@@ -42,6 +43,7 @@ MANAGED HDFS LOAD
   format: excel
   source: imports/users.xlsx
   options: {header='true'}
+CREATE OR REPLACE TEMPORARY VIEW users_jdbc AS SELECT * FROM jdbc.search_prod.users;
 SELECT 'LOAD MYSQL' AS sparkone_action, 'users AS users_mysql' AS sparkone_target;
 CREATE OR REPLACE TEMPORARY VIEW users_doris AS SELECT * FROM doris.app.users;
 CREATE OR REPLACE TEMPORARY VIEW doris_orders AS SELECT * FROM doris.app.orders WHERE biz_date = '2026-06-17';
@@ -86,15 +88,16 @@ select * from city_stats;
 - `SparkSqlValidator` 使用 `org.apache.spark.sql.execution.SparkSqlParser` 校验生成 SQL。
 - 不要使用 `CatalystSqlParser` 作为最终校验器；它会拒绝部分 Spark SQL execution 层语法。
 - 数据源映射集中在 `DataSourceResolver`，不要把 provider 别名和特殊 source 判断散落在 compiler 主流程。
-- Catalog 表使用 `<catalog>.<database>.<table>` 三段式；多实例 catalog 使用 `<source>_<instance>` 命名，不增加四段式 SQL。
+- ODEP Catalog 表使用 `<provider>.<alias>.<table>` 三段式，`jdbc`、`doris` 顶层 Catalog 在 Spark Engine 内把 alias 路由到连接和 `physicalNamespace`；不增加四段式 SQL。
 - `hive.db.table` 是 `spark_catalog.db.table` 的逻辑别名；compiler 只改写 Spark AST 确认的表引用和两段 namespace，不改写字符串、注释、列限定符或 `hive.table` 两段表名。
 - `load hive` 是 catalog 表读取语义，编译成 `CREATE ... AS SELECT * FROM spark_catalog.db.table`；追加 `where "..."` 时编译成 `SELECT * FROM spark_catalog.db.table WHERE ...`。
 - `save ... as hive` 是 catalog 表写入语义；当前只允许 append。compiler 生成 `WritePlan` 和安全占位 SQL，runtime 取得两端 schema 后生成带显式目标列清单和源列投影的 `INSERT INTO TABLE`。
 - `save ... partitionBy col1, col2` 只用于 catalog 表写入，runtime 最终渲染为 Spark SQL 动态分区 `PARTITION (col1, col2)`。
 - local 引擎的 `load/save mysql.\`connection.table\`` 是薄 runtime adapter：连接信息从 HOCON 读取，编译展示安全占位 SQL，执行时使用 Spark JDBC reader/writer。
+- `load jdbc.\`alias.table\`` 是 ODEP JDBC 路由的只读语法糖；无 OPTIONS 时编译为 `SELECT * FROM jdbc.alias.table`。ODEP MySQL alias 带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时编译为 Engine 内的 `sparkone_mysql` provider 读取；不允许在 SQL 中传 `url/user/password/driver/dbtable/query`。`save jdbc` 当前不支持。
 - Kyuubi 引擎的 `save mysql.\`catalog.database.table\`` 生成 MySQL Catalog `WritePlan`，复用远端 Spark JDBC Catalog；不接受 SQL `OPTIONS`，SQL 中不携带 URL、用户名或密码。
 - `load mysql ... options partitionColumn="id"` 会在执行侧自动查询 `lowerBound/upperBound`；`where` 存在时按过滤后数据取边界，不存在时按原表取边界。`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。
-- `load doris` 是 Spark Doris Catalog 语法糖：默认 `load doris.\`db.table\` as t` 编译成 `CREATE ... AS SELECT * FROM doris.db.table`；多集群使用 `load doris.\`doris_prod.db.table\` as t`，显式 catalog 必须使用 `doris` 或 `doris_` 前缀。
+- `load doris` 是 Spark Doris Catalog 语法糖：ODEP 模式下 `load doris.\`alias.table\` as t` 编译成 `CREATE ... AS SELECT * FROM doris.alias.table`；当前 Kyuubi 静态 Catalog 使用 `load doris.\`doris_static.db.table\``。
 - `save ... as doris` 是 Spark Doris Catalog 表写入语义；当前只允许 append，和 Hive 共用延迟渲染的显式列写入逻辑。
 - Hive、MySQL、Doris overwrite 由固定能力矩阵永久拒绝，不存在可以放开的 SQL option 或 HOCON 开关；`partitionBy` 不用于 Doris Catalog 写入。
 - `save append` 写 Hive、MySQL、Doris 时要求目标表已存在；SparkOne 不自动建表，目标表和结构变更必须由平台外的 Hive/Doris/MySQL 管理入口完成。
@@ -102,8 +105,7 @@ select * from city_stats;
 - compiler 对每条 `save` 先生成携带逻辑租户、目标分类和执行类型的 `WritePlan`。Catalog 最终 SQL 延迟到 runtime 取得 schema 后渲染，Compile 接口只展示无副作用的安全占位 SQL。
 - 已识别的文件 provider 只有相对路径可进入受控 HDFS load/overwrite；所有文件 append 永久拒绝。文件 load 的绝对路径和 URI 在编译期拒绝；本地文件、S3、OSS 等 external path 的 append/overwrite 也永久拒绝。受控 overwrite 缺少 ZK 或 Spark extension 配置时 fail closed。
 - `StatementPolicy` 在 compiler 统一出口使用 Spark `SparkSqlParser` 校验原生只读边界，因此 Local/Kyuubi 的 Compile 和 Run 行为一致。
-- Doris 推荐直接使用标准 Spark SQL：`show namespaces in doris_prod`、`select * from doris_prod.db.table`；裸写 `show databases` 和 `db.table` 仍表示当前 catalog。
-- 不支持 `load/save jdbc`，避免账号密码和连接串散落在 SQL 里。
+- ODEP 数据源推荐直接使用标准 Spark SQL：`show namespaces in jdbc`、`show tables in jdbc.alias`、`select * from jdbc.alias.table`；Doris 同理。当前静态数据源使用 `mysql_static.db.table`、`doris_static.db.table`，Hive 用户侧使用 `hive.db.table`。裸写 `show databases` 和 `db.table` 仍表示当前 Catalog。
 - `excel` 是外部 Spark DataSource provider，编译成 `USING excel`，由依赖注册 provider 短名。
 
 ANTLR 文件：

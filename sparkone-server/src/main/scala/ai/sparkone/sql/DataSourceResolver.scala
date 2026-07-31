@@ -23,7 +23,25 @@ final class DataSourceResolver(
       filter: Option[String] = None): ResolvedLoadSource = {
     val normalized = format.toLowerCase(Locale.ROOT)
     if (normalized == "jdbc") {
-      throw new CompileException("SparkOne does not support LOAD jdbc. Use LOAD mysql with the selected local engine's datasources.mysql config.")
+      val target = routedCatalogTarget("jdbc", path, "LOAD")
+      val normalizedOptions = normalizeKyuubiMysqlLoadOptions(options, None)
+      if (normalizedOptions.isEmpty) {
+        val tableExpression = filter.map(condition => s"${target.catalogTable} WHERE $condition").getOrElse(target.catalogTable)
+        CatalogTableSource(tableExpression)
+      } else {
+        if (mysqlLoadMode != MysqlLoadMode.KyuubiProfile) {
+          throw new CompileException(
+            "LOAD jdbc partition options require a Kyuubi engine with the ODEP JDBC provider installed.")
+        }
+        val providerOptions =
+          Seq(
+            "catalog" -> "jdbc",
+            "alias" -> target.alias,
+            "dbtable" -> target.table) ++
+            filter.map(value => "whereClauseBase64" -> base64(value)).toSeq ++
+            normalizedOptions
+        ProviderLoadSource("sparkone_mysql", providerOptions)
+      }
     } else if (normalized == "mysql") {
       mysqlLoadMode match {
         case MysqlLoadMode.LocalAdapter =>
@@ -120,6 +138,20 @@ final class DataSourceResolver(
           s"$statementType doris path must be database.table or doris_<instance>.database.table")
     }
     SparkOneSqlRender.renderMultipartIdentifier(identifier, s"$statementType doris table")
+  }
+
+  private def routedCatalogTarget(
+      catalog: String,
+      path: String,
+      statementType: String): RoutedCatalogTarget = {
+    val parts = path.split("\\.", -1)
+    if (parts.length != 2) {
+      throw new CompileException(
+        s"$statementType $catalog path must be alias.table")
+    }
+    val alias = SparkOneSqlRender.requireIdentifier(parts(0), s"$statementType $catalog alias")
+    val table = SparkOneSqlRender.requireIdentifier(parts(1), s"$statementType $catalog table")
+    RoutedCatalogTarget(alias, table, s"$catalog.$alias.$table")
   }
 
   private def hiveCatalogTable(path: String, statementType: String): String = {
@@ -393,6 +425,7 @@ final case class MysqlSaveSource(dbtable: String, options: Seq[(String, String)]
 
 private final case class MysqlTarget(connection: String, dbtable: String)
 private final case class KyuubiMysqlCatalogTarget(catalog: String, dbtable: String, catalogTable: String)
+private final case class RoutedCatalogTarget(alias: String, table: String, catalogTable: String)
 
 sealed trait MysqlLoadMode
 

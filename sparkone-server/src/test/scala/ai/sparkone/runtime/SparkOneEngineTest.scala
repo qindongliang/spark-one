@@ -97,6 +97,57 @@ final class SparkOneEngineTest {
   }
 
   @Test
+  def kyuubiCompileOdepJdbcAliasAsRoutingCatalogSql(): Unit = {
+    val engine = kyuubiEngine()
+
+    try {
+      val statements = engine.compile(tenant,
+        """load jdbc.`search_prod.orders`
+          |where "biz_date = '2026-07-07'"
+          |as orders;
+          |""".stripMargin)
+
+      assertEquals(1, statements.size)
+      assertEquals(
+        "CREATE OR REPLACE TEMPORARY VIEW orders AS " +
+          "SELECT * FROM jdbc.search_prod.orders WHERE biz_date = '2026-07-07'",
+        statements.head.sql)
+      assertFalse(statements.head.sql.contains("jdbc:mysql"))
+      assertFalse(statements.head.sql.toLowerCase.contains("password"))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiCompileOdepJdbcAliasWithPartitionColumnAsProviderSql(): Unit = {
+    val engine = kyuubiEngine()
+
+    try {
+      val statements = engine.compile(tenant,
+        """load jdbc.`sync_search.drug_ai_drug_decision`
+          |where "menu_id = '1_0'"
+          |options partitionColumn="id"
+          |as t1;
+          |""".stripMargin)
+
+      val sql = statements.head.sql
+      assertTrue(sql.startsWith("CREATE OR REPLACE TEMPORARY VIEW t1 USING sparkone_mysql OPTIONS"))
+      assertTrue(sql.contains("catalog 'jdbc'"))
+      assertTrue(sql.contains("alias 'sync_search'"))
+      assertTrue(sql.contains("dbtable 'drug_ai_drug_decision'"))
+      assertTrue(sql.contains("whereClauseBase64 'bWVudV9pZCA9ICcxXzAn'"))
+      assertTrue(sql.contains("partitionColumn 'id'"))
+      assertTrue(sql.contains("numPartitions '10'"))
+      assertTrue(sql.contains("fetchsize '10000'"))
+      assertFalse(sql.contains("jdbc:mysql"))
+      assertFalse(sql.toLowerCase.contains("password"))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
   def kyuubiCompileMysqlCatalogPathAsRemoteCatalogSql(): Unit = {
     val engine = kyuubiEngine()
 

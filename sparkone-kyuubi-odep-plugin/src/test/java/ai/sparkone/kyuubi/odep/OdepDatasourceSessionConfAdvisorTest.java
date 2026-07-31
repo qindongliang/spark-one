@@ -25,6 +25,7 @@ public class OdepDatasourceSessionConfAdvisorTest {
                         1L,
                         "jdbc",
                         "dworks",
+                        "Dworks",
                         null,
                         options,
                         null)));
@@ -41,7 +42,7 @@ public class OdepDatasourceSessionConfAdvisorTest {
         assertEquals(
                 "reader",
                 advisor.getConfOverlay("alice", Collections.emptyMap())
-                        .get("spark.sql.catalog.mysql_dworks.user"));
+                        .get("spark.sql.catalog.jdbc.odep.datasource.0.option.user"));
         advisor.getConfOverlay("bob", Collections.emptyMap());
         assertEquals(1, loadCount.get());
     }

@@ -56,7 +56,7 @@ profile 在最后合并，因此同名键由 profile 覆盖 JDBC 和公共基线
 scripts/build.sh sparkone-kyuubi-odep-plugin
 ```
 
-把 `sparkone-kyuubi-odep-plugin/target/sparkone-kyuubi-odep-plugin-0.1.0-SNAPSHOT.jar` 放入每个 Kyuubi Server 的 `$KYUUBI_HOME/jars`。插件依赖的 Jackson、SLF4J 和 `kyuubi-server-plugin` 已由 Kyuubi 1.9.4 提供，不需要重复复制。
+把 `sparkone-kyuubi-odep-plugin/target/sparkone-kyuubi-odep-plugin-0.1.0-SNAPSHOT.jar` 放入每个 Kyuubi Server 的 `$KYUUBI_HOME/jars`，供 Server 加载 `SessionConfAdvisor`；同一个 JAR 还必须加入 `spark.jars`，供 Spark Engine 加载 ODEP 路由 Catalog。插件依赖的 Spark、Jackson、SLF4J 和 `kyuubi-server-plugin` 均由对应进程提供，不需要打入插件 JAR。
 
 Kyuubi Server 进程必须配置：
 
@@ -79,15 +79,47 @@ kyuubi.server.redaction.regex (?i)secret|password|passwd|token|access[._-]?key|s
 spark.redaction.regex (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
 ```
 
-Kyuubi 1.9.4 按 advisor 声明顺序合并 overlay，后面的 ODEP 配置覆盖 profile 中同名的静态 Catalog。客户端配置仍先经过 Server restrict list，不能覆盖受控 Catalog。两条 redaction 正则还会分别遮蔽 Kyuubi Engine 启动命令和 Spark 日志/UI 中的 Catalog URL、用户名、密码及 Doris FE 地址。当前映射规则为：
+Kyuubi 1.9.4 按 advisor 声明顺序合并 overlay，客户端配置仍先经过 Server restrict list，不能覆盖受控 Catalog。两条 redaction 正则还会分别遮蔽 Kyuubi Engine 启动命令和 Spark 日志/UI 中的 Catalog URL、用户名、密码及 Doris FE 地址。当前映射规则为：
 
 | ODEP type | Spark Catalog 名 | 实现 |
 | --- | --- | --- |
-| `jdbc` 且 URL/driver 为 MySQL | `mysql_<alias>` | Spark `JDBCTableCatalog`，URL 自动补 `databaseTerm=SCHEMA` |
-| `doris` | `doris_<alias>` | Doris `DorisTableCatalog` |
+| `jdbc` | `jdbc` | alias 路由到独立 `JDBCTableCatalog`；MySQL URL 自动补 `databaseTerm=SCHEMA` |
+| `doris` | `doris` | alias 路由到独立 Doris `DorisTableCatalog` |
 | `es`、`solr` 和其他类型 | 暂不生成 | 保留在 Server 内存快照并记录告警 |
 
-例如 ODEP 中 `jdbc/dworks` 和 `doris/recommend` 分别注册为 `mysql_dworks`、`doris_recommend`。插件只负责 Catalog 配置；MySQL driver、Doris connector 等运行依赖仍必须安装在 Spark engine classpath。
+`jdbc` 和 `doris` 数据源必须有 `physicalNamespace` 才会进入路由 Catalog；缺失时跳过并记录不含敏感配置的告警。alias 是用户 SQL 中的逻辑库名，必须符合 `[A-Za-z_][A-Za-z0-9_]*`；`physicalNamespace` 是底层真实库。例如：
+
+```sql
+show namespaces in jdbc;
+show tables in jdbc.search_prod;
+select * from jdbc.search_prod.orders limit 10;
+load jdbc.`search_prod.orders` as orders;
+
+show namespaces in doris;
+show tables in doris.recommend_prod;
+select * from doris.recommend_prod.r_qa_log limit 10;
+load doris.`recommend_prod.r_qa_log` as qa_log;
+```
+
+路由 Catalog 将 `jdbc.search_prod.orders` 映射到对应 JDBC 连接的 `<physicalNamespace>.orders`，Doris 同理。`load jdbc` 无 OPTIONS 时走 Catalog；ODEP MySQL alias 带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时走 Engine 内 `sparkone_mysql` provider，并复用相同 alias 的连接和真实库。连接和密钥仍只来自 ODEP，SQL 不能覆盖；`save jdbc` 当前仍不开放。
+
+当前 `kyuubi-defaults.conf` 中的静态数据源使用独立 Catalog 名：
+
+```sql
+show namespaces in mysql_static;
+show tables in mysql_static.Dworks;
+select * from mysql_static.Dworks.cloud_host_info limit 10;
+load mysql.`mysql_static.Dworks.cloud_host_info` as static_mysql_hosts;
+
+show namespaces in doris_static;
+show tables in doris_static.dataagent;
+select * from doris_static.dataagent.r_qa_log limit 10;
+load doris.`doris_static.dataagent.r_qa_log` as static_qa_log;
+```
+
+ODEP 模式下，`spark.sql.catalog.jdbc.*` 和 `spark.sql.catalog.doris.*` 两个完整前缀由 ODEP Advisor 独占，不能再在 `kyuubi-defaults.conf` 或 session profile 中配置同名静态 Catalog。路由 Catalog 初始化时发现同名前缀残留的 `url`、`doris.fenodes` 等静态参数会直接报冲突。静态 `mysql_static`、`doris_static` 与 ODEP 的 `jdbc`、`doris` 不重名，可以同时存在。
+
+插件只负责 Catalog 配置和 alias 路由；JDBC driver、Doris connector 等运行依赖仍必须安装在 Spark engine classpath。
 
 该方案使用 Kyuubi 1.9.4 原生的 advisor 懒加载行为，不修改 Kyuubi 源码，也不需要维护自定义 Kyuubi 构建。部署后可主动创建一次测试连接进行预热，使 ODEP 配置错误在业务流量进入前暴露。
 
@@ -110,7 +142,7 @@ kyuubi.ha.namespace                          sparkone-kyuubi
 # 所有 Spark engine 共用的身份、依赖和 SparkOne 扩展
 spark.kerberos.principal                     odep@HADOOP.COM
 spark.kerberos.keytab                        /etc/security/keytabs/odep.keytab
-spark.jars                                   /opt/sparkone/sparkone-hdfs-overwrite-extension.jar,/opt/sparkone/sparkone-mysql-provider.jar,/opt/connectors/spark-doris-connector.jar,/opt/connectors/mysql-connector-j.jar
+spark.jars                                   /opt/sparkone/sparkone-kyuubi-odep-plugin.jar,/opt/sparkone/sparkone-hdfs-overwrite-extension.jar,/opt/sparkone/sparkone-mysql-provider.jar,/opt/connectors/spark-doris-connector.jar,/opt/connectors/mysql-connector-j.jar
 spark.driver.userClassPathFirst              true
 spark.executor.userClassPathFirst            true
 spark.sql.extensions                         ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
@@ -120,19 +152,8 @@ spark.sparkone.overwrite.workspaceRoot       /public/odep/user
 spark.sparkone.overwrite.zk.sessionTimeoutMs 60000
 spark.sparkone.overwrite.zk.connectionTimeoutMs 15000
 
-# 所有运行环境共用的 Catalog；敏感值只保留在 Kyuubi 主机
-spark.sql.catalog.mysql                      org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog
-spark.sql.catalog.mysql.url                  jdbc:mysql://mysql-host:3306/?databaseTerm=SCHEMA
-spark.sql.catalog.mysql.driver               com.mysql.cj.jdbc.Driver
-spark.sql.catalog.mysql.user                 <mysql-user>
-spark.sql.catalog.mysql.password             <mysql-password>
-spark.sql.catalog.mysql.fetchsize            1000
-spark.sql.catalog.doris                      org.apache.doris.spark.catalog.DorisTableCatalog
-spark.sql.catalog.doris.doris.fenodes        doris-fe-1:8030,doris-fe-2:8030
-spark.sql.catalog.doris.doris.user           <doris-user>
-spark.sql.catalog.doris.doris.password       <doris-password>
-spark.sql.catalog.doris.doris.query.port     9030
-spark.sql.catalog.doris.doris.request.retries 3
+# ODEP advisor 动态注入 spark.sql.catalog.jdbc.* 和 spark.sql.catalog.doris.*。
+# 不要在 defaults 或 session profile 中重复配置这两个前缀。
 
 # Kyuubi engine 启动日志，以及 Spark UI、YARN 和 event log 中的敏感配置脱敏
 kyuubi.server.redaction.regex                 (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
@@ -150,7 +171,7 @@ kyuubi.engine.doAs.enabled                   false
 kyuubi.engine.single.spark.session           false
 
 # 只允许客户端选择管理员定义的 profile，不允许直接改 Spark 或 engine 分组
-kyuubi.session.conf.advisor                  org.apache.kyuubi.session.FileSessionConfAdvisor
+kyuubi.session.conf.advisor                  org.apache.kyuubi.session.FileSessionConfAdvisor,ai.sparkone.kyuubi.odep.OdepDatasourceSessionConfAdvisor
 kyuubi.session.conf.file.reload.interval     PT1M
 kyuubi.session.conf.restrict.list            spark.*,kyuubi.engine.share.level,kyuubi.engine.share.level.subdomain,kyuubi.session.conf.restrict.list,kyuubi.session.conf.ignore.list
 ```
@@ -415,7 +436,7 @@ spark.sparkone.overwrite.zk.connectionTimeoutMs=15000
 
 - 外部 Spark datasource provider jar 应放在 Kyuubi/Spark engine classpath，不放在 SparkOne 主包里。
 - `sparkone-hdfs-overwrite-extension` jar 同样属于 Spark engine classpath，并通过 `spark.sql.extensions` 注册；模块名保持兼容，但 extension 同时承载受控 HDFS load 和 overwrite。
-- 远端 catalog 使用 `<catalog>.<database>.<table>` 三段式；每个连接实例注册独立 catalog，并使用 `mysql_<instance>`、`doris_<instance>` 命名。`hive` 由 SparkOne 编译为内置 `spark_catalog`，不在 Kyuubi 配置伪造同名 catalog。
+- 远端 Catalog 统一使用三段式：Hive 为 `hive.<database>.<table>`；ODEP 为 `jdbc.<alias>.<table>`、`doris.<alias>.<table>`；当前静态数据源为 `mysql_static.<database>.<table>`、`doris_static.<database>.<table>`。`hive` 由 SparkOne 编译为内置 `spark_catalog`，不在 Kyuubi 配置伪造同名 Catalog。
 - `load mysql` 在 Kyuubi 模式下优先使用 `mysql.\`catalog.db.table\`` 语义，连接信息来自 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`。
 - 无分片参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成远端 catalog SQL。
 - 带 `partitionColumn` 或其他受控大表读取参数时，编译成 `USING sparkone_mysql`，由 provider 在 Spark engine 内复用 catalog 连接配置；只写 `partitionColumn` 时会在远端自动查询 `lowerBound/upperBound`，`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。

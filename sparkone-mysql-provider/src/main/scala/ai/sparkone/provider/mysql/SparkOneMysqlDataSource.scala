@@ -12,6 +12,7 @@ import java.util.Properties
 
 final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegister {
   private val logger = LoggerFactory.getLogger(getClass)
+  private val odepRoutingCatalogClass = "ai.sparkone.kyuubi.odep.catalog.OdepRoutingCatalog"
 
   override def shortName(): String = "sparkone_mysql"
 
@@ -28,17 +29,21 @@ final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegi
     }
 
     val catalogClass = allConf.getOrElse(s"spark.sql.catalog.$catalog", "")
-    if (!catalogClass.toLowerCase.contains("jdbc")) {
-      throw new IllegalArgumentException(
-        s"sparkone_mysql requires JDBC catalog '$catalog', but spark.sql.catalog.$catalog is '$catalogClass'")
+    val (baseJdbcOptions, resolvedDbtable) = normalized.get("alias").filter(_.nonEmpty) match {
+      case Some(alias) =>
+        resolveOdepJdbcRoute(catalog, alias, dbtable, catalogClass, catalogOptions)
+      case None =>
+        if (!catalogClass.toLowerCase.contains("jdbc")) {
+          throw new IllegalArgumentException(
+            s"sparkone_mysql requires JDBC catalog '$catalog', but spark.sql.catalog.$catalog is '$catalogClass'")
+        }
+        requireCatalogOptions(catalog, catalogOptions, Seq("url")) -> dbtable
     }
-
-    val baseJdbcOptions = requireCatalogOptions(catalog, catalogOptions, Seq("url"))
     val dbtableWithFilter = normalized.get("whereclausebase64") match {
       case Some(encoded) =>
         val where = decodeBase64(encoded).trim
-        if (where.isEmpty) dbtable else s"(select * from $dbtable where $where) sparkone_mysql_load"
-      case None => dbtable
+        if (where.isEmpty) resolvedDbtable else s"(select * from $resolvedDbtable where $where) sparkone_mysql_load"
+      case None => resolvedDbtable
     }
     val loadOptions = copyOptions(normalized, Seq(
       "partitioncolumn" -> "partitionColumn",
@@ -52,6 +57,51 @@ final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegi
     new JdbcRelationProvider().createRelation(sqlContext, jdbcOptions)
   }
 
+  private def resolveOdepJdbcRoute(
+      catalog: String,
+      alias: String,
+      table: String,
+      catalogClass: String,
+      catalogOptions: Map[String, String]): (Map[String, String], String) = {
+    if (catalogClass != odepRoutingCatalogClass) {
+      throw new IllegalArgumentException(
+        s"sparkone_mysql ODEP alias requires routing catalog '$catalog', but spark.sql.catalog.$catalog is '$catalogClass'")
+    }
+    validateIdentifier(alias, "ODEP alias")
+    validateIdentifier(table, "ODEP table")
+
+    val datasourceCount = positiveInt(
+      requiredIgnoreCase(catalogOptions, "odep.datasource.count", catalog),
+      s"spark.sql.catalog.$catalog.odep.datasource.count")
+    val routeIndex = (0 until datasourceCount).find { index =>
+      optionIgnoreCase(catalogOptions, s"odep.datasource.$index.alias")
+        .exists(_.equalsIgnoreCase(alias))
+    }.getOrElse {
+      throw new IllegalArgumentException(
+        s"sparkone_mysql cannot find ODEP JDBC alias '$alias' in catalog '$catalog'")
+    }
+
+    val routePrefix = s"odep.datasource.$routeIndex."
+    val physicalNamespace = requiredIgnoreCase(
+      catalogOptions,
+      routePrefix + "physicalNamespace",
+      catalog)
+    val optionPrefix = (routePrefix + "option.").toLowerCase
+    val jdbcOptions = catalogOptions.collect {
+      case (key, value) if key.toLowerCase.startsWith(optionPrefix) =>
+        key.substring(optionPrefix.length) -> value
+    }
+    requireCatalogOptions(s"$catalog/$alias", jdbcOptions, Seq("url"))
+    if (!isMysql(jdbcOptions)) {
+      throw new IllegalArgumentException(
+        s"sparkone_mysql ODEP partition reads only support MySQL JDBC routes: catalog=$catalog, alias=$alias")
+    }
+
+    val qualifiedTable =
+      s"${quoteMysqlIdentifier(physicalNamespace)}.${quoteMysqlIdentifier(table)}"
+    jdbcOptions -> qualifiedTable
+  }
+
   private def required(options: Map[String, String], key: String): String = {
     options.get(key).filter(_.nonEmpty).getOrElse {
       throw new IllegalArgumentException(s"sparkone_mysql requires option '$key'")
@@ -61,6 +111,16 @@ final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegi
   private def requiredAny(options: Map[String, String], keys: Seq[String]): String = {
     keys.flatMap(key => options.get(key).filter(_.nonEmpty)).headOption.getOrElse {
       throw new IllegalArgumentException(s"sparkone_mysql requires one of options: ${keys.mkString(", ")}")
+    }
+  }
+
+  private def requiredIgnoreCase(
+      options: Map[String, String],
+      key: String,
+      catalog: String): String = {
+    optionIgnoreCase(options, key).getOrElse {
+      throw new IllegalArgumentException(
+        s"sparkone_mysql catalog '$catalog' requires option '$key'")
     }
   }
 
@@ -178,9 +238,32 @@ final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegi
   }
 
   private def validatePartitionColumn(value: String): Unit = {
+    validateIdentifier(value, "partitionColumn")
+  }
+
+  private def validateIdentifier(value: String, label: String): Unit = {
     if (!value.matches("[A-Za-z_][A-Za-z0-9_]*")) {
-      throw new IllegalArgumentException(s"sparkone_mysql partitionColumn must be a simple column identifier: $value")
+      throw new IllegalArgumentException(
+        s"sparkone_mysql $label must be a simple identifier: $value")
     }
+  }
+
+  private def positiveInt(value: String, label: String): Int = {
+    try {
+      val parsed = value.toInt
+      if (parsed <= 0) throw new NumberFormatException(value)
+      parsed
+    } catch {
+      case _: NumberFormatException =>
+        throw new IllegalArgumentException(
+          s"sparkone_mysql $label must be a positive integer: $value")
+    }
+  }
+
+  private def isMysql(options: Map[String, String]): Boolean = {
+    val url = optionIgnoreCase(options, "url").getOrElse("").toLowerCase
+    val driver = optionIgnoreCase(options, "driver").getOrElse("").toLowerCase
+    url.startsWith("jdbc:mysql:") || driver.contains("mysql")
   }
 
   private def quoteMysqlIdentifier(value: String): String = {

@@ -147,6 +147,7 @@ final class OdepDatasourceClient {
                     nullableLong(datasourceNode.get("id")),
                     type,
                     alias,
+                    nullableText(datasourceNode.get("physicalNamespace")),
                     nullableText(datasourceNode.get("description")),
                     options,
                     nullableText(datasourceNode.get("updateTime"))));

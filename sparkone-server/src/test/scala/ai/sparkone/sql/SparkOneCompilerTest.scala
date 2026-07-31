@@ -882,14 +882,18 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def rejectsJdbcDslInFavorOfMysqlDatasource(): Unit = {
-    try {
-      compiler.compile("load jdbc.`analytics.users` as users;")
-      fail("Expected CompileException")
-    } catch {
-      case e: CompileException =>
-        assertTrue(e.getMessage.contains("LOAD jdbc"))
-    }
+  def compilesJdbcLoadAsOdepRoutingCatalogReadButStillRejectsSave(): Unit = {
+    val load = compiler.compile(
+      """load jdbc.`search_prod.users`
+        |where "status = 'ACTIVE'"
+        |as users;
+        |""".stripMargin).head
+
+    assertEquals(
+      "CREATE OR REPLACE TEMPORARY VIEW users AS " +
+        "SELECT * FROM jdbc.search_prod.users WHERE status = 'ACTIVE'",
+      load.sql)
+    assertEquals(Some("jdbc.search_prod.users WHERE status = 'ACTIVE'"), load.load.map(_.path))
 
     try {
       compiler.compile("save append users as jdbc.`analytics.users`;")
@@ -898,6 +902,24 @@ final class SparkOneCompilerTest {
       case e: CompileException =>
         assertTrue(e.getMessage.contains("SAVE jdbc"))
     }
+  }
+
+  @Test
+  def rejectsJdbcConnectionOptionsAndNonAliasTablePaths(): Unit = {
+    val connectionOption = tryCompile(
+      "load jdbc.`search_prod.users` options url='jdbc:mysql://leaked' as users;")
+    assertTrue(connectionOption.getMessage.contains("not allowed"))
+
+    Seq(
+      "load jdbc.`users` as users;",
+      "load jdbc.`jdbc.search_prod.users` as users;").foreach { sql =>
+      val error = tryCompile(sql)
+      assertTrue(error.getMessage.contains("LOAD jdbc"))
+    }
+
+    val localPartitionOption = tryCompile(
+      "load jdbc.`search_prod.users` options partitionColumn='id' as users;")
+    assertTrue(localPartitionOption.getMessage.contains("require a Kyuubi engine"))
   }
 
   @Test

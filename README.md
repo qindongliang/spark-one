@@ -6,11 +6,12 @@ small and delegates Spark SQL syntax to Spark itself.
 ## Modules
 
 Import the repository root `pom.xml` in IDEA. The root project is a Maven
-aggregator and exposes three modules:
+aggregator and exposes four modules:
 
 - `sparkone-server`: SparkOne Web/API/compiler/runtime.
 - `sparkone-mysql-provider`: Spark datasource provider jar for Kyuubi/Spark engine.
 - `sparkone-hdfs-overwrite-extension`: Spark driver extension for managed HDFS workspace reads and overwrite.
+- `sparkone-kyuubi-odep-plugin`: Kyuubi advisor and Spark Engine routing catalog for ODEP datasources.
 
 ## Compiler Strategy
 

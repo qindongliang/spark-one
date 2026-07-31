@@ -299,8 +299,9 @@ http://127.0.0.1:7070
 页面里可以执行：
 
 ```sql
-show databases;
-show tables in default;
+show catalogs;
+show namespaces in hive;
+show tables in hive.default;
 select 1 as id;
 ```
 

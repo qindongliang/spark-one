@@ -56,7 +56,8 @@ final class StatementPolicy {
     plan.collectFirst {
       case relation: UnresolvedRelation
           if relation.multipartIdentifier.size >= 2 &&
-            (blockedProviders.contains(relation.multipartIdentifier.head.toLowerCase(Locale.ROOT)) ||
+            ((relation.multipartIdentifier.size == 2 &&
+              blockedProviders.contains(relation.multipartIdentifier.head.toLowerCase(Locale.ROOT))) ||
               relation.multipartIdentifier.tail.exists(looksLikePath)) =>
         relation.multipartIdentifier.head
     }.foreach { provider =>

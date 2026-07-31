@@ -149,6 +149,13 @@ engines {
     #   kyuubiServerPrincipal = "kyuubi/host@HADOOP.COM"
     # }
 
+    # ODEP 路由 Catalog 由 Kyuubi advisor 注入，SparkOne 只提交三段式标识：
+    #   load jdbc.`search_prod.orders` as orders;
+    #   select * from jdbc.search_prod.orders;
+    #   load doris.`recommend_prod.r_qa_log` as qa_log;
+    #   select * from doris.recommend_prod.r_qa_log;
+    # `jdbc`/`doris` 的连接参数和 physicalNamespace 不配置在 SparkOne HOCON。
+    #
     # Kyuubi MySQL load/save 首选直接复用远端 Spark JDBC Catalog，例如：
     #   load mysql.`mysql_A.Dworks.orders` as orders;
     #   load mysql.`mysql_A.Dworks.big_orders` options partitionColumn="id" ... as big_orders;

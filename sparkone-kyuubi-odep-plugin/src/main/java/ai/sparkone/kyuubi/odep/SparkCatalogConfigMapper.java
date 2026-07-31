@@ -5,25 +5,31 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 final class SparkCatalogConfigMapper {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SparkCatalogConfigMapper.class);
-    private static final String MYSQL_CATALOG_CLASS =
+    private static final String ROUTING_CATALOG_CLASS =
+            "ai.sparkone.kyuubi.odep.catalog.OdepRoutingCatalog";
+    private static final String JDBC_CATALOG_CLASS =
             "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog";
     private static final String DORIS_CATALOG_CLASS =
             "org.apache.doris.spark.catalog.DorisTableCatalog";
 
     Map<String, String> toSparkConf(OdepDatasourceSnapshot snapshot) {
         Map<String, String> result = new LinkedHashMap<>();
+        Map<String, Integer> routeCounts = new LinkedHashMap<>();
+        Map<String, Set<String>> aliasesByCatalog = new LinkedHashMap<>();
         for (OdepDatasourceSnapshot.Datasource datasource : snapshot.getDatasources()) {
             String type = datasource.getType().toLowerCase(Locale.ROOT);
-            if ("jdbc".equals(type) && isMysql(datasource.getOptions())) {
-                addMysql(result, datasource);
+            if ("jdbc".equals(type)) {
+                addJdbc(result, routeCounts, aliasesByCatalog, datasource);
             } else if ("doris".equals(type)) {
-                addDoris(result, datasource);
+                addDoris(result, routeCounts, aliasesByCatalog, datasource);
             } else {
                 LOGGER.warn(
                         "ODEP datasource is cached but has no Spark catalog mapper: type={}, alias={}",
@@ -34,52 +40,125 @@ final class SparkCatalogConfigMapper {
         return Collections.unmodifiableMap(result);
     }
 
-    private void addMysql(
+    private void addJdbc(
             Map<String, String> result,
+            Map<String, Integer> routeCounts,
+            Map<String, Set<String>> aliasesByCatalog,
             OdepDatasourceSnapshot.Datasource datasource) {
-        String catalog = catalogName("mysql", datasource.getAlias());
-        String prefix = reserveCatalog(result, catalog, MYSQL_CATALOG_CLASS);
+        String physicalNamespace = physicalNamespace(datasource);
+        if (physicalNamespace == null) {
+            return;
+        }
         Map<String, String> options = datasource.getOptions();
-        result.put(prefix + ".url", withMysqlDatabaseTerm(required(options, "url", datasource)));
-        result.put(prefix + ".driver", required(options, "driver", datasource));
-        result.put(prefix + ".user", required(options, "user", datasource));
-        result.put(prefix + ".password", requiredAllowEmpty(options, "password", datasource));
+        Map<String, String> delegateOptions = new LinkedHashMap<>();
+        String url = required(options, "url", datasource);
+        delegateOptions.put("url", isMysql(options) ? withMysqlDatabaseTerm(url) : url);
+        delegateOptions.put("driver", required(options, "driver", datasource));
+        delegateOptions.put("user", required(options, "user", datasource));
+        delegateOptions.put("password", requiredAllowEmpty(options, "password", datasource));
+        addRoute(
+                result,
+                routeCounts,
+                aliasesByCatalog,
+                "jdbc",
+                JDBC_CATALOG_CLASS,
+                datasource.getAlias(),
+                physicalNamespace,
+                delegateOptions);
     }
 
     private void addDoris(
             Map<String, String> result,
+            Map<String, Integer> routeCounts,
+            Map<String, Set<String>> aliasesByCatalog,
             OdepDatasourceSnapshot.Datasource datasource) {
-        String catalog = catalogName("doris", datasource.getAlias());
-        String prefix = reserveCatalog(result, catalog, DORIS_CATALOG_CLASS);
+        String physicalNamespace = physicalNamespace(datasource);
+        if (physicalNamespace == null) {
+            return;
+        }
         Map<String, String> options = datasource.getOptions();
-        result.put(prefix + ".doris.fenodes", required(options, "doris.fenodes", datasource));
-        result.put(prefix + ".doris.user", required(options, "user", datasource));
-        result.put(prefix + ".doris.password", requiredAllowEmpty(options, "password", datasource));
+        Map<String, String> delegateOptions = new LinkedHashMap<>();
+        delegateOptions.put(
+                "doris.fenodes",
+                required(options, "doris.fenodes", datasource));
+        delegateOptions.put("doris.user", required(options, "user", datasource));
+        delegateOptions.put(
+                "doris.password",
+                requiredAllowEmpty(options, "password", datasource));
+        copyOptionalDorisOption(options, delegateOptions, "doris.query.port");
+        copyOptionalDorisOption(options, delegateOptions, "doris.request.retries");
+        copyOptionalDorisOption(options, delegateOptions, "doris.read.mode");
+        addRoute(
+                result,
+                routeCounts,
+                aliasesByCatalog,
+                "doris",
+                DORIS_CATALOG_CLASS,
+                datasource.getAlias(),
+                physicalNamespace,
+                delegateOptions);
     }
 
-    private String reserveCatalog(
+    private void addRoute(
             Map<String, String> result,
+            Map<String, Integer> routeCounts,
+            Map<String, Set<String>> aliasesByCatalog,
             String catalog,
-            String catalogClass) {
-        String prefix = "spark.sql.catalog." + catalog;
-        if (result.containsKey(prefix)) {
-            throw new IllegalStateException("Duplicate Spark catalog name: " + catalog);
+            String delegateClass,
+            String alias,
+            String physicalNamespace,
+            Map<String, String> delegateOptions) {
+        String routedAlias = alias.trim();
+        if (!routedAlias.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            throw new IllegalStateException(
+                    "ODEP datasource alias must be a simple Spark identifier: type="
+                            + catalog + ", alias=" + alias);
         }
-        result.put(prefix, catalogClass);
-        return prefix;
+        String normalizedAlias = routedAlias.toLowerCase(Locale.ROOT);
+        Set<String> aliases = aliasesByCatalog.computeIfAbsent(
+                catalog,
+                ignored -> new LinkedHashSet<>());
+        if (!aliases.add(normalizedAlias)) {
+            throw new IllegalStateException(
+                    "Duplicate ODEP datasource alias for Spark catalog: catalog="
+                            + catalog + ", alias=" + alias);
+        }
+
+        String catalogPrefix = "spark.sql.catalog." + catalog;
+        result.put(catalogPrefix, ROUTING_CATALOG_CLASS);
+        result.put(catalogPrefix + ".odep.delegate.class", delegateClass);
+
+        int index = routeCounts.getOrDefault(catalog, 0);
+        String routePrefix = catalogPrefix + ".odep.datasource." + index;
+        result.put(routePrefix + ".alias", routedAlias);
+        result.put(routePrefix + ".physicalNamespace", physicalNamespace);
+        for (Map.Entry<String, String> option : delegateOptions.entrySet()) {
+            result.put(routePrefix + ".option." + option.getKey(), option.getValue());
+        }
+        routeCounts.put(catalog, index + 1);
+        result.put(catalogPrefix + ".odep.datasource.count", String.valueOf(index + 1));
     }
 
-    private String catalogName(String type, String alias) {
-        String normalized = alias.trim()
-                .toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9_]", "_")
-                .replaceAll("_+", "_");
-        if (normalized.isEmpty()) {
-            throw new IllegalStateException(
-                    "ODEP datasource alias cannot form a Spark catalog name: type="
-                            + type + ", alias=" + alias);
+    private String physicalNamespace(OdepDatasourceSnapshot.Datasource datasource) {
+        String value = datasource.getPhysicalNamespace();
+        if (value == null || value.trim().isEmpty()) {
+            LOGGER.warn(
+                    "Skipping ODEP datasource without physical namespace: type={}, alias={}",
+                    datasource.getType(),
+                    datasource.getAlias());
+            return null;
         }
-        return type + "_" + normalized;
+        return value.trim();
+    }
+
+    private void copyOptionalDorisOption(
+            Map<String, String> source,
+            Map<String, String> target,
+            String key) {
+        String value = source.get(key);
+        if (value != null && !value.trim().isEmpty()) {
+            target.put(key, value);
+        }
     }
 
     private boolean isMysql(Map<String, String> options) {

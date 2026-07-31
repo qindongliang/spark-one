@@ -117,8 +117,9 @@ select * from users limit 10;
 验证 Hive metastore：
 
 ```sql
-show databases;
-show tables in default;
+show namespaces in hive;
+show tables in hive.default;
+select * from hive.default.some_table limit 10;
 
 load hive.`default.some_table` as t;
 select * from t limit 10;
@@ -135,7 +136,7 @@ as hive_write_test(id, name);
 
 save append hive_write_test as hive.`default.sparkone_hive_test`;
 
-select * from default.sparkone_hive_test limit 10;
+select * from hive.default.sparkone_hive_test limit 10;
 ```
 
 Hive Catalog overwrite 被固定能力矩阵永久拒绝：

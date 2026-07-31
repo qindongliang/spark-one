@@ -23,6 +23,7 @@ final class OdepDatasourceSnapshot {
         private final Long id;
         private final String type;
         private final String alias;
+        private final String physicalNamespace;
         private final String description;
         private final Map<String, String> options;
         private final String updateTime;
@@ -31,12 +32,14 @@ final class OdepDatasourceSnapshot {
                 Long id,
                 String type,
                 String alias,
+                String physicalNamespace,
                 String description,
                 Map<String, String> options,
                 String updateTime) {
             this.id = id;
             this.type = type;
             this.alias = alias;
+            this.physicalNamespace = physicalNamespace;
             this.description = description;
             this.options = Collections.unmodifiableMap(new LinkedHashMap<>(options));
             this.updateTime = updateTime;
@@ -52,6 +55,10 @@ final class OdepDatasourceSnapshot {
 
         String getAlias() {
             return alias;
+        }
+
+        String getPhysicalNamespace() {
+            return physicalNamespace;
         }
 
         String getDescription() {
