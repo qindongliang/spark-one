@@ -27,7 +27,7 @@
 ## UI
 
 - [前端页面](ui/frontend.md)：静态前端资源、API 调用和后续页面演进。
-- [SQL 编辑器测试](ui/editor-testing.md)：编辑器、DSL、数据源、Kyuubi provider、HDFS/Hive 测试手册。
+- [SQL 编辑器测试](ui/editor-testing.md)：编辑器、DSL、数据源、Kyuubi provider、HDFS/Hive 测试目录。
 - [Assert 测试用例](ui/assertion-testing.md)：Local/Kyuubi 的通过、失败、短路与常用数据质量场景。
 
 ## Ops

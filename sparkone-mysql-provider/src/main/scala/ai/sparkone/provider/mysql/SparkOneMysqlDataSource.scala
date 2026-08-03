@@ -1,5 +1,6 @@
 package ai.sparkone.provider.mysql
 
+import ai.sparkone.kyuubi.odep.OdepDatasourceResolver
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcRelationProvider
 import org.apache.spark.sql.sources.{BaseRelation, DataSourceRegister, RelationProvider}
@@ -9,10 +10,16 @@ import java.sql.{Connection, Driver, DriverManager}
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.Properties
+import scala.collection.JavaConverters._
 
-final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegister {
+final class SparkOneMysqlDataSource private[mysql] (
+    configuredDatasourceResolver: OdepDatasourceResolver) extends RelationProvider with DataSourceRegister {
+  def this() = this(null)
+
   private val logger = LoggerFactory.getLogger(getClass)
   private val odepRoutingCatalogClass = "ai.sparkone.kyuubi.odep.catalog.OdepRoutingCatalog"
+  private lazy val datasourceResolver =
+    Option(configuredDatasourceResolver).getOrElse(OdepDatasourceResolver.getDefault())
 
   override def shortName(): String = "sparkone_mysql"
 
@@ -31,7 +38,7 @@ final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegi
     val catalogClass = allConf.getOrElse(s"spark.sql.catalog.$catalog", "")
     val (baseJdbcOptions, resolvedDbtable) = normalized.get("alias").filter(_.nonEmpty) match {
       case Some(alias) =>
-        resolveOdepJdbcRoute(catalog, alias, dbtable, catalogClass, catalogOptions)
+        resolveOdepJdbcRoute(catalog, alias, dbtable, catalogClass)
       case None =>
         if (!catalogClass.toLowerCase.contains("jdbc")) {
           throw new IllegalArgumentException(
@@ -61,8 +68,7 @@ final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegi
       catalog: String,
       alias: String,
       table: String,
-      catalogClass: String,
-      catalogOptions: Map[String, String]): (Map[String, String], String) = {
+      catalogClass: String): (Map[String, String], String) = {
     if (catalogClass != odepRoutingCatalogClass) {
       throw new IllegalArgumentException(
         s"sparkone_mysql ODEP alias requires routing catalog '$catalog', but spark.sql.catalog.$catalog is '$catalogClass'")
@@ -70,27 +76,9 @@ final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegi
     validateIdentifier(alias, "ODEP alias")
     validateIdentifier(table, "ODEP table")
 
-    val datasourceCount = positiveInt(
-      requiredIgnoreCase(catalogOptions, "odep.datasource.count", catalog),
-      s"spark.sql.catalog.$catalog.odep.datasource.count")
-    val routeIndex = (0 until datasourceCount).find { index =>
-      optionIgnoreCase(catalogOptions, s"odep.datasource.$index.alias")
-        .exists(_.equalsIgnoreCase(alias))
-    }.getOrElse {
-      throw new IllegalArgumentException(
-        s"sparkone_mysql cannot find ODEP JDBC alias '$alias' in catalog '$catalog'")
-    }
-
-    val routePrefix = s"odep.datasource.$routeIndex."
-    val physicalNamespace = requiredIgnoreCase(
-      catalogOptions,
-      routePrefix + "physicalNamespace",
-      catalog)
-    val optionPrefix = (routePrefix + "option.").toLowerCase
-    val jdbcOptions = catalogOptions.collect {
-      case (key, value) if key.toLowerCase.startsWith(optionPrefix) =>
-        key.substring(optionPrefix.length) -> value
-    }
+    val datasource = datasourceResolver.resolve("jdbc", alias)
+    val physicalNamespace = datasource.getPhysicalNamespace
+    val jdbcOptions = datasource.getOptions.asScala.toMap
     requireCatalogOptions(s"$catalog/$alias", jdbcOptions, Seq("url"))
     if (!isMysql(jdbcOptions)) {
       throw new IllegalArgumentException(
@@ -111,16 +99,6 @@ final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegi
   private def requiredAny(options: Map[String, String], keys: Seq[String]): String = {
     keys.flatMap(key => options.get(key).filter(_.nonEmpty)).headOption.getOrElse {
       throw new IllegalArgumentException(s"sparkone_mysql requires one of options: ${keys.mkString(", ")}")
-    }
-  }
-
-  private def requiredIgnoreCase(
-      options: Map[String, String],
-      key: String,
-      catalog: String): String = {
-    optionIgnoreCase(options, key).getOrElse {
-      throw new IllegalArgumentException(
-        s"sparkone_mysql catalog '$catalog' requires option '$key'")
     }
   }
 
@@ -245,18 +223,6 @@ final class SparkOneMysqlDataSource extends RelationProvider with DataSourceRegi
     if (!value.matches("[A-Za-z_][A-Za-z0-9_]*")) {
       throw new IllegalArgumentException(
         s"sparkone_mysql $label must be a simple identifier: $value")
-    }
-  }
-
-  private def positiveInt(value: String, label: String): Int = {
-    try {
-      val parsed = value.toInt
-      if (parsed <= 0) throw new NumberFormatException(value)
-      parsed
-    } catch {
-      case _: NumberFormatException =>
-        throw new IllegalArgumentException(
-          s"sparkone_mysql $label must be a positive integer: $value")
     }
   }
 

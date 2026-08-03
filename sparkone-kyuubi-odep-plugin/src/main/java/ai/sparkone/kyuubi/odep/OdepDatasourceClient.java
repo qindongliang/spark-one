@@ -29,23 +29,22 @@ final class OdepDatasourceClient {
     private static final char[] NONCE_ALPHABET =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
 
-    private final URL endpoint;
+    private final URL indexEndpoint;
+    private final URL resolveEndpoint;
     private final String appId;
     private final String signKey;
     private final int connectTimeoutMillis;
     private final int readTimeoutMillis;
-    private final ObjectMapper objectMapper;
-    private final SecureRandom secureRandom;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final SecureRandom secureRandom = new SecureRandom();
 
     static OdepDatasourceClient fromEnvironment() {
         return fromEnvironment(System.getenv());
     }
 
     static OdepDatasourceClient fromEnvironment(Map<String, String> environment) {
-        String apiUrl = required(environment, "ODEP_API_URL");
-        String endpoint = trimTrailingSlash(apiUrl) + "/api/datasource/snapshot";
         return new OdepDatasourceClient(
-                endpoint,
+                required(environment, "ODEP_API_URL"),
                 required(environment, "ODEP_KYUUBI_APP_ID"),
                 required(environment, "ODEP_KYUUBI_SIGN_KEY"),
                 positiveSecondsMillis(
@@ -59,36 +58,99 @@ final class OdepDatasourceClient {
     }
 
     OdepDatasourceClient(
-            String endpoint,
+            String apiUrl,
             String appId,
             String signKey,
             int connectTimeoutMillis,
             int readTimeoutMillis) {
+        String datasourceEndpoint = trimTrailingSlash(apiUrl) + "/api/datasource";
         try {
-            this.endpoint = new URL(endpoint);
+            indexEndpoint = new URL(datasourceEndpoint + "/index");
+            resolveEndpoint = new URL(datasourceEndpoint + "/resolve");
         } catch (Exception e) {
-            throw new IllegalArgumentException("ODEP datasource snapshot URL is invalid", e);
+            throw new IllegalArgumentException("ODEP datasource API URL is invalid", e);
         }
-        if (!"http".equalsIgnoreCase(this.endpoint.getProtocol())
-                && !"https".equalsIgnoreCase(this.endpoint.getProtocol())) {
-            throw new IllegalArgumentException(
-                    "ODEP datasource snapshot URL must use HTTP or HTTPS");
-        }
+        validateHttpEndpoint(indexEndpoint);
         this.appId = requireNonBlank(appId, "ODEP appId");
         this.signKey = requireNonBlank(signKey, "ODEP sign key");
         this.connectTimeoutMillis = requirePositive(connectTimeoutMillis, "connect timeout");
         this.readTimeoutMillis = requirePositive(readTimeoutMillis, "read timeout");
-        this.objectMapper = new ObjectMapper();
-        this.secureRandom = new SecureRandom();
     }
 
-    OdepDatasourceSnapshot load() {
+    List<OdepDatasourceResolver.Metadata> loadIndex(String type) {
+        Map<String, String> request = new LinkedHashMap<>();
+        request.put("type", type);
+        JsonNode results = request(indexEndpoint, request, "index");
+        if (!results.isArray()) {
+            throw new IllegalStateException("ODEP datasource index results must be an array");
+        }
+
+        List<OdepDatasourceResolver.Metadata> metadata = new ArrayList<>();
+        for (JsonNode datasource : results) {
+            metadata.add(new OdepDatasourceResolver.Metadata(
+                    nullableLong(datasource.get("id")),
+                    requiredText(datasource, "type"),
+                    requiredText(datasource, "alias"),
+                    requiredText(datasource, "physicalNamespace"),
+                    nullableText(datasource.get("description")),
+                    nullableText(datasource.get("updateTime"))));
+        }
+        return metadata;
+    }
+
+    Map<String, String> loadOptions(String type, String alias) {
+        Map<String, String> request = new LinkedHashMap<>();
+        request.put("type", type);
+        request.put("alias", alias);
+        JsonNode results = request(resolveEndpoint, request, "resolve");
+        if (!results.isObject()) {
+            throw new IllegalStateException(
+                    "ODEP datasource resolve results must be an object: type="
+                            + type + ", alias=" + alias);
+        }
+
+        Map<String, String> options = new LinkedHashMap<>();
+        Iterator<Map.Entry<String, JsonNode>> fields = results.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> field = fields.next();
+            JsonNode valueNode = field.getValue();
+            if (!valueNode.isValueNode()) {
+                throw new IllegalStateException(
+                        "ODEP datasource option must be a scalar value: type="
+                                + type + ", alias=" + alias + ", key=" + field.getKey());
+            }
+            String value = valueNode.isNull() ? "" : valueNode.asText();
+            if (value.contains("${")) {
+                throw new IllegalStateException(
+                        "ODEP datasource resolve contains an unresolved placeholder: type="
+                                + type + ", alias=" + alias + ", key=" + field.getKey());
+            }
+            options.put(field.getKey(), value);
+        }
+        if (options.isEmpty()) {
+            throw new IllegalStateException(
+                    "ODEP datasource resolve returned no options: type="
+                            + type + ", alias=" + alias);
+        }
+        return options;
+    }
+
+    private JsonNode request(
+            URL endpoint,
+            Map<String, String> parameters,
+            String operation) {
         HttpURLConnection connection = null;
         try {
             String timestamp = String.valueOf(System.currentTimeMillis() / 1000);
             String nonce = nonce();
-            String sign = sign(appId, signKey, nonce, timestamp);
-            byte[] requestBody = formBody(appId, nonce, timestamp, sign);
+            String signature = sign(appId, signKey, nonce, timestamp);
+            Map<String, String> form = new LinkedHashMap<>();
+            form.put("appId", appId);
+            form.put("nonce", nonce);
+            form.put("timestamp", timestamp);
+            form.put("sign", signature);
+            form.putAll(parameters);
+            byte[] requestBody = formBody(form);
 
             connection = (HttpURLConnection) endpoint.openConnection();
             connection.setInstanceFollowRedirects(false);
@@ -107,14 +169,16 @@ final class OdepDatasourceClient {
             int status = connection.getResponseCode();
             if (status != HttpURLConnection.HTTP_OK) {
                 closeQuietly(connection.getErrorStream());
-                throw new IllegalStateException("ODEP datasource snapshot returned HTTP " + status);
+                throw new IllegalStateException(
+                        "ODEP datasource " + operation + " returned HTTP " + status);
             }
             try (InputStream input = connection.getInputStream()) {
-                return parse(readLimited(input));
+                return parseResults(readLimited(input), operation);
             }
         } catch (IOException e) {
             throw new IllegalStateException(
-                    "Failed to load ODEP datasource snapshot from " + endpoint, e);
+                    "Failed to load ODEP datasource " + operation + " from " + endpoint,
+                    e);
         } finally {
             if (connection != null) {
                 connection.disconnect();
@@ -122,63 +186,23 @@ final class OdepDatasourceClient {
         }
     }
 
-    private OdepDatasourceSnapshot parse(byte[] responseBody) throws IOException {
+    private JsonNode parseResults(byte[] responseBody, String operation) throws IOException {
         JsonNode root = objectMapper.readTree(responseBody);
         if (root == null || !root.isObject()) {
-            throw new IllegalStateException("ODEP datasource snapshot response must be an object");
+            throw new IllegalStateException(
+                    "ODEP datasource " + operation + " response must be an object");
         }
         if (root.path("code").asInt(-1) != 200 || !root.path("success").asBoolean(false)) {
             throw new IllegalStateException(
-                    "ODEP datasource snapshot business request failed: code="
+                    "ODEP datasource " + operation + " business request failed: code="
                             + root.path("code").asInt(-1));
         }
-        JsonNode datasourceNodes = root.path("results").path("datasources");
-        if (!datasourceNodes.isArray()) {
+        JsonNode results = root.get("results");
+        if (results == null || results.isNull()) {
             throw new IllegalStateException(
-                    "ODEP datasource snapshot response is missing results.datasources");
+                    "ODEP datasource " + operation + " response is missing results");
         }
-
-        List<OdepDatasourceSnapshot.Datasource> datasources = new ArrayList<>();
-        for (JsonNode datasourceNode : datasourceNodes) {
-            String type = requiredText(datasourceNode, "type");
-            String alias = requiredText(datasourceNode, "alias");
-            Map<String, String> options = parseOptions(datasourceNode.path("options"), type, alias);
-            datasources.add(new OdepDatasourceSnapshot.Datasource(
-                    nullableLong(datasourceNode.get("id")),
-                    type,
-                    alias,
-                    nullableText(datasourceNode.get("physicalNamespace")),
-                    nullableText(datasourceNode.get("description")),
-                    options,
-                    nullableText(datasourceNode.get("updateTime"))));
-        }
-        return new OdepDatasourceSnapshot(datasources);
-    }
-
-    private Map<String, String> parseOptions(JsonNode optionsNode, String type, String alias) {
-        if (!optionsNode.isObject()) {
-            throw new IllegalStateException(
-                    "ODEP datasource options must be an object: type=" + type + ", alias=" + alias);
-        }
-        Map<String, String> options = new LinkedHashMap<>();
-        Iterator<Map.Entry<String, JsonNode>> fields = optionsNode.fields();
-        while (fields.hasNext()) {
-            Map.Entry<String, JsonNode> field = fields.next();
-            JsonNode valueNode = field.getValue();
-            if (!valueNode.isValueNode()) {
-                throw new IllegalStateException(
-                        "ODEP datasource option must be a scalar value: type="
-                                + type + ", alias=" + alias + ", key=" + field.getKey());
-            }
-            String value = valueNode.isNull() ? "" : valueNode.asText();
-            if (value.contains("${")) {
-                throw new IllegalStateException(
-                        "ODEP datasource snapshot contains an unresolved placeholder: type="
-                                + type + ", alias=" + alias + ", key=" + field.getKey());
-            }
-            options.put(field.getKey(), value);
-        }
-        return options;
+        return results;
     }
 
     static String sign(String appId, String signKey, String nonce, String timestamp) {
@@ -207,12 +231,15 @@ final class OdepDatasourceClient {
         }
     }
 
-    private byte[] formBody(String appId, String nonce, String timestamp, String sign) {
-        String body = "appId=" + encode(appId)
-                + "&nonce=" + encode(nonce)
-                + "&timestamp=" + encode(timestamp)
-                + "&sign=" + encode(sign);
-        return body.getBytes(StandardCharsets.UTF_8);
+    private byte[] formBody(Map<String, String> form) {
+        StringBuilder body = new StringBuilder();
+        for (Map.Entry<String, String> entry : form.entrySet()) {
+            if (body.length() > 0) {
+                body.append('&');
+            }
+            body.append(encode(entry.getKey())).append('=').append(encode(entry.getValue()));
+        }
+        return body.toString().getBytes(StandardCharsets.UTF_8);
     }
 
     private byte[] readLimited(InputStream input) throws IOException {
@@ -223,7 +250,7 @@ final class OdepDatasourceClient {
         while ((read = input.read(buffer)) != -1) {
             total += read;
             if (total > MAX_RESPONSE_BYTES) {
-                throw new IllegalStateException("ODEP datasource snapshot response is too large");
+                throw new IllegalStateException("ODEP datasource API response is too large");
             }
             output.write(buffer, 0, read);
         }
@@ -296,6 +323,14 @@ final class OdepDatasourceClient {
             throw new IllegalStateException(name + " must be positive");
         }
         return value;
+    }
+
+    private static void validateHttpEndpoint(URL endpoint) {
+        if (!"http".equalsIgnoreCase(endpoint.getProtocol())
+                && !"https".equalsIgnoreCase(endpoint.getProtocol())) {
+            throw new IllegalArgumentException(
+                    "ODEP datasource API URL must use HTTP or HTTPS");
+        }
     }
 
     private static String trimTrailingSlash(String value) {

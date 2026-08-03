@@ -14,20 +14,14 @@
     <artifactId>sparkone-kyuubi-odep-plugin</artifactId>
     <packaging>jar</packaging>
 
-    <name>SparkOne Kyuubi ODEP Plugin</name>
-    <description>Loads ODEP datasource snapshots into Kyuubi Spark catalog session configuration.</description>
+    <name>SparkOne ODEP Catalog Plugin</name>
+    <description>Lazily resolves ODEP datasources inside Spark engines.</description>
 
     <dependencies>
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.kyuubi</groupId>
-            <artifactId>kyuubi-server-plugin</artifactId>
-            <version>${kyuubi.server.plugin.version}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>

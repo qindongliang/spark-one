@@ -8,7 +8,7 @@ Kyuubi engine 通过 Kyuubi JDBC 提交 Spark SQL，是 SparkOne 面向远程 SQ
 
 | 配置层 | 放置内容 | 不应放置 |
 | --- | --- | --- |
-| `kyuubi-defaults.conf` | Kyuubi 认证与前端、固定 principal/keytab、Catalog 密钥、SparkOne extension、公共 JAR、engine 共享策略、profile advisor | `spark.master`、deploy mode、队列、资源、driver 地址 |
+| `kyuubi-defaults.conf` | Kyuubi 认证与前端、固定 principal/keytab、静态 Catalog、ODEP 路由类、SparkOne extension、公共 JAR、engine 共享策略、profile advisor | `spark.master`、deploy mode、队列、资源、driver 地址 |
 | `kyuubi-session-<profile>.conf` | subdomain、master、deploy mode、队列、driver 网络、资源、动态分配、event log、TTL | keytab、Catalog 密钥、extension、公共 JAR |
 | `sparkone.conf` | engine id、展示名称、Kyuubi JDBC 地址、profile 名称 | `spark.*` 启动参数、Catalog 密钥、远端 keytab |
 
@@ -46,9 +46,11 @@ profile 在最后合并，因此同名键由 profile 覆盖 JDBC 和公共基线
 
 这个优先级只适用于所选 engine 的启动配置和 backend 配置，不适用于已经初始化的 Kyuubi Server frontend。profile 中的 `kyuubi.session.idle.timeout` 不会反向修改 Server frontend SessionManager；profile 中的 master、资源和生命周期参数也不会原地重配已经运行的 engine。修改公共 Server 参数必须重启每个 Kyuubi Server；修改 profile 后要让 engine 级全局参数确定生效，应等待 profile 缓存刷新并停止旧 engine，再由新连接重新拉起。
 
-### ODEP 数据源进程快照
+### ODEP 数据源按需加载
 
-`sparkone-kyuubi-odep-plugin` 是 Kyuubi Server 侧的 `SessionConfAdvisor`。Kyuubi 1.9.4 在每个 Server 的首个 Session 创建时初始化 advisor，插件使用 OpenAPI 签名从 ODEP 拉取一次 `/api/datasource/snapshot`，把完整快照保存在当前 Server 进程内存，并把可映射的数据源转换为 Spark Catalog session overlay。本阶段不定时刷新；ODEP 注册信息变化后重启所有 Kyuubi Server，共享模式下再停止旧 engine。
+`sparkone-kyuubi-odep-plugin` 是 Spark Engine 侧的路由 Catalog，不是 Kyuubi Server `SessionConfAdvisor`。Engine 启动时只接收固定的 `jdbc`、`doris` Catalog 类名，不携带任何数据源 URL、用户名或密码。Catalog 实例初始化也不访问 ODEP：首次 `SHOW NAMESPACES IN jdbc|doris` 时调用 `POST /api/datasource/index`，以 form 参数传 `type` 获取非敏感 alias 索引；首次访问某个 alias 的表时，再调用 SparkOne/Kyuubi 专用的 `POST /api/datasource/resolve`，以 form 参数传 `type + alias` 获取该数据源连接配置。`/resolve` 在 ODEP 内复用当前环境的 `common-url.rms.api` 和 `pk.name` 解析 PK 占位符；MLSQL 旧客户端使用的 `/detail` 保持不变。
+
+索引按 type、解析配置按 `type + alias` 缓存在当前 Spark Engine JVM，不设置 TTL，也不 reload。ODEP 注册信息变化后只需停止旧 Engine，让后续连接创建新 Engine；不需要为了刷新数据源重启 Kyuubi Server。connection 级 Engine 会随新连接自然生效，共享 Engine 需要人工停止。
 
 构建插件：
 
@@ -56,9 +58,16 @@ profile 在最后合并，因此同名键由 profile 覆盖 JDBC 和公共基线
 scripts/build.sh sparkone-kyuubi-odep-plugin
 ```
 
-把 `sparkone-kyuubi-odep-plugin/target/sparkone-kyuubi-odep-plugin-0.1.0-SNAPSHOT.jar` 放入每个 Kyuubi Server 的 `$KYUUBI_HOME/jars`，供 Server 加载 `SessionConfAdvisor`；同一个 JAR 还必须加入 `spark.jars`，供 Spark Engine 加载 ODEP 路由 Catalog。插件依赖的 Spark、Jackson、SLF4J 和 `kyuubi-server-plugin` 均由对应进程提供，不需要打入插件 JAR。
+ODEP API 部署后，可以列出指定类型的数据源，或者在不打印解析配置值的情况下验证指定 alias：
 
-Kyuubi Server 进程必须配置：
+```bash
+scripts/tests/odep-datasource-api.sh jdbc
+scripts/tests/odep-datasource-api.sh jdbc search_prod
+```
+
+把 `sparkone-kyuubi-odep-plugin/target/sparkone-kyuubi-odep-plugin-0.1.0-SNAPSHOT.jar` 加入 `spark.jars`，供 Spark Engine 加载路由 Catalog。Kyuubi Server classpath 不需要这个 JAR。插件依赖的 Spark、Jackson 和 SLF4J 由 Engine 提供，不需要打入插件 JAR。
+
+Spark Engine driver 进程必须能读取：
 
 ```bash
 export ODEP_API_URL=https://odep-api.example
@@ -68,26 +77,30 @@ export ODEP_CONNECT_TIMEOUT_SECONDS=5
 export ODEP_REQUEST_TIMEOUT_SECONDS=60
 ```
 
-`ODEP_API_URL` 是 ODEP API 根地址，插件固定请求其 `/api/datasource/snapshot`。`ODEP_API_URL`、`ODEP_KYUUBI_APP_ID`、`ODEP_KYUUBI_SIGN_KEY` 中任意一个缺失、HTTP/业务响应失败、JSON 结构非法或仍包含 `${...}` 占位符，首个 Session 创建失败；Kyuubi Server 进程本身仍保持运行。日志只记录数据源数量、生成的 Catalog 数量以及不支持映射的 `type/alias`，不记录 options、URL、用户或密码。
+`ODEP_API_URL` 是 ODEP API 根地址。`ODEP_API_URL`、`ODEP_KYUUBI_APP_ID`、`ODEP_KYUUBI_SIGN_KEY` 中任意一个缺失时，首次实例化 `jdbc` 或 `doris` Catalog 失败；索引、解析请求失败或响应非法时，当前 SQL 失败，但 Kyuubi Server 和 Engine 进程仍保持运行。插件不记录连接 options、URL、用户或密码。
 
-`kyuubi-defaults.conf` 中把 ODEP advisor 放在文件 advisor 后面：
+local 和 YARN client 模式的 Engine driver 通常继承 Kyuubi Server 启动环境，因此可以在 Server 启动环境配置这些变量。YARN cluster 等远端 driver 必须由集群 secret 机制或受控启动环境注入；不要把 sign key 放进 `spark.*` 配置，否则会重新出现在 `spark-submit --conf`、Spark UI 或 event log 中。
+
+`kyuubi-defaults.conf` 只保留文件 advisor，并注册两个固定路由 Catalog：
 
 ```properties
-kyuubi.session.conf.advisor org.apache.kyuubi.session.FileSessionConfAdvisor,ai.sparkone.kyuubi.odep.OdepDatasourceSessionConfAdvisor
+kyuubi.session.conf.advisor org.apache.kyuubi.session.FileSessionConfAdvisor
 kyuubi.session.conf.restrict.list spark.*,kyuubi.engine.share.level,kyuubi.engine.share.level.subdomain
+spark.sql.catalog.jdbc ai.sparkone.kyuubi.odep.catalog.OdepRoutingCatalog
+spark.sql.catalog.doris ai.sparkone.kyuubi.odep.catalog.OdepRoutingCatalog
 kyuubi.server.redaction.regex (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
 spark.redaction.regex (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
 ```
 
-Kyuubi 1.9.4 按 advisor 声明顺序合并 overlay，客户端配置仍先经过 Server restrict list，不能覆盖受控 Catalog。两条 redaction 正则还会分别遮蔽 Kyuubi Engine 启动命令和 Spark 日志/UI 中的 Catalog URL、用户名、密码及 Doris FE 地址。当前映射规则为：
+客户端配置仍先经过 Server restrict list，不能覆盖受控 Catalog。ODEP 连接配置由 Engine 内 HTTP 请求取得，不进入 session overlay 或 Engine 启动命令。两条 redaction 正则继续保护静态 Catalog 和误入配置的敏感值。当前映射规则为：
 
 | ODEP type | Spark Catalog 名 | 实现 |
 | --- | --- | --- |
 | `jdbc` | `jdbc` | alias 路由到独立 `JDBCTableCatalog`；MySQL URL 自动补 `databaseTerm=SCHEMA` |
 | `doris` | `doris` | alias 路由到独立 Doris `DorisTableCatalog` |
-| `es`、`solr` 和其他类型 | 暂不生成 | 保留在 Server 内存快照并记录告警 |
+| `es`、`solr` 和其他类型 | 暂不注册 | Engine 不请求这些类型 |
 
-`jdbc` 和 `doris` 数据源必须有 `physicalNamespace` 才会进入路由 Catalog；缺失时跳过并记录不含敏感配置的告警。alias 是用户 SQL 中的逻辑库名，必须符合 `[A-Za-z_][A-Za-z0-9_]*`；`physicalNamespace` 是底层真实库。例如：
+`jdbc` 和 `doris` 数据源必须有 `physicalNamespace` 才会由 `/index` 发布。alias 是用户 SQL 中的逻辑库名，必须符合 `[A-Za-z_][A-Za-z0-9_]*`；`physicalNamespace` 是底层真实库。例如：
 
 ```sql
 show namespaces in jdbc;
@@ -117,11 +130,11 @@ select * from doris_static.dataagent.r_qa_log limit 10;
 load doris.`doris_static.dataagent.r_qa_log` as static_qa_log;
 ```
 
-ODEP 模式下，`spark.sql.catalog.jdbc.*` 和 `spark.sql.catalog.doris.*` 两个完整前缀由 ODEP Advisor 独占，不能再在 `kyuubi-defaults.conf` 或 session profile 中配置同名静态 Catalog。路由 Catalog 初始化时发现同名前缀残留的 `url`、`doris.fenodes` 等静态参数会直接报冲突。静态 `mysql_static`、`doris_static` 与 ODEP 的 `jdbc`、`doris` 不重名，可以同时存在。
+ODEP 模式下，`spark.sql.catalog.jdbc.*` 和 `spark.sql.catalog.doris.*` 两个完整前缀由 ODEP 路由 Catalog 独占，不能再配置同名静态连接参数。路由 Catalog 初始化时发现同名前缀残留的 `url`、`doris.fenodes` 等静态参数会直接报冲突。静态 `mysql_static`、`doris_static` 与 ODEP 的 `jdbc`、`doris` 不重名，可以同时存在。
 
 插件只负责 Catalog 配置和 alias 路由；JDBC driver、Doris connector 等运行依赖仍必须安装在 Spark engine classpath。
 
-该方案使用 Kyuubi 1.9.4 原生的 advisor 懒加载行为，不修改 Kyuubi 源码，也不需要维护自定义 Kyuubi 构建。部署后可主动创建一次测试连接进行预热，使 ODEP 配置错误在业务流量进入前暴露。
+该方案只使用 Spark Catalog 扩展点，不修改 Kyuubi 源码，也不需要维护自定义 Kyuubi 构建。部署后可执行一次 `SHOW NAMESPACES` 和测试表查询预热索引与目标 alias，使配置错误在业务流量进入前暴露。
 
 ### 公共 Kyuubi 配置
 
@@ -142,7 +155,12 @@ kyuubi.ha.namespace                          sparkone-kyuubi
 # 所有 Spark engine 共用的身份、依赖和 SparkOne 扩展
 spark.kerberos.principal                     odep@HADOOP.COM
 spark.kerberos.keytab                        /etc/security/keytabs/odep.keytab
-spark.jars                                   /opt/sparkone/sparkone-kyuubi-odep-plugin.jar,/opt/sparkone/sparkone-hdfs-overwrite-extension.jar,/opt/sparkone/sparkone-mysql-provider.jar,/opt/connectors/spark-doris-connector.jar,/opt/connectors/mysql-connector-j.jar
+spark.jars                                   \
+  /opt/sparkone/sparkone-kyuubi-odep-plugin.jar,\
+  /opt/sparkone/sparkone-hdfs-overwrite-extension.jar,\
+  /opt/sparkone/sparkone-mysql-provider.jar,\
+  /opt/connectors/spark-doris-connector.jar,\
+  /opt/connectors/mysql-connector-j.jar
 spark.driver.userClassPathFirst              true
 spark.executor.userClassPathFirst            true
 spark.sql.extensions                         ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
@@ -152,8 +170,10 @@ spark.sparkone.overwrite.workspaceRoot       /public/odep/user
 spark.sparkone.overwrite.zk.sessionTimeoutMs 60000
 spark.sparkone.overwrite.zk.connectionTimeoutMs 15000
 
-# ODEP advisor 动态注入 spark.sql.catalog.jdbc.* 和 spark.sql.catalog.doris.*。
-# 不要在 defaults 或 session profile 中重复配置这两个前缀。
+# ODEP 路由类是固定启动配置，连接详情由 Engine 首次访问 alias 时获取。
+spark.sql.catalog.jdbc                       ai.sparkone.kyuubi.odep.catalog.OdepRoutingCatalog
+spark.sql.catalog.doris                      ai.sparkone.kyuubi.odep.catalog.OdepRoutingCatalog
+# 不要在 defaults 或 session profile 中给这两个前缀增加静态连接参数。
 
 # Kyuubi engine 启动日志，以及 Spark UI、YARN 和 event log 中的敏感配置脱敏
 kyuubi.server.redaction.regex                 (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
@@ -171,14 +191,14 @@ kyuubi.engine.doAs.enabled                   false
 kyuubi.engine.single.spark.session           false
 
 # 只允许客户端选择管理员定义的 profile，不允许直接改 Spark 或 engine 分组
-kyuubi.session.conf.advisor                  org.apache.kyuubi.session.FileSessionConfAdvisor,ai.sparkone.kyuubi.odep.OdepDatasourceSessionConfAdvisor
+kyuubi.session.conf.advisor                  org.apache.kyuubi.session.FileSessionConfAdvisor
 kyuubi.session.conf.file.reload.interval     PT1M
 kyuubi.session.conf.restrict.list            spark.*,kyuubi.engine.share.level,kyuubi.engine.share.level.subdomain,kyuubi.session.conf.restrict.list,kyuubi.session.conf.ignore.list
 ```
 
 这里故意不设置 `spark.master`、`spark.submit.deployMode`、`spark.driver.host` 和 YARN 资源参数。`spark.jars` 使用 Kyuubi gateway 本机可读的路径，`spark-submit` 会在 YARN 模式下负责上传和分发；JAR 必须与实际 `SPARK_HOME` 的 Spark/Scala 版本匹配。
 
-`kyuubi.server.redaction.regex` 负责 Kyuubi Server 日志中的 engine 启动命令和配置，`spark.redaction.regex` 负责 Spark UI、YARN 与 event log。两者会遮蔽通用密钥和 ODEP Catalog 的连接地址、用户、密码，只影响后续输出，不会清理已有日志，也不会加密 `kyuubi-defaults.conf`；配置文件仍应限制为 Kyuubi 运行账号可读。redaction 也不会遮蔽操作系统进程列表中的 `spark-submit --conf` 参数，MVP 环境必须限制其他账号查看 Kyuubi/Spark 进程；生产化前应进一步改为不经过进程命令行传递 Catalog 密钥。
+`kyuubi.server.redaction.regex` 负责 Kyuubi Server 日志中的 engine 启动命令和配置，`spark.redaction.regex` 负责 Spark UI、YARN 与 event log。两者会遮蔽通用密钥和静态 Catalog 的连接地址、用户、密码，只影响后续输出，不会清理已有日志，也不会加密 `kyuubi-defaults.conf`。ODEP 数据源连接配置不再经过 `spark-submit --conf`；ODEP API 凭据由 Engine 环境提供，仍应使用运行账号权限和 secret 机制保护。
 
 ### 三套运行 profile
 
@@ -460,4 +480,4 @@ spark.sparkone.overwrite.zk.connectionTimeoutMs=15000
 
 - 引擎能力差异：[capability-diff.md](capability-diff.md)
 - 数据源配置：[../data/datasources.md](../data/datasources.md)
-- SQL 编辑器 Kyuubi 测试：[../ui/editor-testing.md](../ui/editor-testing.md#测试-kyuubi-sparkone_mysql-provider)
+- SQL 编辑器 Kyuubi 测试：[../ui/editor-testing/kyuubi.md](../ui/editor-testing/kyuubi.md#测试-kyuubi-sparkone_mysql-provider)

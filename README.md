@@ -11,7 +11,7 @@ aggregator and exposes four modules:
 - `sparkone-server`: SparkOne Web/API/compiler/runtime.
 - `sparkone-mysql-provider`: Spark datasource provider jar for Kyuubi/Spark engine.
 - `sparkone-hdfs-overwrite-extension`: Spark driver extension for managed HDFS workspace reads and overwrite.
-- `sparkone-kyuubi-odep-plugin`: Kyuubi advisor and Spark Engine routing catalog for ODEP datasources.
+- `sparkone-kyuubi-odep-plugin`: Spark Engine routing catalog with lazy ODEP datasource resolution.
 
 ## Compiler Strategy
 

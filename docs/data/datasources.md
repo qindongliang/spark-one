@@ -97,14 +97,14 @@ engines {
 
 ### ODEP JDBC/Doris 路由 Catalog
 
-ODEP 模式由 `sparkone-kyuubi-odep-plugin` 把有 `physicalNamespace` 的数据源加载为两个稳定的顶层 Catalog：
+ODEP 模式由 `sparkone-kyuubi-odep-plugin` 提供两个稳定的顶层 Catalog：
 
 ```text
 jdbc.<alias>.<table>
 doris.<alias>.<table>
 ```
 
-alias 是 ODEP 注册名，必须符合 `[A-Za-z_][A-Za-z0-9_]*`；`physicalNamespace` 是底层真实数据库。连接配置只存在于 ODEP snapshot、Kyuubi session overlay 和 Spark Engine 内存，不进入 SparkOne SQL：
+alias 是 ODEP 注册名，必须符合 `[A-Za-z_][A-Za-z0-9_]*`；`physicalNamespace` 是底层真实数据库。Engine 首次枚举某个 type 时通过 `POST /api/datasource/index` 获取 alias，首次访问具体 alias 时通过 SparkOne/Kyuubi 专用的 `POST /api/datasource/resolve` 获取连接配置；连接配置只存在于 ODEP 和 Spark Engine 内存，不进入 SparkOne SQL、Kyuubi session overlay 或 `spark-submit --conf`。`/resolve` 使用 ODEP 当前环境已有的 `common-url.rms.api` 和 `pk.name` 获取并解密占位符，MLSQL 旧客户端使用的 `/detail` 保持原行为不变：
 
 ```sql
 show namespaces in jdbc;
@@ -123,9 +123,9 @@ select * from doris.recommend_prod.r_qa_log limit 10;
 load doris.`recommend_prod.r_qa_log` as qa_log;
 ```
 
-`load jdbc` 只接受 `alias.table` 和可选 `where`。无 `OPTIONS` 时直接读取 ODEP 路由 Catalog；ODEP alias 对应 MySQL JDBC 时，可以使用受控的 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize`，Spark Engine 内的 `sparkone_mysql` provider 会根据 alias 取得连接和 `physicalNamespace`。只写 `partitionColumn` 时自动查询过滤后数据的边界，默认 `numPartitions=10`、`fetchsize=10000`。SQL 仍禁止传 `url/user/password/driver/dbtable/query`，非 MySQL JDBC alias 也不进入这条 MySQL 分区读取路径。`save jdbc` 当前不支持。缺少 `physicalNamespace` 的 JDBC/Doris 数据源不会发布到路由 Catalog。
+`load jdbc` 只接受 `alias.table` 和可选 `where`。无 `OPTIONS` 时直接读取 ODEP 路由 Catalog；ODEP alias 对应 MySQL JDBC 时，可以使用受控的 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize`，Spark Engine 内的 `sparkone_mysql` provider 会复用同一个 resolver 取得连接和 `physicalNamespace`。只写 `partitionColumn` 时自动查询过滤后数据的边界，默认 `numPartitions=10`、`fetchsize=10000`。SQL 仍禁止传 `url/user/password/driver/dbtable/query`，非 MySQL JDBC alias 也不进入这条 MySQL 分区读取路径。`save jdbc` 当前不支持。缺少 `physicalNamespace` 的 JDBC/Doris 数据源不会由 `/index` 发布。
 
-ODEP 模式下不要静态配置 `spark.sql.catalog.jdbc.*` 或在同一个 `doris` 前缀下混入静态参数。当前静态 Catalog 统一命名为 `mysql_static`、`doris_static`，与 ODEP 的 `jdbc`、`doris` 完全分离，可以同时存在。
+ODEP 模式只配置 `spark.sql.catalog.jdbc`、`spark.sql.catalog.doris` 两个路由类，不要在这两个前缀下混入静态连接参数。当前静态 Catalog 统一命名为 `mysql_static`、`doris_static`，与 ODEP 的 `jdbc`、`doris` 完全分离，可以同时存在。索引和已解析 alias 在 Engine JVM 生命周期内缓存；ODEP 信息变化后停止旧 Engine 即可生效，不需要重启 Kyuubi Server。
 
 ### Kyuubi MySQL 兼容与分区读取
 
@@ -194,10 +194,11 @@ OPTIONS (
 `sparkone_mysql` provider jar 由 `sparkone-mysql-provider` 模块生成，应部署到 Kyuubi/Spark engine classpath，例如：
 
 ```properties
-spark.jars=/path/to/sparkone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar
+spark.jars=/path/to/sparkone-kyuubi-odep-plugin-0.1.0-SNAPSHOT.jar,\
+  /path/to/sparkone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar
 ```
 
-provider 在 Spark engine 内读取 `spark.sql.catalog.mysql_static.*`，再转成 Spark JDBC reader options。SparkOne 不读取 `kyuubi-defaults.conf`，也不会把 `url/user/password` 编进 SQL。
+provider 对静态 Catalog 读取 `spark.sql.catalog.mysql_static.*`；对 ODEP JDBC alias 则复用插件 resolver 按需获取详情。SparkOne 不读取 `kyuubi-defaults.conf`，也不会把 `url/user/password` 编进 SQL。
 
 `mysqlLoadProfiles` 仍可作为兼容/治理增强使用，例如给 catalog 起业务别名、设置 `allowedTables` 或 `maxNumPartitions`。第一阶段如果只追求 catalog 使用方式不变，可以直接使用 `mysql.\`catalog.db.table\``，不需要配置 SparkOne 侧 profile。
 

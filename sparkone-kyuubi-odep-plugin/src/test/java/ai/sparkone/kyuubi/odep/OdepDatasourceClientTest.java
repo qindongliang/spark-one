@@ -15,7 +15,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -26,17 +27,19 @@ public class OdepDatasourceClientTest {
     private static final String APP_ID = "app_kyuubi";
     private static final String SIGN_KEY = "test-sign-key";
 
-    private final AtomicReference<String> responseBody = new AtomicReference<>();
+    private final Map<String, String> responses = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, String>> requests = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> requestCounts = new ConcurrentHashMap<>();
     private HttpServer server;
-    private String endpoint;
+    private String apiUrl;
 
     @Before
     public void setUp() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/api/datasource/snapshot", this::handle);
+        server.createContext("/api/datasource/index", this::handle);
+        server.createContext("/api/datasource/resolve", this::handle);
         server.start();
-        endpoint = "http://127.0.0.1:" + server.getAddress().getPort()
-                + "/api/datasource/snapshot";
+        apiUrl = "http://127.0.0.1:" + server.getAddress().getPort();
     }
 
     @After
@@ -45,57 +48,91 @@ public class OdepDatasourceClientTest {
     }
 
     @Test
-    public void shouldSignRequestAndParseSnapshot() {
-        responseBody.set("{"
+    public void shouldLoadSignedIndexWithoutDatasourceOptions() {
+        respond("/api/datasource/index", "{"
                 + "\"code\":200,"
                 + "\"success\":true,"
-                + "\"results\":{\"datasources\":[{"
+                + "\"results\":[{"
                 + "\"id\":1,"
                 + "\"type\":\"jdbc\","
                 + "\"alias\":\"dworks\","
                 + "\"physicalNamespace\":\"Dworks\","
                 + "\"description\":\"Dworks\","
-                + "\"options\":{"
-                + "\"url\":\"jdbc:mysql://mysql.internal:3306/Dworks\","
-                + "\"driver\":\"com.mysql.cj.jdbc.Driver\","
-                + "\"user\":\"reader\","
-                + "\"password\":\"secret\"},"
                 + "\"updateTime\":\"2026-07-30 10:20:00\""
-                + "}]}}");
+                + "}]}");
 
-        OdepDatasourceSnapshot snapshot = client().load();
+        OdepDatasourceResolver.Metadata metadata = client().loadIndex("jdbc").get(0);
 
-        assertEquals(1, snapshot.getDatasources().size());
-        OdepDatasourceSnapshot.Datasource datasource = snapshot.getDatasources().get(0);
-        assertEquals("jdbc", datasource.getType());
-        assertEquals("dworks", datasource.getAlias());
-        assertEquals("Dworks", datasource.getPhysicalNamespace());
-        assertEquals("reader", datasource.getOptions().get("user"));
+        assertEquals("jdbc", metadata.getType());
+        assertEquals("dworks", metadata.getAlias());
+        assertEquals("Dworks", metadata.getPhysicalNamespace());
+        assertEquals("jdbc", requests.get("/api/datasource/index").get("type"));
+        assertFalse(requests.get("/api/datasource/index").containsKey("alias"));
     }
 
     @Test
-    public void shouldRejectUnresolvedPlaceholder() {
-        responseBody.set("{"
+    public void shouldResolveOptionsByTypeAndAlias() {
+        respond("/api/datasource/resolve", "{"
                 + "\"code\":200,"
                 + "\"success\":true,"
-                + "\"results\":{\"datasources\":[{"
-                + "\"type\":\"jdbc\","
-                + "\"alias\":\"broken\","
-                + "\"options\":{\"url\":\"jdbc:mysql://${host}/db\"}"
-                + "}]}}");
+                + "\"results\":{"
+                + "\"url\":\"jdbc:mysql://mysql.internal:3306/Dworks\","
+                + "\"driver\":\"com.mysql.cj.jdbc.Driver\","
+                + "\"user\":\"reader\","
+                + "\"password\":\"masked\""
+                + "}}");
+
+        Map<String, String> options = client().loadOptions("jdbc", "dworks");
+
+        assertEquals("reader", options.get("user"));
+        assertEquals("jdbc", requests.get("/api/datasource/resolve").get("type"));
+        assertEquals("dworks", requests.get("/api/datasource/resolve").get("alias"));
+    }
+
+    @Test
+    public void shouldCacheIndexAndResolvedAliasForEngineLifetime() {
+        respond("/api/datasource/index", "{"
+                + "\"code\":200,\"success\":true,\"results\":[{"
+                + "\"id\":1,\"type\":\"jdbc\",\"alias\":\"dworks\","
+                + "\"physicalNamespace\":\"Dworks\"}]}");
+        respond("/api/datasource/resolve", "{"
+                + "\"code\":200,\"success\":true,\"results\":{"
+                + "\"url\":\"jdbc:mysql://mysql.internal:3306/Dworks\","
+                + "\"driver\":\"com.mysql.cj.jdbc.Driver\","
+                + "\"user\":\"reader\",\"password\":\"\"}}");
+        OdepDatasourceResolver resolver = new OdepDatasourceResolver(client());
+
+        resolver.list("jdbc");
+        resolver.list("JDBC");
+        OdepDatasourceResolver.ResolvedDatasource first = resolver.resolve("jdbc", "dworks");
+        OdepDatasourceResolver.ResolvedDatasource second = resolver.resolve("JDBC", "DWORKS");
+
+        assertEquals(1, count("/api/datasource/index"));
+        assertEquals(1, count("/api/datasource/resolve"));
+        assertEquals(first, second);
+        assertEquals(
+                "jdbc:mysql://mysql.internal:3306/Dworks?databaseTerm=SCHEMA",
+                first.getOptions().get("url"));
+    }
+
+    @Test
+    public void shouldRejectUnresolvedPlaceholderInResolveResponse() {
+        respond("/api/datasource/resolve", "{"
+                + "\"code\":200,\"success\":true,"
+                + "\"results\":{\"url\":\"jdbc:mysql://${host}/db\"}}");
 
         IllegalStateException error = assertThrows(
                 IllegalStateException.class,
-                () -> client().load());
+                () -> client().loadOptions("jdbc", "broken"));
 
         assertEquals(
-                "ODEP datasource snapshot contains an unresolved placeholder: "
+                "ODEP datasource resolve contains an unresolved placeholder: "
                         + "type=jdbc, alias=broken, key=url",
                 error.getMessage());
     }
 
     @Test
-    public void shouldFailWhenRequiredStartupEnvironmentIsMissing() {
+    public void shouldFailWhenRequiredEngineEnvironmentIsMissing() {
         IllegalStateException error = assertThrows(
                 IllegalStateException.class,
                 () -> OdepDatasourceClient.fromEnvironment(Collections.emptyMap()));
@@ -104,11 +141,22 @@ public class OdepDatasourceClientTest {
     }
 
     private OdepDatasourceClient client() {
-        return new OdepDatasourceClient(endpoint, APP_ID, SIGN_KEY, 2000, 2000);
+        return new OdepDatasourceClient(apiUrl, APP_ID, SIGN_KEY, 2000, 2000);
+    }
+
+    private void respond(String path, String response) {
+        responses.put(path, response);
+    }
+
+    private int count(String path) {
+        return requestCounts.getOrDefault(path, new AtomicInteger()).get();
     }
 
     private void handle(HttpExchange exchange) throws IOException {
+        String path = exchange.getRequestURI().getPath();
         Map<String, String> form = parseForm(readAll(exchange.getRequestBody()));
+        requests.put(path, form);
+        requestCounts.computeIfAbsent(path, ignored -> new AtomicInteger()).incrementAndGet();
         assertFalse(form.containsKey("appSignKey"));
         String expectedSign = OdepDatasourceClient.sign(
                 form.get("appId"),
@@ -121,7 +169,7 @@ public class OdepDatasourceClientTest {
             return;
         }
 
-        byte[] response = responseBody.get().getBytes(StandardCharsets.UTF_8);
+        byte[] response = responses.get(path).getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
         exchange.sendResponseHeaders(200, response.length);
         exchange.getResponseBody().write(response);
