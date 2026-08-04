@@ -8,7 +8,8 @@
 - `/api/compile`、`/api/run`、`/api/preview` 必须从服务端 session 取得 `TenantContext`。
 - SQL 请求体和 DSL options 不接受 username 或 owner，不能覆盖当前租户。
 - Local engine 仍是单 SparkSession 开发测试台，不提供生产多租户隔离。
-- Kyuubi engine 为每个逻辑租户维护独立 JDBC session，避免跨租户共享临时视图；连接仍使用 Kyuubi 配置中的固定服务账号和 keytab 身份。
+- Kyuubi engine 为每个逻辑租户维护独立 JDBC session，JDBC user 使用 `TenantContext.username`；Spark/HDFS 物理访问仍使用 Kyuubi 配置的统一 Kerberos principal/keytab。
+- Engine 权限扩展只信任 Kyuubi operation 传入并通过 ECDSA 校验的 session user，不接受请求体、SQL 或 Spark 配置覆盖鉴权 subject。
 
 生产环境接入 RMS 时，应由 RMS 登录结果创建同一种 `TenantContext`，替换开发登录入口，不改变编译和执行链路。未经 RMS 认证前，当前用户名登录不能作为安全边界。
 

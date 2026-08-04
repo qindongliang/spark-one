@@ -2,7 +2,7 @@
 
 SparkOne 对接 HDFS/Hive 的原则：
 
-- 使用当前 Maven 依赖的 Spark `3.5.7` / Scala `2.12` runtime。
+- 使用当前 Maven 依赖的 Spark `3.3.4` / Scala `2.12.15` runtime。
 - 只读取测试环境的 Hadoop/Hive XML 配置，不把本地 Spark `3.3.4` / Scala `2.13` jar 目录塞进进程 classpath。
 - HDFS 文件访问走 Spark/Hadoop 配置。
 - Hive 表访问走 Spark 内置 Hive catalog 与 metastore client。
@@ -145,7 +145,7 @@ Hive Catalog overwrite 被固定能力矩阵永久拒绝：
 save overwrite hive_write_test as hive.`default.sparkone_hive_test`;
 ```
 
-该语句应在编译阶段失败。Hive 写入当前只允许 `save append`；runtime 在校验源和目标列名集合后生成带显式目标列清单和源列投影的 `INSERT INTO TABLE`，兼容 Spark 3.3.x–3.5.x。建表、表格式和分区定义必须由平台外治理入口完成。
+该语句应在编译阶段失败。Hive 写入当前只允许 `save append`；runtime 在校验源和目标列名集合后生成带显式目标列清单和源列投影的 `INSERT INTO TABLE`，当前基线为 Spark 3.3.4。建表、表格式和分区定义必须由平台外治理入口完成。
 
 常见认证错误：
 
@@ -174,8 +174,8 @@ SIMPLE authentication is not enabled. Available: [TOKEN, KERBEROS]
 
 - macOS 上 `kinit` 默认可能写入 KCM ticket cache，Java/Hadoop 不一定能识别；推荐显式设置 `KRB5CCNAME=/tmp/krb5cc_$(id -u)`。
 - 本地 macOS 没有 Kerberos 用户对应的系统账号时，Hadoop 默认组解析会执行类似 `id odep` 并打印 WARN。`conf/sparkone.conf` 可配置 `engines.local.hadoop.groupStaticOverrides = "odep=odep"` 绕开本机 Unix 组查询；如果没有显式配置，SparkOne 会根据 Kerberos principal 自动补一条 short name 映射。
-- 如果 Hive metastore 版本或协议不兼容，优先调整 Spark 3.5 的 Hive metastore client 配置，不引入 Spark 3.3.4 的 jar。
+- 如果 Hive metastore 版本或协议不兼容，优先调整 Spark 3.3.4 的 Hive metastore client 配置，不引入其他 Spark 版本的 JAR。
 - 程序会把 XML 配置转换成 `spark.hadoop.*` 注入 Spark，并用加载到的 HadoopConf 初始化 `UserGroupInformation`。
-- 当前 Maven runtime 传递的 Hadoop client 是 `3.3.4`，测试集群 Hadoop 是 `2.8.5`。本地 MVP 不建议强行替换 Spark 3.5 的 Hadoop 依赖；如果确认是客户端/集群版本兼容问题，优先把执行面迁到集群匹配的 Kyuubi/Spark engine，SparkOne 只保留 SQL 编译与服务层。
+- Maven Central 的 Spark 3.3.4 默认传递 Hadoop client `3.3.2`；测试和生产 Kyuubi Engine 使用公司构建的 Spark 3.3.4 / Hadoop 2.8.5 `SPARK_HOME`。不要把两套 Hadoop 客户端 JAR 混在同一个 Engine classpath；集群 SQL 通过 Kyuubi Engine 验证，Local runtime 只用于开发测试。
 
 如果 `SparkContext.hadoopConfiguration` 里是 `kerberos`，但 `UserGroupInformation.isSecurityEnabled` 是 `false`，HDFS RPC 仍会按 SIMPLE 发起。SparkOne 会在 `SparkSession.getOrCreate()` 后用 SparkContext 的 HadoopConf 重新刷新 UGI 并重新 keytab 登录，避免 Spark/Hive 初始化过程把 UGI 全局配置重置回 SIMPLE。

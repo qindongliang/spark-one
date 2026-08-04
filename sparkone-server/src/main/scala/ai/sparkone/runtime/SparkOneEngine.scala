@@ -550,7 +550,7 @@ final class KyuubiJdbcEngine(
       session.connectionLock.synchronized {
         current = session.connectionRef
         if (current == null || current.isClosed) {
-          current = connectionFactory(config)
+          current = connectionFactory(config.copy(user = Some(session.tenant.username)))
           session.connectionRef = current
           logger.info(
             s"Connected logical tenant ${session.tenant.username} to Kyuubi engine $id at ${redactJdbcUrl(config.url)}")

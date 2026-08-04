@@ -329,8 +329,8 @@ include "datasources/hive.conf"
 外部 provider：
 
 - `excel` 编译成 `USING excel`，provider jar 需要通过运行环境提供。
-- 本地 MVP 可用 `engines.local.jars.packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"`。
-- Doris 4.x / Spark 3.5 读写需要 Spark Doris Connector，例如 `org.apache.doris:spark-doris-connector-spark-3.5:25.2.0`。SparkOne 不把该 connector 默认打进主包，由 local 引擎的 `engines.local.jars.packages`、`engines.local.jars.jars` 或运行环境 classpath 提供。
+- 本地 MVP 可用 `engines.local.jars.packages = "dev.mauch:spark-excel_2.12:3.3.4_0.31.2"`。
+- Doris 4.x / Spark 3.3 读写需要 Spark Doris Connector，例如 `org.apache.doris:spark-doris-connector-spark-3.3:25.2.0`。SparkOne 不把该 connector 默认打进主包，由 local 引擎的 `engines.local.jars.packages`、`engines.local.jars.jars` 或运行环境 classpath 提供。
 - 未来接 Kyuubi 时，在 Kyuubi/Spark engine 配置 `spark.jars.packages` 或 engine classpath。
 
 新增数据源时：

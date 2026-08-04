@@ -460,7 +460,7 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiUsesOneJdbcSessionPerLogicalTenantWithFixedServiceCredentials(): Unit = {
+  def kyuubiUsesOneJdbcSessionPerLogicalTenantWithRealUsernames(): Unit = {
     val openedConnections = ArrayBuffer.empty[FakeJdbcConnection]
     val openedConfigs = ArrayBuffer.empty[KyuubiJdbcConfig]
     val config = KyuubiJdbcConfig(
@@ -488,8 +488,9 @@ final class SparkOneEngineTest {
       engine.previewTable(bob, "tenant_view", 10)
 
       assertEquals(2, openedConnections.size)
-      assertTrue(openedConfigs.forall(_ == config))
-      assertTrue(openedConfigs.forall(_.user.contains("sparkone-service")))
+      assertEquals(Seq("alice", "bob"), openedConfigs.flatMap(_.user))
+      assertTrue(openedConfigs.forall(_.password.contains("secret")))
+      assertTrue(openedConfigs.forall(_.properties == config.properties))
     } finally {
       engine.close()
     }

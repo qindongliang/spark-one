@@ -91,6 +91,10 @@ final class SparkOneMysqlDataSourceTest {
           "numPartitions" -> "2",
           "fetchsize" -> "100"))
 
+      assertEquals("sync_search", relation.asInstanceOf[SparkOneMysqlRelation].sparkOneAuthzDatabase)
+      assertEquals(
+        "drug_ai_drug_decision",
+        relation.asInstanceOf[SparkOneMysqlRelation].sparkOneAuthzTable)
       val data = spark.sqlContext.baseRelationToDataFrame(relation)
       assertEquals(2, data.rdd.getNumPartitions)
       assertEquals(Seq("alpha", "gamma"), data.orderBy("id").collect().map(_.getString(2)).toSeq)

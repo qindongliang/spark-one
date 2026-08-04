@@ -225,7 +225,7 @@ engines {
     }
 
     jars {
-      packages = "com.mysql:mysql-connector-j:8.4.0,org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
+      packages = "com.mysql:mysql-connector-j:8.4.0,org.apache.doris:spark-doris-connector-spark-3.3:25.2.0"
     }
   }
 }

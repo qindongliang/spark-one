@@ -114,6 +114,6 @@ ANTLR 文件：
 
 ANTLR 注意事项：
 
-- Spark 3.5.x 的 SQL parser 使用 ANTLR `4.9.3` 生成。
-- 项目必须保持 ANTLR runtime/plugin 为 `4.9.3`。
+- Spark 3.3.4 的 SQL parser 使用 ANTLR `4.8` 生成。
+- 项目必须保持 ANTLR runtime/plugin 为 `4.8`。
 - 不要单独升级 ANTLR，否则可能导致 Spark `SqlBaseLexer` 反序列化 ATN 失败。

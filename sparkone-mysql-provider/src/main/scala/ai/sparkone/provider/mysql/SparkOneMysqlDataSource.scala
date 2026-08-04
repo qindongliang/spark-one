@@ -36,15 +36,17 @@ final class SparkOneMysqlDataSource private[mysql] (
     }
 
     val catalogClass = allConf.getOrElse(s"spark.sql.catalog.$catalog", "")
-    val (baseJdbcOptions, resolvedDbtable) = normalized.get("alias").filter(_.nonEmpty) match {
+    val (baseJdbcOptions, resolvedDbtable, authzResource) =
+      normalized.get("alias").filter(_.nonEmpty) match {
       case Some(alias) =>
-        resolveOdepJdbcRoute(catalog, alias, dbtable, catalogClass)
+        val (options, table) = resolveOdepJdbcRoute(catalog, alias, dbtable, catalogClass)
+        (options, table, Some(alias -> dbtable))
       case None =>
         if (!catalogClass.toLowerCase.contains("jdbc")) {
           throw new IllegalArgumentException(
             s"sparkone_mysql requires JDBC catalog '$catalog', but spark.sql.catalog.$catalog is '$catalogClass'")
         }
-        requireCatalogOptions(catalog, catalogOptions, Seq("url")) -> dbtable
+        (requireCatalogOptions(catalog, catalogOptions, Seq("url")), dbtable, None)
     }
     val dbtableWithFilter = normalized.get("whereclausebase64") match {
       case Some(encoded) =>
@@ -61,7 +63,10 @@ final class SparkOneMysqlDataSource private[mysql] (
 
     val jdbcOptions = enrichLoadOptions(baseJdbcOptions ++ loadOptions + ("dbtable" -> dbtableWithFilter))
     logEffectiveOptions(jdbcOptions)
-    new JdbcRelationProvider().createRelation(sqlContext, jdbcOptions)
+    val relation = new JdbcRelationProvider().createRelation(sqlContext, jdbcOptions)
+    authzResource.map { case (alias, table) =>
+      new SparkOneMysqlRelation(relation, alias, table)
+    }.getOrElse(relation)
   }
 
   private def resolveOdepJdbcRoute(

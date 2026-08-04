@@ -114,11 +114,11 @@ engines {
 
     jars {
       # 等价于 spark-submit --packages / spark.jars.packages。
-      # packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
+      # packages = "dev.mauch:spark-excel_2.12:3.3.4_0.31.2"
       # MySQL 连接器也可以用 packages 引入，例如：
       # packages = "com.mysql:mysql-connector-j:8.4.0"
-      # Doris 4.x / Spark 3.5 可引入：
-      # packages = "org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
+      # Doris 4.x / Spark 3.3 可引入：
+      # packages = "org.apache.doris:spark-doris-connector-spark-3.3:25.2.0"
       # 等价于 spark-submit --jars / spark.jars，用于依赖类 JAR。
       # jars = "/path/to/provider.jar,/path/to/another-provider.jar"
       # 等价于 spark-submit --files / spark.files，用于普通文件，不用于依赖类 JAR。
@@ -136,9 +136,9 @@ engines {
     label = "Kyuubi Local"
     url = "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi?kyuubi.session.conf.profile=local"
 
-    # 默认不传 user，业务执行身份以 Kyuubi engine 侧配置为准。
-    # 只有 Kyuubi Server 开启客户端认证时，才配置 user/password/options。
-    # user = "sparkone"
+    # SparkOne 始终使用当前页面登录用户名建立 Kyuubi JDBC session，作为 Engine 鉴权 subject。
+    # Spark/HDFS 物理执行身份仍由 Kyuubi engine 的统一 Kerberos principal 决定。
+    # Kyuubi Server 开启客户端认证时，可配置统一 password 和认证 options；user 不覆盖登录用户名。
     # password = "change-me"
     # driver = "org.apache.kyuubi.jdbc.KyuubiHiveDriver"
 

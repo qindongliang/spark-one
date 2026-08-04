@@ -17,23 +17,40 @@
         <module>sparkone-mysql-provider</module>
         <module>sparkone-hdfs-overwrite-extension</module>
         <module>sparkone-kyuubi-odep-plugin</module>
+        <module>sparkone-kyuubi-odep-authz-extension</module>
     </modules>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
-        <scala.version>2.12.19</scala.version>
+        <scala.version>2.12.15</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
-        <spark.version>3.5.7</spark.version>
-        <antlr4.version>4.9.3</antlr4.version>
+        <spark.version>3.3.4</spark.version>
+        <antlr4.version>4.8</antlr4.version>
         <javalin.version>4.6.7</javalin.version>
         <codemirror.version>5.65.19</codemirror.version>
-        <jackson.version>2.15.2</jackson.version>
+        <jackson.version>2.13.4</jackson.version>
         <typesafe.config.version>1.4.3</typesafe.config.version>
         <kyuubi.jdbc.version>1.9.4</kyuubi.jdbc.version>
         <curator.version>2.13.0</curator.version>
-        <slf4j.version>2.0.7</slf4j.version>
+        <slf4j.version>1.7.32</slf4j.version>
         <junit.version>4.13.2</junit.version>
+        <spark.test.jvm.module.options>-XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false</spark.test.jvm.module.options>
     </properties>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.5.2</version>
+                    <configuration>
+                        <argLine>${spark.test.jvm.module.options}</argLine>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
 </project>

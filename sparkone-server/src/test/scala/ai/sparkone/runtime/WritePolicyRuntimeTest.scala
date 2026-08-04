@@ -52,7 +52,8 @@ final class WritePolicyRuntimeTest {
           |""".stripMargin,
         10)
       assertFalse(incompatibleTypes.success)
-      assertTrue(incompatibleTypes.statements.flatMap(_.error).mkString("\n").contains("INCOMPATIBLE_DATA_FOR_TABLE"))
+      assertTrue(incompatibleTypes.statements.flatMap(_.error).mkString("\n").toLowerCase
+        .contains("incompatible data"))
       assertEquals(1L, spark.table("default.sparkone_by_name_target").count())
     } finally {
       spark.stop()

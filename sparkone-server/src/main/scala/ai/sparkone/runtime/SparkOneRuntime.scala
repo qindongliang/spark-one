@@ -6,9 +6,9 @@ import ai.sparkone.sql.{CatalogWriteSqlRenderer, CompileException, CompiledState
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.UserGroupInformation
-import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
 import org.apache.spark.sql.internal.SQLConf.StoreAssignmentPolicy
+import org.apache.spark.sql.types.DataType
 import org.slf4j.LoggerFactory
 
 import java.io.File
@@ -255,8 +255,7 @@ final class SparkOneRuntime(
     target.schema.fields.zip(orderedSourceColumns).foreach { case (targetField, sourceColumn) =>
       val sourceField = sourceFieldsByName(sourceColumn.toLowerCase(Locale.ROOT))
       try {
-        val compatible = DataTypeUtils.canWrite(
-          plan.target.identifier,
+        val compatible = DataType.canWrite(
           sourceField.dataType,
           targetField.dataType,
           byName = false,
@@ -288,13 +287,17 @@ final class SparkOneRuntime(
       case Some(plan) =>
         plan.target.kind match {
           case WriteTargetKind.HiveCatalog | WriteTargetKind.DorisCatalog =>
-            if (!spark.catalog.tableExists(plan.target.identifier)) {
-              throw new CompileException(
-                s"SAVE target table does not exist: ${plan.target.identifier}. " +
-                  s"Create the target table explicitly before SAVE ${plan.mode.name}.")
+            val target = try {
+              spark.table(plan.target.identifier)
+            } catch {
+              case NonFatal(e) =>
+                throw new CompileException(
+                  s"SAVE target table does not exist or cannot be resolved: ${plan.target.identifier}. " +
+                    s"Create the target table explicitly before SAVE ${plan.mode.name}.",
+                  e)
             }
             val sourceColumns = spark.table(plan.sourceTable).schema.fieldNames.toSeq
-            val targetColumns = spark.table(plan.target.identifier).schema.fieldNames.toSeq
+            val targetColumns = target.schema.fieldNames.toSeq
             val sql = CatalogWriteSqlRenderer.render(plan, sourceColumns, targetColumns)
             spark.sql(s"EXPLAIN $sql").collect()
             statement.copy(sql = sql)

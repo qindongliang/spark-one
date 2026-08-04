@@ -37,9 +37,9 @@ engines {
     type = "local"
 
     jars {
-      packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
+      packages = "dev.mauch:spark-excel_2.12:3.3.4_0.31.2"
       # 或者直接指定本地 jar：
-      # jars = "/Users/qindongliang/.m2/repository/dev/mauch/spark-excel_2.12/3.5.6_0.31.2/spark-excel_2.12-3.5.6_0.31.2.jar"
+      # jars = "/Users/qindongliang/.m2/repository/dev/mauch/spark-excel_2.12/3.3.4_0.31.2/spark-excel_2.12-3.3.4_0.31.2.jar"
       # 如果只是分发普通配置文件，用 files，不要用来放 provider jar：
       # files = "/path/to/app.conf"
     }

@@ -39,7 +39,7 @@ engines {
 
     jars {
       # 等价于 spark-submit --packages / spark.jars.packages
-      packages = "dev.mauch:spark-excel_2.12:3.5.6_0.31.2"
+      packages = "dev.mauch:spark-excel_2.12:3.3.4_0.31.2"
 
       # 等价于 spark-submit --jars / spark.jars，用于依赖 jar
       jars = "/path/to/provider.jar,/path/to/another-provider.jar"

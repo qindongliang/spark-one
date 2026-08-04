@@ -6,12 +6,13 @@ small and delegates Spark SQL syntax to Spark itself.
 ## Modules
 
 Import the repository root `pom.xml` in IDEA. The root project is a Maven
-aggregator and exposes four modules:
+aggregator and exposes five modules:
 
 - `sparkone-server`: SparkOne Web/API/compiler/runtime.
 - `sparkone-mysql-provider`: Spark datasource provider jar for Kyuubi/Spark engine.
 - `sparkone-hdfs-overwrite-extension`: Spark driver extension for managed HDFS workspace reads and overwrite.
 - `sparkone-kyuubi-odep-plugin`: Spark Engine routing catalog with lazy ODEP datasource resolution.
+- `sparkone-kyuubi-odep-authz-extension`: Spark Engine table/path authorization through ODEP.
 
 ## Compiler Strategy
 
@@ -23,7 +24,7 @@ SparkOne only parses its own thin commands with ANTLR:
 Everything else is treated as native Spark SQL and validated with Spark's
 `SparkSqlParser`; only queries and read-only inspection commands are allowed.
 
-ANTLR is pinned to `4.9.3` because Spark 3.5.x generates its SQL parser with
+ANTLR is pinned to `4.8` because Spark 3.3.4 generates its SQL parser with
 that runtime. Do not upgrade ANTLR independently from Spark.
 
 ## Runtime

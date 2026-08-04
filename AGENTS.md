@@ -38,7 +38,7 @@
 - 不实现 Spark SQL parser，Spark SQL 语法交给 Spark `SparkSqlParser`。
 - ANTLR 仅解析 SparkOne 的薄 DSL，当前覆盖 `load/save/view`。
 - 数据源别名和特殊 source 统一放在 `DataSourceResolver`。
-- ANTLR 版本必须跟 Spark 3.5.x 对齐为 `4.9.3`。
+- ANTLR 版本必须跟 Spark 3.3.4 对齐为 `4.8`。
 - 当前 runtime 是本地 `SparkSession local[*]` 测试台，不是多租户生产运行时。
 - 后端执行链路捕获异常时，必须先在服务端日志记录失败语句、关键上下文和异常堆栈；前端只展示用户可读错误，不能成为唯一排障入口。
 - 前端使用 `src/main/resources/public` 静态资源，不把页面写进 Scala 字符串。

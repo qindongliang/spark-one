@@ -353,7 +353,7 @@ final class SparkOneRuntimePreviewTest {
       assertEquals(Some(AssertionStatus.Error), assertion.assertion.map(_.status))
       assertEquals(Some("stop"), assertion.assertion.map(_.failureAction))
       assertFalse(assertion.error.contains("row_count must be positive"))
-      assertTrue(assertion.error.get.contains("TABLE_OR_VIEW_NOT_FOUND"))
+      assertTrue(assertion.error.get.toLowerCase.contains("table or view not found"))
     } finally {
       spark.stop()
       deleteRecursively(root)

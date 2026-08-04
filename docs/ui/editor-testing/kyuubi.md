@@ -16,7 +16,7 @@ Kyuubi 页面测试统一使用下面五组用户可见标识：
 
 ### Catalog 配置与 `SHOW CATALOGS` 的差异
 
-Spark 3.5 对 Catalog 使用懒加载。Kyuubi Session 配置中已经存在
+Spark 对 Catalog 使用懒加载。Kyuubi Session 配置中已经存在
 `spark.sql.catalog.<name>=<plugin class>`，只表示该 Catalog 已配置、可以按名称访问；
 Spark 仍会等到 `SHOW NAMESPACES IN <name>`、`SHOW TABLES IN <name>.<namespace>`、
 `SELECT ... FROM <name>.<namespace>.<table>` 等语句首次引用它时，才创建 Catalog 实例。

@@ -54,7 +54,7 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 - Hive、Doris、MySQL append 要求目标存在且源和目标列名集合完全一致；缺列、多列、重名列或类型不兼容均在写入前失败。
 - Local MySQL 使用 `mysql.\`connection.table\`` 和 HOCON 数据源；Kyuubi MySQL 使用 `mysql.\`catalog.database.table\`` 和远端 JDBC Catalog。Kyuubi save 不接受 SQL `OPTIONS`，两条路径都不会把 URL、用户名或密码放进 SQL。
 - Kyuubi 在 Catalog append 前依次检查目标 schema、源 schema，并对最终显式列 `INSERT` 执行 `EXPLAIN`；任何一步失败都不会提交写语句。
-- Catalog append 使用 Spark 3.3 已支持的 column list 语法，不做 Spark 版本分支；当前 Kyuubi 远端支持范围是 Spark 3.3.x–3.5.x。
+- Catalog append 使用 Spark 3.3.4 已支持的 column list 语法，不做 Spark 版本分支。
 - Kyuubi `save` 写语句遇到连接异常时不会自动重试。错误会明确提示写入状态未知，需要人工核查目标后再决定是否重提。
 - 受控 HDFS overwrite 编译为 SparkOne 内部命令，由独立 Spark extension 在 Spark driver 内完成 ZK 排他、staging 写入、发布、回滚和清理。
 - 受控 HDFS load 使用同一 extension 解析租户和相对路径并注册临时视图，不使用 ZK 或 staging。

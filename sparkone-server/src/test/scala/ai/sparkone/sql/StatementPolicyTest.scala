@@ -21,7 +21,7 @@ final class StatementPolicyTest {
       "create function stage2_fn as 'com.example.Stage2Function'",
       "drop function if exists stage2_fn",
       "analyze table default.target compute statistics",
-      "repair table default.target",
+      "msck repair table default.target",
       "insert into table default.target select 1",
       "insert overwrite table default.target select 1",
       "insert overwrite directory '/tmp/target' using parquet select 1",

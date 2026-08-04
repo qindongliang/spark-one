@@ -7,6 +7,7 @@
 - [Doris 测试](editor-testing/doris.md)：Local Catalog、读取、过滤和不同表模型的 append 语义。
 - [MySQL 测试](editor-testing/mysql.md)：Local 数据源、Catalog、过滤和大表分区读取。
 - [Kyuubi 数据源测试](editor-testing/kyuubi.md)：三段式 Catalog、ODEP、静态数据源和 `sparkone_mysql` provider。
+- [ODEP 库表鉴权测试](editor-testing/odep-authz.md)：RMS 授权准备、批量接口和 Spark Engine 端到端鉴权。
 - [Save 测试](editor-testing/save.md)：写入安全策略、受控 HDFS overwrite 和 Hive append。
 - [HDFS、Hive 和 Excel 测试](editor-testing/storage.md)：外部依赖、运行环境和 provider 验证。
 - [Compile、Run 与常见问题](editor-testing/troubleshooting.md)：操作建议和常见错误排查。

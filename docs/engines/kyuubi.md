@@ -136,6 +136,45 @@ ODEP 模式下，`spark.sql.catalog.jdbc.*` 和 `spark.sql.catalog.doris.*` 两�
 
 该方案只使用 Spark Catalog 扩展点，不修改 Kyuubi 源码，也不需要维护自定义 Kyuubi 构建。部署后可执行一次 `SHOW NAMESPACES` 和测试表查询预热索引与目标 alias，使配置错误在业务流量进入前暴露。
 
+### ODEP Engine 资源鉴权
+
+`sparkone-kyuubi-odep-authz-extension` 在 Spark analysis 完成后、物理执行开始前提取资源并调用 `POST /api/sparkone/authz/check`。Engine 不直接访问 RMS；ODEP 使用 Kyuubi session 中的真实用户名查询 RMS 资源。当前映射为：
+
+| Spark 资源 | ODEP 请求 |
+| --- | --- |
+| `jdbc.<alias>.<table>` | `jdbc + alias + table` |
+| `doris.<alias>.<table>` | `doris + alias + table` |
+| `spark_catalog.<database>.<table>` | `hive + database + table` |
+| 受控 HDFS load/save 命令、无 Catalog 的 HDFS 文件关系 | `hdfs + 绝对 path` |
+
+查询资源使用 `read`，写入目标使用 `write`。临时视图展开后检查底层资源；同一 SQL 的资源合并为一次批量请求。ODEP 拒绝、超时、响应不完整、会话用户签名无效以及无法识别的外部数据源都会在 Engine 内 fail closed。
+
+构建并部署扩展：
+
+```bash
+scripts/build.sh sparkone-kyuubi-odep-authz-extension
+```
+
+将 `sparkone-kyuubi-odep-authz-extension-0.1.0-SNAPSHOT.jar` 加入 `spark.jars`，并将扩展类追加到 `spark.sql.extensions`。该扩展与 ODEP Catalog 插件共用前文的五个 `ODEP_*` 环境变量，但不缓存权限判定结果。
+
+可信 subject 使用 Kyuubi 原生 session user 签名。Server 和 Spark Engine 两个开关必须同时打开：
+
+```properties
+kyuubi.session.user.sign.enabled            true
+spark.kyuubi.session.user.sign.enabled      true
+```
+
+Kyuubi Server 为每个 session user 生成 ECDSA 签名，Spark operation 通过 local properties 把用户名、公钥和签名传入当前语句线程。扩展验证签名后才把用户名作为 ODEP `subject`，不接受 SQL、Spark `SET` 或客户端 options 提供的替代用户名。
+
+ODEP API 部署后可先独立验证 RMS 配置：
+
+```bash
+scripts/tests/odep-authz-api.sh alice allow \
+  '[{"resourceType":"doris","database":"analytics","table":"events","action":"read"}]'
+scripts/tests/odep-authz-api.sh alice allow \
+  '[{"resourceType":"hdfs","path":"/public/odep/user/alice/data","action":"read"}]'
+```
+
 ### 公共 Kyuubi 配置
 
 `$KYUUBI_CONF_DIR/kyuubi-defaults.conf` 的推荐结构如下。密码和 keytab 路径应使用实际值，并限制该文件仅 Kyuubi 运行账号可读；不要提交到 SparkOne 仓库。
@@ -157,13 +196,15 @@ spark.kerberos.principal                     odep@HADOOP.COM
 spark.kerberos.keytab                        /etc/security/keytabs/odep.keytab
 spark.jars                                   \
   /opt/sparkone/sparkone-kyuubi-odep-plugin.jar,\
+  /opt/sparkone/sparkone-kyuubi-odep-authz-extension.jar,\
   /opt/sparkone/sparkone-hdfs-overwrite-extension.jar,\
   /opt/sparkone/sparkone-mysql-provider.jar,\
   /opt/connectors/spark-doris-connector.jar,\
   /opt/connectors/mysql-connector-j.jar
 spark.driver.userClassPathFirst              true
 spark.executor.userClassPathFirst            true
-spark.sql.extensions                         ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
+spark.sql.extensions                         ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions,ai.sparkone.kyuubi.odep.authz.SparkOneOdepAuthzExtension
+spark.kyuubi.session.user.sign.enabled       true
 spark.sparkone.overwrite.zk.connect          192.168.200.69:2181
 spark.sparkone.overwrite.zk.root             /sparkone/overwrite
 spark.sparkone.overwrite.workspaceRoot       /public/odep/user
@@ -189,6 +230,7 @@ kyuubi.engine.type                           SPARK_SQL
 kyuubi.engine.share.level                    USER
 kyuubi.engine.doAs.enabled                   false
 kyuubi.engine.single.spark.session           false
+kyuubi.session.user.sign.enabled             true
 
 # 只允许客户端选择管理员定义的 profile，不允许直接改 Spark 或 engine 分组
 kyuubi.session.conf.advisor                  org.apache.kyuubi.session.FileSessionConfAdvisor
@@ -280,7 +322,7 @@ spark.eventLog.dir                           hdfs://nameservice1/tmp/spark/appli
 
 cluster profile 不设置 `spark.driver.host`；driver 由 YARN ApplicationMaster 所在容器发布地址。client profile 的 driver 位于 Kyuubi gateway，YARN NodeManager 必须能访问配置的地址和端口范围。
 
-三个 `subdomain` 不能相同。固定服务账号、`USER` share level 和不同 subdomain 共同形成三套独立的 engine 池；同一 profile 的多个 SparkOne session 会复用对应 engine。
+三个 `subdomain` 不能相同。统一 Kerberos 执行账号、`USER` share level 和不同 subdomain 共同形成三套独立的 engine 池；同一 profile、同一 RMS 用户的多个 SparkOne session 会复用对应 engine，不同用户仍进入不同 USER engine。
 
 ### SparkOne 入口
 
@@ -340,7 +382,7 @@ jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeep
 
 所以 ZooKeeper 只负责“选中哪个 Kyuubi Server”，profile 负责“选中哪套 Spark 运行配置”。一个 connection 建立后会固定在选中的 Server 和 backend engine session 上，不会逐条 SQL 重新轮询；Server 故障后需要建立新 connection 才会重新发现。两个 Kyuubi Server 必须使用相同的 `kyuubi.ha.namespace`、`kyuubi-defaults.conf` 和 profile 文件，否则同一条 SparkOne URL 会因随机选中的 Server 不同而产生不一致行为。
 
-SparkOne 连接 Kyuubi 时不负责选择 Spark/YARN/Hive 的执行用户；统一执行身份由 Kyuubi 的 `spark.kerberos.principal` 和 `spark.kerberos.keytab` 决定。当前使用固定服务账号时，三个 SparkOne engine 都不需要配置 JDBC `user/password`。
+SparkOne 连接 Kyuubi 时使用页面登录用户名作为 JDBC session user，用于 USER engine 分组和 ODEP 鉴权；Spark/YARN/Hive 的统一物理执行身份仍由 Kyuubi 的 `spark.kerberos.principal` 和 `spark.kerberos.keytab` 决定。三个 SparkOne engine 不配置固定 JDBC `user`，只有 Kyuubi Server 开启客户端认证时才配置统一 `password` 和认证 options。
 
 profile 文件在缓存过期后只影响新连接的 engine 启动配置和 backend session 配置；它不会重配 Kyuubi Server 已初始化的 frontend SessionManager，已经启动的 engine 也不会原地切换 master、deploy mode 或资源。修改 profile 后应停止对应旧 engine，再由 SparkOne 新连接按新配置拉起。
 
@@ -382,10 +424,10 @@ kyuubi.session.engine.idle.timeout          PT1M
 - Kyuubi JDBC 协议兼容 HiveServer2，但连接的是 Kyuubi Server，不是把请求转发给 HiveServer2。
 - 预览数据来自 JDBC `ResultSet`，和 Kyuubi Spark engine 是 client/cluster、运行在 YARN/Kubernetes/Standalone 无直接绑定。
 - Kyuubi 模式下临时视图存在于 JDBC session 对应的远端 Spark engine 中；SparkOne 按逻辑租户复用独立 connection，以支持同一租户 `load ... as t` 后续 preview，同时避免不同租户共享临时视图。
-- 逻辑租户不会覆盖 Kyuubi JDBC 的 `user/password/options`；连接仍使用启动配置中的固定服务账号，租户身份只进入 SparkOne 的权限决策上下文。
+- 逻辑租户会覆盖 Kyuubi JDBC 配置中的 `user`，使用 `TenantContext.username` 建立 session；统一 `password/options` 保持启动配置，Spark/HDFS 物理执行仍使用 Kyuubi 的 Kerberos principal/keytab。
 - `save` 在提交 Kyuubi 前同样生成携带逻辑租户的 `WritePlan` 并执行固定能力矩阵；Hive、Doris、MySQL 和 external path overwrite 永久拒绝。
 - Hive、Doris、MySQL Catalog append 会在同一租户 JDBC session 内依次执行目标 `LIMIT 0`、源 `LIMIT 0`，再按目标列顺序生成显式 column list `INSERT` 并执行 `EXPLAIN`。目标不存在、列名集合不一致或类型不兼容时不会提交写语句。
-- Catalog append 的最终 SQL 使用 Spark 3.3 已支持的 column list 语法，同一路径兼容 Spark 3.3.x–3.5.x，不会先尝试 3.5 的 `BY NAME` 再回退。
+- Catalog append 的最终 SQL 使用 Spark 3.3.4 已支持的 column list 语法，不会尝试更高版本的 `BY NAME` 再回退。
 - Kyuubi 查询和只读预检遇到失效连接可以重连一次；携带 `WritePlan` 的 `save` 写语句永不自动重试。写入连接中断时返回“状态未知”，由用户核查目标后决定是否重新提交。
 - 文件 `load` 只接受 workspace 相对路径，向 Kyuubi 提交 SparkOne 内部命令，由远端 extension 根据逻辑租户解析最终 HDFS 路径并注册临时视图；原生文件 provider relation 会在提交前拒绝。
 - 受控 HDFS overwrite 会向 Kyuubi 提交 SparkOne 内部命令，由 Spark engine extension 在远端 driver 内完成 ZK 排他、staging 写入和 HDFS rename 发布。该 statement 属于写操作，连接异常时同样不会自动重试。
@@ -423,7 +465,7 @@ kyuubi.engine.share.level=USER
 kyuubi.engine.single.spark.session=false
 ```
 
-`USER` 允许不同 JDBC session 复用 Spark engine/SparkContext；关闭 `single.spark.session` 则保证每个 connection 仍有独立 SparkSession。SparkOne 使用固定 Kyuubi 服务账号时不能开启 `kyuubi.engine.single.spark.session=true`，否则不同逻辑租户及隔离任务可能共享临时视图、SQL 配置和 UDF。
+`USER` 允许同一 RMS 用户的不同 JDBC session 复用 Spark engine/SparkContext，不同用户名仍进入不同 USER engine；关闭 `single.spark.session` 则保证每个 connection 仍有独立 SparkSession。SparkOne 使用页面登录用户名建立 Kyuubi JDBC session，Spark/HDFS 物理访问仍由统一 Kerberos principal 承担。不能开启 `kyuubi.engine.single.spark.session=true`，否则同一用户的并发 connection 及隔离任务可能共享临时视图、SQL 配置和 UDF。
 
 ## 受控 HDFS workspace 扩展
 
@@ -456,6 +498,7 @@ spark.sparkone.overwrite.zk.connectionTimeoutMs=15000
 
 - 外部 Spark datasource provider jar 应放在 Kyuubi/Spark engine classpath，不放在 SparkOne 主包里。
 - `sparkone-hdfs-overwrite-extension` jar 同样属于 Spark engine classpath，并通过 `spark.sql.extensions` 注册；模块名保持兼容，但 extension 同时承载受控 HDFS load 和 overwrite。
+- `sparkone-kyuubi-odep-authz-extension` jar 属于 Spark engine classpath，通过 `spark.sql.extensions` 注册；它只调用 ODEP 权限接口，不进入 Kyuubi Server classpath，也不直接访问 RMS。
 - 远端 Catalog 统一使用三段式：Hive 为 `hive.<database>.<table>`；ODEP 为 `jdbc.<alias>.<table>`、`doris.<alias>.<table>`；当前静态数据源为 `mysql_static.<database>.<table>`、`doris_static.<database>.<table>`。`hive` 由 SparkOne 编译为内置 `spark_catalog`，不在 Kyuubi 配置伪造同名 Catalog。
 - `load mysql` 在 Kyuubi 模式下优先使用 `mysql.\`catalog.db.table\`` 语义，连接信息来自 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`。
 - 无分片参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成远端 catalog SQL。

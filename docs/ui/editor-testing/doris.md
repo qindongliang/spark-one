@@ -19,7 +19,7 @@ engines {
     }
 
     jars {
-      packages = "org.apache.doris:spark-doris-connector-spark-3.5:25.2.0"
+      packages = "org.apache.doris:spark-doris-connector-spark-3.3:25.2.0"
     }
   }
 }
