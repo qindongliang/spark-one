@@ -22,12 +22,32 @@ private[authz] final class OdepAuthorizationCheck(
   private val extractor = new LogicalPlanResourceExtractor(spark)
 
   override def apply(plan: LogicalPlan): Unit = {
-    val resources = extractor.extract(plan)
-    if (resources.isEmpty) {
+    val managedAccesses = extractor.managedHdfsAccesses(plan)
+    val unmanagedResources = extractor.extractUnmanaged(plan)
+    if (managedAccesses.isEmpty && unmanagedResources.isEmpty) {
       return
     }
 
     val subject = KyuubiSessionSubject.resolve(spark.sparkContext)
+    managedAccesses.find(access =>
+      access.action == OdepAuthzResource.Write && access.workspaceOwner != subject).foreach { access =>
+      logger.warn(
+        s"Managed HDFS overwrite denied, subject=$subject, workspaceOwner=${access.workspaceOwner}")
+      throw new OdepAuthorizationException(
+        "Managed HDFS overwrite is only allowed in the current user's workspace")
+    }
+    val ownManagedAccesses = managedAccesses.filter(_.workspaceOwner == subject)
+    ownManagedAccesses.foreach { access =>
+      logger.info(
+        s"Managed HDFS authorization allowed by workspace ownership, subject=$subject, " +
+          s"action=${access.action}")
+    }
+    val resources = (unmanagedResources ++ managedAccesses
+      .filterNot(_.workspaceOwner == subject)
+      .map(_.resource)).distinct
+    if (resources.isEmpty) {
+      return
+    }
     val result = try {
       authorize(subject, resources)
     } catch {

@@ -112,7 +112,7 @@ as users;
 select * from users limit 10;
 ```
 
-测试文件应预先放到 `/public/sparkone/user/${username}/imports/users.csv`。编辑器只接受 workspace 相对路径，不接受 `hdfs://` 或绝对路径。
+测试文件应预先放到 `/public/odep/user/${username}/imports/users.csv`。`load` 接受 workspace 相对路径；原生文件 relation 可以读取经 RMS 授权的绝对 HDFS 路径。
 
 验证 Hive metastore：
 

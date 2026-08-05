@@ -1,5 +1,6 @@
 package ai.sparkone.kyuubi.odep.authz
 
+import ai.sparkone.extension.overwrite.ManagedHdfsWorkspacePolicy
 import ai.sparkone.provider.mysql.SparkOneMysqlRelation
 import org.apache.hadoop.fs.Path
 import org.apache.spark.rdd.RDD
@@ -9,13 +10,13 @@ import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.plans.logical.{AppendData, CreateTableAsSelect, LocalRelation, ReplaceTableAsSelect, TableSpec}
 import org.apache.spark.sql.connector.catalog.{CatalogPlugin, Identifier, Table, TableCapability}
-import org.apache.spark.sql.execution.datasources.{FileIndex, HadoopFsRelation, LogicalRelation, PartitionDirectory}
+import org.apache.spark.sql.execution.datasources.{FileIndex, HadoopFsRelation, InsertIntoHadoopFsRelationCommand, LogicalRelation, PartitionDirectory}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.sources.{BaseRelation, Filter, PrunedFilteredScan}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
-import org.apache.spark.sql.{Row, SQLContext, SparkSession}
+import org.apache.spark.sql.{Row, SQLContext, SaveMode, SparkSession}
 import org.junit.Assert.{assertEquals, assertThrows}
 import org.junit.{After, Before, Test}
 
@@ -102,6 +103,73 @@ final class LogicalPlanResourceExtractorTest {
     assertEquals(
       Seq(OdepAuthzResource.hdfs("/public/odep/user/alice/events", "read")),
       extractor.extract(hdfs))
+
+    ManagedHdfsWorkspacePolicy.markManagedLoadRelations(hdfs, "alice")
+    assertEquals(
+      Seq(ManagedHdfsAccess(
+        "alice",
+        "read",
+        OdepAuthzResource.hdfs("/public/odep/user/alice/events", "read"))),
+      extractor.managedHdfsAccesses(hdfs))
+    assertEquals(Seq.empty, extractor.extractUnmanaged(hdfs))
+  }
+
+  @Test
+  def skipsOnlyExpectedManagedLoadInternalReadAndRestoresContext(): Unit = {
+    val expectedPath = new Path("/public/odep/user/alice/events")
+    val hdfs = LogicalRelation(HadoopFsRelation(
+      new TestFileIndex(expectedPath.toString),
+      StructType(Nil),
+      StructType(Seq(StructField("id", LongType, nullable = false))),
+      None,
+      new ParquetFileFormat(),
+      Map.empty)(spark))
+
+    assertEquals(
+      Seq.empty,
+      ManagedHdfsWorkspacePolicy.withManagedLoadRead(
+        spark.sparkContext,
+        "alice",
+        expectedPath) {
+        assertEquals(
+          Some("alice"),
+          ManagedHdfsWorkspacePolicy.managedLoadReadContext(spark.sparkContext)
+            .map(_.workspaceOwner))
+        extractor.extract(hdfs)
+      })
+    assertEquals(None, ManagedHdfsWorkspacePolicy.managedLoadReadContext(spark.sparkContext))
+    assertEquals(
+      Seq(OdepAuthzResource.hdfs(expectedPath.toString, "read")),
+      extractor.extract(hdfs))
+
+    val inferredCsvFiles = LogicalRelation(HadoopFsRelation(
+      new TestFileIndex(Seq(
+        expectedPath + "/part-1.csv",
+        expectedPath + "/nested/part-2.csv")),
+      StructType(Nil),
+      StructType(Seq(StructField("value", LongType, nullable = false))),
+      None,
+      new ParquetFileFormat(),
+      Map.empty)(spark))
+    assertEquals(
+      Seq.empty,
+      ManagedHdfsWorkspacePolicy.withManagedLoadRead(
+        spark.sparkContext,
+        "alice",
+        expectedPath) {
+        extractor.extract(inferredCsvFiles)
+      })
+
+    val error = assertThrows(
+      classOf[OdepAuthorizationException],
+      () => ManagedHdfsWorkspacePolicy.withManagedLoadRead(
+        spark.sparkContext,
+        "alice",
+        new Path("/public/odep/user/alice/other")) {
+        extractor.extract(hdfs)
+      })
+    assertEquals("Managed HDFS load resolved to an unexpected HDFS path", error.getMessage)
+    assertEquals(None, ManagedHdfsWorkspacePolicy.managedLoadReadContext(spark.sparkContext))
   }
 
   @Test
@@ -133,6 +201,40 @@ final class LogicalPlanResourceExtractorTest {
       Seq(OdepAuthzResource.hdfs("/public/odep/user/alice/reports/daily", "write")),
       extractor.extract(managedHdfsCommand(
         "SparkOneManagedHdfsOverwriteCommand", "alice", "reports/daily")))
+  }
+
+  @Test
+  def rejectsNativeHdfsPathWrites(): Unit = {
+    val query = relation("jdbc", "ask00", "source_events")
+    val command = InsertIntoHadoopFsRelationCommand(
+      new Path("hdfs:///public/share/output"),
+      Map.empty,
+      ifPartitionNotExists = false,
+      Seq.empty,
+      None,
+      new ParquetFileFormat(),
+      Map.empty,
+      query,
+      SaveMode.Overwrite,
+      None,
+      None,
+      Seq("id"))
+
+    val error = assertThrows(
+      classOf[OdepAuthorizationException],
+      () => extractor.extract(command))
+    assertEquals(
+      "Native HDFS path writes are disabled; use managed HDFS overwrite in the current user workspace",
+      error.getMessage)
+
+    assertEquals(
+      Seq(OdepAuthzResource.table("jdbc", "ask00", "source_events", "read")),
+      ManagedHdfsWorkspacePolicy.withManagedOverwriteWrite(spark.sparkContext) {
+        extractor.extract(command)
+      })
+    assertThrows(
+      classOf[OdepAuthorizationException],
+      () => extractor.extract(command))
   }
 
   @Test
@@ -187,13 +289,15 @@ private final class TestScanRelation(
     sqlContext.sparkContext.emptyRDD[Row]
 }
 
-private final class TestFileIndex(path: String) extends FileIndex {
-  override def rootPaths: Seq[Path] = Seq(new Path(path))
+private final class TestFileIndex(paths: Seq[String]) extends FileIndex {
+  def this(path: String) = this(Seq(path))
+
+  override def rootPaths: Seq[Path] = paths.map(new Path(_))
   override def listFiles(
       partitionFilters: Seq[org.apache.spark.sql.catalyst.expressions.Expression],
       dataFilters: Seq[org.apache.spark.sql.catalyst.expressions.Expression]): Seq[PartitionDirectory] =
     Seq.empty
-  override def inputFiles: Array[String] = Array(path)
+  override def inputFiles: Array[String] = paths.toArray
   override def refresh(): Unit = {}
   override def sizeInBytes: Long = 0L
   override def partitionSchema: StructType = StructType(Nil)

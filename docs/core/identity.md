@@ -6,7 +6,8 @@
 
 - 用户名只允许字母、数字、`.`、`_`、`-`，必须以字母或数字开头，最长 64 个字符。
 - `/api/compile`、`/api/run`、`/api/preview` 必须从服务端 session 取得 `TenantContext`。
-- SQL 请求体和 DSL options 不接受 username 或 owner，不能覆盖当前租户。
+- SQL 请求体和 DSL options 不接受 username，不能覆盖当前鉴权 subject。`load options owner="..."`
+  只选择要读取的 workspace，跨 owner 仍以当前 subject 走 ODEP/RMS 鉴权；`save options owner` 拒绝。
 - Local engine 仍是单 SparkSession 开发测试台，不提供生产多租户隔离。
 - Kyuubi engine 为每个逻辑租户维护独立 JDBC session，JDBC user 使用 `TenantContext.username`；Spark/HDFS 物理访问仍使用 Kyuubi 配置的统一 Kerberos principal/keytab。
 - Engine 权限扩展只信任 Kyuubi operation 传入并通过 ECDSA 校验的 session user，不接受请求体、SQL 或 Spark 配置覆盖鉴权 subject。

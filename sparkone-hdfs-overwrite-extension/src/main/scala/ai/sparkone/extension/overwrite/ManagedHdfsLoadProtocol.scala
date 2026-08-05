@@ -1,7 +1,7 @@
 package ai.sparkone.extension.overwrite
 
 final case class ManagedHdfsLoadRequest(
-    tenant: String,
+    workspaceOwner: String,
     targetTable: String,
     format: String,
     relativePath: String,
@@ -14,7 +14,7 @@ object ManagedHdfsLoadProtocol {
     ManagedHdfsCommandCodec.render(
       Command,
       ManagedHdfsCommandFields(
-        request.tenant,
+        request.workspaceOwner,
         request.targetTable,
         request.format,
         request.relativePath,

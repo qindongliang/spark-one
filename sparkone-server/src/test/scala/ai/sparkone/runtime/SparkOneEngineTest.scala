@@ -922,7 +922,7 @@ final class SparkOneEngineTest {
         .toSeq
         .headOption
       assertTrue(request.isDefined)
-      assertEquals("test-user", request.get.tenant)
+      assertEquals("test-user", request.get.workspaceOwner)
       assertEquals("loaded_result", request.get.targetTable)
       assertEquals("extension-test/result", request.get.relativePath)
     } finally {

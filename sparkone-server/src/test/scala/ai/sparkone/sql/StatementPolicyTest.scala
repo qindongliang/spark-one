@@ -74,16 +74,29 @@ final class StatementPolicyTest {
   }
 
   @Test
-  def rejectsNativeProviderPathsInQueriesAndViews(): Unit = {
+  def allowsAbsoluteHdfsProviderPathsInQueriesAndViews(): Unit = {
     Seq(
-      "select * from parquet.`/public/sparkone/user/alice/result`",
+      "select * from parquet.`/public/odep/user/alice/result`",
+      "select * from csv.`hdfs:///public/share/events.csv`",
+      "select * from orc.`viewfs:///public/share/events`",
+      "view shared_events as select * from json.`/public/share/events`").foreach { sql =>
+      assertEquals(1, compiler.compile(sql).size)
+    }
+  }
+
+  @Test
+  def rejectsRelativeOrNonHdfsProviderPathsInQueriesAndViews(): Unit = {
+    Seq(
       "select * from csv.`relative/result.csv`",
+      "select * from parquet.`file:///tmp/result`",
+      "select * from parquet.`hdfs://nameservice1/public/share/result`",
+      "select * from json.`s3a://bucket/events`",
       "select * from jdbc.`jdbc:mysql://mysql.internal/app`",
-      "select * from avro.`/public/sparkone/user/alice/result`",
+      "select * from avro.`/public/odep/user/alice/result`",
       "select * from custom.`relative/result`",
-      "view leaked as select * from orc.`/public/sparkone/user/bob/result`").foreach { sql =>
+      "view leaked as select * from orc.`../bob/result`").foreach { sql =>
       val error = expectCompileException(sql)
-      assertTrue(sql, error.getMessage.contains("use SparkOne LOAD"))
+      assertTrue(sql, error.getMessage.contains("only supported file providers with an absolute HDFS path"))
     }
   }
 

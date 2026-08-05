@@ -6,7 +6,9 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.execution.SparkSqlParser
 import org.slf4j.LoggerFactory
 
+import java.net.URI
 import java.util.Locale
+import scala.util.Try
 
 final class StatementPolicy {
   import StatementIntent._
@@ -33,7 +35,7 @@ final class StatementPolicy {
 
   private def validateNativeReadOnly(sql: String): Unit = {
     val plan = parsePlan(sql)
-    rejectNativeProviderPaths(plan)
+    validateNativeProviderPaths(plan)
     plan.collectFirst {
       case statement: ParsedStatement => statement.nodeName
       case command: Command if !isReadOnlyCommand(command.nodeName) => command.nodeName
@@ -47,22 +49,49 @@ final class StatementPolicy {
   }
 
   private def validateNoNativeProviderPaths(sql: String): Unit = {
-    rejectNativeProviderPaths(parsePlan(sql))
+    validateNativeProviderPaths(parsePlan(sql))
   }
 
-  private def rejectNativeProviderPaths(plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan): Unit = {
+  private def validateNativeProviderPaths(plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan): Unit = {
     val blockedProviders = ManagedHdfsWorkspacePolicy.ReadFormats ++
       Set("jdbc", "avro", "delta", "iceberg", "hudi", "xml")
     plan.collectFirst {
       case relation: UnresolvedRelation
-          if relation.multipartIdentifier.size >= 2 &&
-            ((relation.multipartIdentifier.size == 2 &&
-              blockedProviders.contains(relation.multipartIdentifier.head.toLowerCase(Locale.ROOT))) ||
-              relation.multipartIdentifier.tail.exists(looksLikePath)) =>
-        relation.multipartIdentifier.head
-    }.foreach { provider =>
+          if relation.multipartIdentifier.size >= 2 && {
+            val parts = relation.multipartIdentifier
+            val provider = parts.head.toLowerCase(Locale.ROOT)
+            val path = parts.tail.mkString(".")
+            val isProviderPath =
+              (parts.size == 2 && blockedProviders.contains(provider)) ||
+                parts.tail.exists(looksLikePath)
+            isProviderPath && !isAllowedNativeHdfsRelation(provider, path)
+          } =>
+        relation.multipartIdentifier.head -> relation.multipartIdentifier.tail.mkString(".")
+    }.foreach { case (provider, path) =>
       throw new CompileException(
-        s"Native provider path '$provider' is disabled; use SparkOne LOAD with a relative tenant workspace path")
+        s"Native provider path '$provider.`$path`' is disabled; " +
+          "only supported file providers with an absolute HDFS path are allowed")
+    }
+  }
+
+  private def isAllowedNativeHdfsRelation(provider: String, path: String): Boolean = {
+    ManagedHdfsWorkspacePolicy.ReadFormats.contains(provider.toLowerCase(Locale.ROOT)) &&
+      isAbsoluteHdfsPath(path)
+  }
+
+  private def isAbsoluteHdfsPath(path: String): Boolean = {
+    if (path == null || path.trim != path || path.contains("\\")) {
+      false
+    } else {
+      Try(new URI(path)).toOption.exists { uri =>
+        val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT))
+        val supportedScheme = scheme.forall(value => value == "hdfs" || value == "viewfs")
+        val segments = Option(uri.getPath).getOrElse("").split("/", -1)
+        supportedScheme && uri.getAuthority == null &&
+          uri.getQuery == null && uri.getFragment == null &&
+          Option(uri.getPath).exists(_.startsWith("/")) &&
+          !segments.exists(segment => segment == "." || segment == "..")
+      }
     }
   }
 

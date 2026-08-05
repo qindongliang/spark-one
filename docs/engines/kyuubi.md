@@ -145,9 +145,9 @@ ODEP 模式下，`spark.sql.catalog.jdbc.*` 和 `spark.sql.catalog.doris.*` 两�
 | `jdbc.<alias>.<table>` | `jdbc + alias + table` |
 | `doris.<alias>.<table>` | `doris + alias + table` |
 | `spark_catalog.<database>.<table>` | `hive + database + table` |
-| 受控 HDFS load/save 命令、无 Catalog 的 HDFS 文件关系 | `hdfs + 绝对 path` |
+| 跨 owner 的受控 HDFS load、无 Catalog 的绝对 HDFS 文件关系 | `hdfs + 绝对 path + read` |
 
-查询资源使用 `read`，写入目标使用 `write`。临时视图展开后检查底层资源；同一 SQL 的资源合并为一次批量请求。ODEP 拒绝、超时、响应不完整、会话用户签名无效以及无法识别的外部数据源都会在 Engine 内 fail closed。
+查询资源使用 `read`，Catalog 写入目标使用 `write`。当前用户自己的 managed HDFS load/overwrite 依据签名 subject 与 workspace owner 直接判定，不调用 ODEP；跨 owner managed load 和原生绝对 HDFS relation 调用 ODEP `read`；跨 owner overwrite 及所有原生文件路径写入直接拒绝。临时视图展开后检查底层资源；同一 SQL 的资源合并为一次批量请求。ODEP 拒绝、超时、响应不完整、会话用户签名无效以及无法识别的外部数据源都会在 Engine 内 fail closed。
 
 构建并部署扩展：
 
@@ -429,7 +429,7 @@ kyuubi.session.engine.idle.timeout          PT1M
 - Hive、Doris、MySQL Catalog append 会在同一租户 JDBC session 内依次执行目标 `LIMIT 0`、源 `LIMIT 0`，再按目标列顺序生成显式 column list `INSERT` 并执行 `EXPLAIN`。目标不存在、列名集合不一致或类型不兼容时不会提交写语句。
 - Catalog append 的最终 SQL 使用 Spark 3.3.4 已支持的 column list 语法，不会尝试更高版本的 `BY NAME` 再回退。
 - Kyuubi 查询和只读预检遇到失效连接可以重连一次；携带 `WritePlan` 的 `save` 写语句永不自动重试。写入连接中断时返回“状态未知”，由用户核查目标后决定是否重新提交。
-- 文件 `load` 只接受 workspace 相对路径，向 Kyuubi 提交 SparkOne 内部命令，由远端 extension 根据逻辑租户解析最终 HDFS 路径并注册临时视图；原生文件 provider relation 会在提交前拒绝。
+- 文件 `load` 只接受 workspace 相对路径，向 Kyuubi 提交 SparkOne 内部命令，由远端 extension 根据 workspace owner 解析最终 HDFS 路径并注册临时视图；跨 owner load 走 ODEP/RMS read 鉴权。原生文件 provider relation 只开放无 authority 的绝对 HDFS/viewfs 路径读取，并走同一鉴权。
 - 受控 HDFS overwrite 会向 Kyuubi 提交 SparkOne 内部命令，由 Spark engine extension 在远端 driver 内完成 ZK 排他、staging 写入和 HDFS rename 发布。该 statement 属于写操作，连接异常时同样不会自动重试。
 
 ## Session 模式
@@ -481,14 +481,14 @@ kyuubi.engine.single.spark.session=false
 spark.sql.extensions=ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
 spark.sparkone.overwrite.zk.connect=192.168.200.69:2181
 spark.sparkone.overwrite.zk.root=/sparkone/overwrite
-spark.sparkone.overwrite.workspaceRoot=/public/sparkone/user
+spark.sparkone.overwrite.workspaceRoot=/public/odep/user
 spark.sparkone.overwrite.zk.sessionTimeoutMs=60000
 spark.sparkone.overwrite.zk.connectionTimeoutMs=15000
 ```
 
 如果 engine 已配置 Ranger、Iceberg 等其他 extension，`spark.sql.extensions` 使用逗号拼接，不能覆盖已有值。扩展依赖 Spark/Hadoop 发行包已有的 Curator/ZooKeeper 类，不额外打入一套版本，避免 Kyuubi engine classpath 冲突。
 
-这些参数属于 engine 可信配置，不能放入 SparkOne HOCON 的 Kyuubi JDBC options，也不能由 DSL `LOAD/SAVE OPTIONS` 传入。Spark driver 仍使用 Kyuubi 配置的固定 keytab 账号访问 HDFS；内部命令携带的逻辑租户只用于将相对路径约束到 `/public/sparkone/user/${username}`。`workspaceRoot` 同时用于受控 load 和 overwrite；ZooKeeper 参数只在 overwrite 时使用，纯 load 不加锁。
+这些参数属于 engine 可信配置，不能放入 SparkOne HOCON 的 Kyuubi JDBC options，也不能由 DSL `LOAD/SAVE OPTIONS` 传入。Spark driver 仍使用 Kyuubi 配置的固定 keytab 账号访问 HDFS；内部命令携带的 workspace owner 只用于将相对路径约束到 `/public/odep/user/${owner}`。`workspaceRoot` 同时用于受控 load 和 overwrite；ZooKeeper 参数只在 overwrite 时使用，纯 load 不加锁。
 
 锁节点格式为 `/sparkone/overwrite/<tenant>/<readable-relative-path>--<qualified-target-sha256>`，末级为 ephemeral node，value 只保存 `operationId` 和完整 qualified target。旧版 extension 使用 `/sparkone/overwrite/<sha256>`；切换节点格式时必须先确认没有 overwrite 正在运行，再统一升级并重启所有 Local 和 Kyuubi Spark Engine，不能让新旧 extension 并行执行。
 
@@ -498,7 +498,7 @@ spark.sparkone.overwrite.zk.connectionTimeoutMs=15000
 
 - 外部 Spark datasource provider jar 应放在 Kyuubi/Spark engine classpath，不放在 SparkOne 主包里。
 - `sparkone-hdfs-overwrite-extension` jar 同样属于 Spark engine classpath，并通过 `spark.sql.extensions` 注册；模块名保持兼容，但 extension 同时承载受控 HDFS load 和 overwrite。
-- `sparkone-kyuubi-odep-authz-extension` jar 属于 Spark engine classpath，通过 `spark.sql.extensions` 注册；它只调用 ODEP 权限接口，不进入 Kyuubi Server classpath，也不直接访问 RMS。
+- `sparkone-kyuubi-odep-authz-extension` jar 属于 Spark engine classpath，通过 `spark.sql.extensions` 注册；它在 Engine 内校验 workspace ownership、拒绝原生文件写入，并调用 ODEP 权限接口，不进入 Kyuubi Server classpath，也不直接访问 RMS。
 - 远端 Catalog 统一使用三段式：Hive 为 `hive.<database>.<table>`；ODEP 为 `jdbc.<alias>.<table>`、`doris.<alias>.<table>`；当前静态数据源为 `mysql_static.<database>.<table>`、`doris_static.<database>.<table>`。`hive` 由 SparkOne 编译为内置 `spark_catalog`，不在 Kyuubi 配置伪造同名 Catalog。
 - `load mysql` 在 Kyuubi 模式下优先使用 `mysql.\`catalog.db.table\`` 语义，连接信息来自 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`。
 - 无分片参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成远端 catalog SQL。

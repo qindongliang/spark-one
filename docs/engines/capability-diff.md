@@ -12,7 +12,7 @@
 | `set name as select ...` | 两边都执行查询取第一行第一列；local 通过 DataFrame，Kyuubi 通过 JDBC ResultSet。 |
 | `assert table where ... message ...` | 两边执行同一条违规行查询；零行通过，有违规行返回有限样本并停止后续语句，`NULL` 谓词统一按失败处理。 |
 | `load hive/doris ... as t` | 编译 SQL 一致；Kyuubi 需要在 Kyuubi/Spark engine 侧配置好 Hive/Doris catalog。 |
-| 受控 HDFS 文件 load | 两边都只接受 workspace 相对路径，并使用相同内部命令和 driver extension 注册临时视图；原生文件 provider relation 统一拒绝。 |
+| 受控 HDFS 文件 load | 两边都只接受 workspace 相对路径，并使用相同内部命令和 driver extension 注册临时视图；`owner` 可选择其他用户 workspace。生产权限由 Kyuubi Engine 校验，Local 不提供多租户鉴权。 |
 | 固定写入能力矩阵 | 两边都在提交前使用同一个 `WritePlan` 和矩阵；Hive/Doris/MySQL overwrite 永久拒绝。 |
 | Catalog append | Hive/Doris 以及 Kyuubi MySQL 都要求目标存在、源和目标列名集合一致，并通过显式目标列清单和源列投影写入；类型不兼容在写入前失败。 |
 | 文件路径写入边界 | 两边都永久拒绝文件 append 和 external path 写入；受控 HDFS overwrite 使用相同的内部命令和 driver extension。 |
@@ -50,7 +50,7 @@
 | Catalog append 3A | 已落地。Hive/Doris 使用 Spark 3.3+ column list 语法，Local/Kyuubi 都做目标、列名和类型检查；Kyuubi 写 statement 禁止断线重放。 |
 | MySQL append 3B | 已落地。Local JDBC adapter 与 Kyuubi JDBC Catalog 都做目标、列名和类型预检并按列名写入；SQL 不携带连接密钥，overwrite 永久拒绝。 |
 | 受控 HDFS overwrite | 已落地。Spark driver 使用目标级 ZK ephemeral lock、固定同级 staging/backup 和 HDFS rename 发布。 |
-| 受控 HDFS load | 已落地。文件 provider 只接受租户相对路径，Spark driver 使用可信 workspace 配置解析并注册临时视图。 |
+| 受控 HDFS load | 已落地。文件 provider 的 `load` 只接受 workspace 相对路径并支持只读 `owner`；原生 relation 只开放经 Engine 鉴权的绝对 HDFS/viewfs 路径读取。 |
 
 ## 后续优先级
 

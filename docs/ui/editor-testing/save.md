@@ -60,7 +60,7 @@ MANAGED HDFS OVERWRITE
   options: {}
 ```
 
-实际执行仍使用版本化内部命令。Run 会把目标解析为 `/public/sparkone/user/${username}/reports/city_stats`；客户端不能提交绝对 workspace 路径。Local 必须先配置 `engines.local.overwrite.zkConnect`，Kyuubi 必须部署 extension jar 并配置 `spark.sql.extensions` 和 `spark.sparkone.overwrite.*`。
+实际执行仍使用版本化内部命令。Run 会把目标解析为 `/public/odep/user/${username}/reports/city_stats`；客户端不能提交绝对 workspace 路径，也不能通过 `options owner` 指定其他用户。Local 必须先配置 `engines.local.overwrite.zkConnect`，Kyuubi 必须部署 extension jar 并配置 `spark.sql.extensions` 和 `spark.sparkone.overwrite.*`。
 
 第一次 Run 后通过同一相对路径读取：
 
@@ -74,13 +74,20 @@ order by city;
 
 Compile 应显示 `MANAGED HDFS LOAD` 摘要，Run 后只包含本次结果。修改 `city_stats` 后再次 overwrite，再重新执行 load，路径中应只包含第二次完整结果。执行期间，同目标的第二个 overwrite 应失败并包含 `already running`，同时显示占用锁的 `operationId`、`target` 和包含租户的 ZK `lockPath`；不同目标应可并发。成功或明确失败后，正式目录同级不应残留 `.sparkone-overwrite-*`；模拟 driver 中断留下 work 目录时，下次取得锁的 overwrite 应先恢复/清理残留再执行。
 
-下面的直接路径读取都应在 Compile 阶段失败，并提示使用 SparkOne `LOAD`：
+绝对 HDFS 路径只读 relation 已开放，并在 Kyuubi Engine 中走 ODEP/RMS `hdfs read` 鉴权：
 
 ```sql
-select * from parquet.`/public/sparkone/user/alice/reports/city_stats`;
+select * from parquet.`/public/odep/user/alice/reports/city_stats`;
+```
+
+下面两条仍应在 Compile 阶段失败：
+
+```sql
 view bypass as select * from parquet.`reports/city_stats`;
 load parquet.`../bob/reports/city_stats` as bypass;
 ```
+
+读取其他用户 workspace 的推荐写法是 `load ... options owner="alice"`；写入始终只能使用当前用户自己的相对路径，`save options owner=...` 会拒绝。原生绝对文件路径写入在 SparkOne 和 Kyuubi Engine 两层都拒绝。
 
 本地文件、S3、OSS 裸路径的 append/overwrite 都保持永久拒绝。未来只有出现明确生产案例并定义 schema、分区、并发和失败重跑幂等合同后，才单独评估 Parquet/ORC 分区 append 或事务湖表写入，不恢复 CSV、Excel 或任意裸路径 append。
 

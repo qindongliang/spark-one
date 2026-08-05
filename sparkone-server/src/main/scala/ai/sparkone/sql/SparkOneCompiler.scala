@@ -192,10 +192,10 @@ final class SparkOneCompiler(
     val options = parseOptions(load.optionClause())
     val filter = parseLoadFilter(load.whereClause())
     dataSourceResolver.resolveLoad(format, path, options, filter) match {
-      case ManagedHdfsLoadSource(provider, relativePath, providerOptions) =>
+      case ManagedHdfsLoadSource(provider, relativePath, providerOptions, workspaceOwner) =>
         CompileResult(
           ManagedHdfsLoadProtocol.render(ManagedHdfsLoadRequest(
-            tenant.username,
+            workspaceOwner.getOrElse(tenant.username),
             table,
             provider,
             relativePath,

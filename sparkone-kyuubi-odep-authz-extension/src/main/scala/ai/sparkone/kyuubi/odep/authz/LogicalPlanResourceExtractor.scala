@@ -1,5 +1,6 @@
 package ai.sparkone.kyuubi.odep.authz
 
+import ai.sparkone.extension.overwrite.ManagedHdfsWorkspacePolicy
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.{ResolvedDBObjectName, ResolvedTable}
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, HiveTableRelation}
@@ -15,17 +16,25 @@ import scala.collection.mutable
 private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
   import OdepAuthzResource.{Read, Write}
 
-  private val ManagedHdfsWorkspaceRootKey = "spark.sparkone.overwrite.workspaceRoot"
-  private val DefaultManagedHdfsWorkspaceRoot = "/public/sparkone/user"
+  def extract(plan: LogicalPlan): Seq[OdepAuthzResource] =
+    extract(plan, includeManagedHdfs = true)
 
-  def extract(plan: LogicalPlan): Seq[OdepAuthzResource] = {
+  private[authz] def extractUnmanaged(plan: LogicalPlan): Seq[OdepAuthzResource] =
+    extract(plan, includeManagedHdfs = false)
+
+  private def extract(
+      plan: LogicalPlan,
+      includeManagedHdfs: Boolean): Seq[OdepAuthzResource] = {
     val resources = mutable.LinkedHashSet.empty[OdepAuthzResource]
 
     def add(resource: OdepAuthzResource): Unit = resources += resource
 
     def visit(current: LogicalPlan): Unit = {
-      managedHdfsCommandResource(current) match {
-        case Some(resource) => add(resource)
+      managedHdfsAccess(current) match {
+        case Some(access) =>
+          if (includeManagedHdfs) {
+            add(access.resource)
+          }
         case None => current match {
           case command: V2WriteCommand =>
             addNamedRelation(command.table, Write).foreach(add)
@@ -46,7 +55,9 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
           case command: InsertIntoHadoopFsRelationCommand =>
             command.catalogTable match {
               case Some(table) => add(catalogTableResource(table, Write))
-              case None => add(OdepAuthzResource.hdfs(command.outputPath.toString, Write))
+              case None if !ManagedHdfsWorkspacePolicy.isManagedOverwriteWrite(spark.sparkContext) =>
+                denyNativeHdfsWrite()
+              case None =>
             }
             visit(command.query)
 
@@ -84,21 +95,59 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
     resources.toSeq
   }
 
-  private def managedHdfsCommandResource(plan: LogicalPlan): Option[OdepAuthzResource] = {
-    val action = plan.getClass.getName match {
-      case "ai.sparkone.extension.overwrite.SparkOneManagedHdfsLoadCommand" => Some(Read)
-      case "ai.sparkone.extension.overwrite.SparkOneManagedHdfsOverwriteCommand" => Some(Write)
+  private[authz] def managedHdfsAccesses(plan: LogicalPlan): Seq[ManagedHdfsAccess] = {
+    val accesses = mutable.LinkedHashSet.empty[ManagedHdfsAccess]
+    def visit(current: LogicalPlan): Unit = {
+      managedHdfsAccess(current).foreach(accesses += _)
+      current.children.foreach(visit)
+    }
+    visit(plan)
+    accesses.toSeq
+  }
+
+  private[authz] def managedHdfsAccess(plan: LogicalPlan): Option[ManagedHdfsAccess] = {
+    val command = plan.getClass.getName match {
+      case "ai.sparkone.extension.overwrite.SparkOneManagedHdfsLoadCommand" =>
+        Some("workspaceOwner" -> Read)
+      case "ai.sparkone.extension.overwrite.SparkOneManagedHdfsOverwriteCommand" =>
+        Some("tenant" -> Write)
       case _ => None
     }
-    action.map { value =>
+    command.map { case (ownerMethod, action) =>
       def invoke(name: String): String =
         plan.getClass.getMethod(name).invoke(plan).asInstanceOf[String]
-      val workspaceRoot = spark.conf.getOption(ManagedHdfsWorkspaceRootKey)
-        .getOrElse(DefaultManagedHdfsWorkspaceRoot)
-        .stripSuffix("/")
-      val path = s"$workspaceRoot/${invoke("tenant")}/${invoke("relativePath")}"
-      OdepAuthzResource.hdfs(path, value)
+      val workspaceOwner = invoke(ownerMethod)
+      val path = ManagedHdfsWorkspacePolicy.resolveWorkspacePath(
+        spark,
+        workspaceOwner,
+        invoke("relativePath"))
+      ManagedHdfsAccess(
+        workspaceOwner,
+        action,
+        OdepAuthzResource.hdfs(path.toString, action))
+    }.orElse {
+      ManagedHdfsWorkspacePolicy.managedLoadWorkspaceOwner(plan).map { workspaceOwner =>
+        ManagedHdfsAccess(
+          workspaceOwner,
+          Read,
+          managedRelationResource(plan))
+      }
     }
+  }
+
+  private def managedRelationResource(plan: LogicalPlan): OdepAuthzResource = {
+    val resources = plan match {
+      case relation: DataSourceV2Relation => dataSourceV2Resource(relation, Read).toSeq
+      case relation: LogicalRelation => logicalRelationResources(relation, Read)
+      case other =>
+        throw new OdepAuthorizationException(
+          s"Managed HDFS load marker is attached to an unsupported plan: ${other.nodeName}")
+    }
+    if (resources.size != 1 || resources.head.resourceType != "hdfs") {
+      throw new OdepAuthorizationException(
+        "Managed HDFS load must resolve to exactly one HDFS path")
+    }
+    resources.head
   }
 
   private def addWriteTarget(plan: LogicalPlan): Option[OdepAuthzResource] = plan match {
@@ -138,7 +187,15 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
         Some(catalogIdentifierResource(catalog, identifier, action))
       case (None, None) => relation.table match {
         case fileTable: FileTable =>
+          if (action == Write && ManagedHdfsWorkspacePolicy.isManagedOverwriteWrite(spark.sparkContext)) {
+            return None
+          } else if (action == Write) {
+            denyNativeHdfsWrite()
+          }
           val paths = fileTable.fileIndex.rootPaths
+          if (action == Read && isManagedLoadInternalRead(paths)) {
+            return None
+          }
           if (paths.size != 1) {
             throw new OdepAuthorizationException(
               "HDFS authorization requires exactly one root path per relation")
@@ -161,7 +218,17 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
       case Some(table) => Seq(catalogTableResource(table, action))
       case None => relation.relation match {
         case hdfs: HadoopFsRelation =>
-          hdfs.location.rootPaths.map(path => OdepAuthzResource.hdfs(path.toString, action))
+          if (action == Write && ManagedHdfsWorkspacePolicy.isManagedOverwriteWrite(spark.sparkContext)) {
+            return Seq.empty
+          } else if (action == Write) {
+            denyNativeHdfsWrite()
+          }
+          val paths = hdfs.location.rootPaths
+          if (action == Read && isManagedLoadInternalRead(paths)) {
+            Seq.empty
+          } else {
+            paths.map(path => OdepAuthzResource.hdfs(path.toString, action))
+          }
         case baseRelation =>
           sparkOneMysqlResource(baseRelation, action).toSeq match {
             case resources if resources.nonEmpty => resources
@@ -219,6 +286,26 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
   private def relationName(catalog: CatalogPlugin, identifier: Identifier): String =
     (catalog.name +: identifier.namespace() :+ identifier.name()).mkString(".")
 
+  private def denyNativeHdfsWrite(): Nothing = {
+    throw new OdepAuthorizationException(
+      "Native HDFS path writes are disabled; use managed HDFS overwrite in the current user workspace")
+  }
+
+  private def isManagedLoadInternalRead(paths: Seq[org.apache.hadoop.fs.Path]): Boolean = {
+    ManagedHdfsWorkspacePolicy.managedLoadReadContext(spark.sparkContext) match {
+      case None => false
+      case Some(_) if ManagedHdfsWorkspacePolicy.matchesManagedLoadReadPaths(spark, paths) => true
+      case Some(_) =>
+        throw new OdepAuthorizationException(
+          "Managed HDFS load resolved to an unexpected HDFS path")
+    }
+  }
+
   private def isHiveCatalog(name: String): Boolean =
     name.equalsIgnoreCase("spark_catalog") || name.equalsIgnoreCase("session_catalog")
 }
+
+private[authz] final case class ManagedHdfsAccess(
+    workspaceOwner: String,
+    action: String,
+    resource: OdepAuthzResource)

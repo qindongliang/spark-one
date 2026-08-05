@@ -82,11 +82,73 @@ final class OdepAuthorizationCheckTest {
       () => rule(relation("hive", "default", "users")))
   }
 
+  @Test
+  def allowsOwnManagedWorkspaceWithoutCallingOdep(): Unit = {
+    setSignedUser("alice")
+    var authorizeCalls = 0
+    val rule = new OdepAuthorizationCheck(spark, (_, _) => {
+      authorizeCalls += 1
+      OdepAuthzResult(allowed = true, Seq.empty)
+    })
+
+    rule(managedHdfsCommand("SparkOneManagedHdfsLoadCommand", "alice"))
+    rule(managedHdfsCommand("SparkOneManagedHdfsOverwriteCommand", "alice"))
+
+    assertEquals(0, authorizeCalls)
+  }
+
+  @Test
+  def checksCrossOwnerManagedLoadWithOdep(): Unit = {
+    setSignedUser("alice")
+    var checkedResources = Seq.empty[OdepAuthzResource]
+    val rule = new OdepAuthorizationCheck(spark, (_, resources) => {
+      checkedResources = resources
+      OdepAuthzResult(allowed = true, Seq.empty)
+    })
+
+    rule(managedHdfsCommand("SparkOneManagedHdfsLoadCommand", "bob"))
+
+    assertEquals(
+      Seq(OdepAuthzResource.hdfs("/public/odep/user/bob/reports/daily", "read")),
+      checkedResources)
+  }
+
+  @Test
+  def rejectsCrossOwnerManagedOverwriteWithoutCallingOdep(): Unit = {
+    setSignedUser("alice")
+    var authorizeCalls = 0
+    val rule = new OdepAuthorizationCheck(spark, (_, _) => {
+      authorizeCalls += 1
+      OdepAuthzResult(allowed = true, Seq.empty)
+    })
+
+    val error = assertThrows(
+      classOf[OdepAuthorizationException],
+      () => rule(managedHdfsCommand("SparkOneManagedHdfsOverwriteCommand", "bob")))
+
+    assertEquals(
+      "Managed HDFS overwrite is only allowed in the current user's workspace",
+      error.getMessage)
+    assertEquals(0, authorizeCalls)
+  }
+
   private def relation(catalog: String, database: String, table: String): DataSourceV2Relation =
     DataSourceV2Relation.create(
       new RuleTestTable(table),
       Some(new RuleTestCatalog(catalog)),
       Some(Identifier.of(Array(database), table)))
+
+  private def managedHdfsCommand(
+      className: String,
+      workspaceOwner: String): org.apache.spark.sql.catalyst.plans.logical.LogicalPlan = {
+    val commandClass = Class.forName(s"ai.sparkone.extension.overwrite.$className")
+    commandClass.getConstructors.head.newInstance(
+      workspaceOwner,
+      "managed_view",
+      "parquet",
+      "reports/daily",
+      Map.empty[String, String]).asInstanceOf[org.apache.spark.sql.catalyst.plans.logical.LogicalPlan]
+  }
 
   private def setSignedUser(user: String): Unit = {
     val keyPair = KeyPairGenerator.getInstance("EC").generateKeyPair()

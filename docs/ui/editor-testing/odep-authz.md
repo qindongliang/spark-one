@@ -1,7 +1,7 @@
-# ODEP 库表鉴权测试
+# ODEP 库表与 HDFS 鉴权测试
 
 本文用于验证 SparkOne 页面经 Kyuubi 提交 SQL 时，Spark Engine 是否使用当前 RMS 真实用户，
-在物理执行前完成 JDBC、Doris、Hive 库表权限检查。测试分为 ODEP API 独立验证和 SparkOne
+在物理执行前完成 JDBC、Doris、Hive 库表及 HDFS 路径权限检查。测试分为 ODEP API 独立验证和 SparkOne
 页面端到端验证；接口通过不代表 Engine 链路通过，两部分都必须执行。
 
 ## 测试目标
@@ -17,6 +17,10 @@
 - JOIN 等多资源 SQL 使用一次批量鉴权，任一资源拒绝则整条 SQL 不执行。
 - 临时视图最终检查底层真实表，不能绕过权限。
 - 不合并 `app_username` 或伴生账号权限。
+- 当前用户自己的 managed HDFS load/overwrite 不调用 ODEP，路径固定在 `/public/odep/user/${subject}`。
+- `load ... options owner="..."` 只扩展读取体验：跨 owner 时按解析后的绝对路径调用 RMS `hdfs read`，`owner` 不替代 subject。
+- 原生绝对 HDFS/viewfs relation 只允许读取并走 RMS `hdfs read`；原生文件路径写入直接拒绝。
+- `save options owner=...` 和跨 owner overwrite 拒绝，RMS HDFS write 权限不能扩大写入范围。
 - ODEP 异常、超时、响应不完整、Kyuubi 用户签名无效和未知 Catalog 均默认拒绝。
 
 本轮只验证 Kyuubi Engine 鉴权。Local engine 不加载该扩展，不能用来判断本功能是否生效。
@@ -44,6 +48,16 @@ Engine 发送给 ODEP 的资源映射：
 
 查询源表使用 `read`，写入目标表使用 `write`。同一 SQL 的重复资源会去重，多表资源合并为一次
 请求。ODEP 对批量请求使用 AND 语义：所有 decision 都允许时，总体 `allowed` 才是 `true`。
+
+HDFS 请求只使用 `path` 和 `action`：
+
+| SQL | ODEP 请求 | 说明 |
+| --- | --- | --- |
+| `load parquet.\`reports/daily\`` | 不调用 | subject 自己的 workspace |
+| `load csv.\`t.csv\` options owner="firefly"` | `hdfs + /public/odep/user/firefly/t.csv + read` | subject 仍是 `qindongliang` |
+| `select * from csv.\`/public/odep/user/firefly/t.csv\`` | `hdfs + /public/odep/user/firefly/t.csv + read` | 原生绝对路径只读 |
+| `save overwrite ... parquet.\`reports/daily\`` | 不调用 | 只允许 subject 自己的 workspace |
+| 任意原生文件路径写入 | 直接拒绝 | 不查询 RMS write 权限 |
 
 ## 权限格式与判定规则
 
@@ -79,7 +93,7 @@ hive    white:default:users:read
 返回顺序影响。`resourceType` 和 `action` 会转成小写；`database` 和 `table` 只去除首尾空格，
 当前按大小写精确匹配，RMS 配置应与 SQL 解析得到的 alias 和表名保持一致。
 
-HDFS 不是本轮库表测试的主项，但同一接口也支持目录前缀权限：
+HDFS 使用目录前缀权限：
 
 ```text
 hdfs white:/public/odep/user/alice:read
@@ -142,6 +156,13 @@ jdbc white:ask00:users:read
 `app_username` 不合并，可以只给用户 C 的伴生账号配置 `white:ask00:users:read`，但不要给
 用户 C 本人配置。
 
+HDFS 端到端测试还需准备：
+
+- 当前用户使用 RMS 真实用户 `qindongliang`，自有测试目录是 `/public/odep/user/qindongliang/sparkone-authz-test/self-roundtrip`，脚本会创建或覆盖它，不需要 RMS 资源。
+- 跨用户 workspace owner 使用 `firefly`，授权读取现有 CSV 目录 `/public/odep/user/firefly/t.csv`。
+- 给 `qindongliang` 配置 `hdfs white:/public/odep/user/firefly/t.csv:read`，不要把权限配置给 `firefly` 后误认为当前用户会继承。
+- 使用已存在的 `/public/odep/user/firefly/t1.csv` 作为拒绝用例，不给 `qindongliang` 配置该路径或能覆盖它的上级目录白名单。
+
 RMS 资源缓存若不是实时刷新，授权变更后应等待缓存刷新或按现有运维方式清理缓存，再开始测试。
 
 ## 环境与部署检查
@@ -158,13 +179,15 @@ POST /api/sparkone/authz/check
 
 ```text
 sparkone-kyuubi-odep-authz-extension-0.1.0-SNAPSHOT.jar
+sparkone-hdfs-overwrite-extension_2.12-0.1.0-SNAPSHOT.jar
 ```
 
 `$KYUUBI_CONF_DIR/kyuubi-defaults.conf` 至少包含：
 
 ```properties
-spark.jars                                  /opt/sparkone/sparkone-kyuubi-odep-plugin.jar,/opt/sparkone/sparkone-kyuubi-odep-authz-extension.jar
-spark.sql.extensions                        ai.sparkone.kyuubi.odep.authz.SparkOneOdepAuthzExtension
+spark.jars                                  /opt/sparkone/sparkone-kyuubi-odep-plugin.jar,/opt/sparkone/sparkone-hdfs-overwrite-extension.jar,/opt/sparkone/sparkone-kyuubi-odep-authz-extension.jar
+spark.sql.extensions                        ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions,ai.sparkone.kyuubi.odep.authz.SparkOneOdepAuthzExtension
+spark.sparkone.overwrite.workspaceRoot      /public/odep/user
 kyuubi.session.user.sign.enabled            true
 spark.kyuubi.session.user.sign.enabled      true
 ```
@@ -217,7 +240,7 @@ mvn -version
 先验证 SparkOne Engine 扩展的资源提取、签名校验、允许和拒绝逻辑：
 
 ```bash
-mvn -pl sparkone-kyuubi-odep-authz-extension -am test
+mvn -pl sparkone-server,sparkone-kyuubi-odep-authz-extension -am test
 ```
 
 验证 ODEP System 的权限解析和接口参数：
@@ -524,6 +547,351 @@ Unsupported catalog for authorization: mysql_static
 这是 fail-closed 行为。当前允许的表 Catalog 只有 `jdbc`、`doris`、`spark_catalog` 和
 `session_catalog`；SparkOne 的 `hive` 会改写为内置 Spark catalog。
 
+## HDFS 完整手工测试示例
+
+下面的案例使用当前测试集群中已经存在的两个真实 workspace。页面登录用户固定为 `qindongliang`，
+跨用户 owner 固定为 `firefly`。手工案例和自动脚本共用同一组路径。
+
+| 项目 | 固定示例值 |
+| --- | --- |
+| 页面登录 subject | `qindongliang` |
+| 跨用户 workspace owner | `firefly` |
+| 当前用户自有读写目录 | `/public/odep/user/qindongliang/sparkone-authz-test/self-roundtrip` |
+| 已存在且待授权的 CSV 目录 | `/public/odep/user/firefly/t.csv` |
+| 已存在但保持未授权的 CSV 目录 | `/public/odep/user/firefly/t1.csv` |
+
+`qindongliang` 是 SparkOne 页面登录时使用的 RMS 真实用户名，也是 Engine 鉴权的 subject。
+`firefly` 只表示目标路径所属的 workspace，不替代 subject。Kyuubi Spark Engine 仍由统一
+Kerberos 账号运行。
+
+### 确认现有 HDFS 数据
+
+本地已经通过下面的只读命令确认两个 workspace 均存在。正式测试前再执行一次，防止历史目录被
+其他任务清理或改写。
+
+```bash
+hadoop fs -ls /public/odep/user/qindongliang
+hadoop fs -ls /public/odep/user/firefly
+hadoop fs -ls /public/odep/user/firefly/t.csv
+hadoop fs -ls /public/odep/user/firefly/t1.csv
+```
+
+`firefly/t.csv` 当前包含 `_SUCCESS` 和一个 CSV part 文件，文件内容如下。
+
+```text
+id
+1
+```
+
+`firefly/t1.csv` 也包含 `_SUCCESS` 和一个 CSV part 文件，因此它是真实存在的拒绝夹具。两者当前
+目录权限为 `drwxr-xr-x`，part 文件权限为 `-rw-r--r--`，Kyuubi 的统一账号具备物理读取条件。
+RMS 仍会在 Spark 读取文件前决定是否允许访问。
+
+不要向 `firefly/t.csv` 或 `firefly/t1.csv` 写入任何数据。当前用户写入测试只使用尚未存在的
+`/public/odep/user/qindongliang/sparkone-authz-test`。如果拒绝目录消失，Spark 可能先返回
+`PATH_NOT_FOUND`，此时不能证明 RMS 权限检查生效。
+
+### 配置 RMS 资源
+
+只给 `qindongliang` 增加下面一条资源。
+
+| 资源类型 | 资源内容 |
+| --- | --- |
+| `hdfs` | `white:/public/odep/user/firefly/t.csv:read` |
+
+不要给 `qindongliang` 配置 `/public/odep/user/firefly/t1.csv`，也不要配置
+`white:/public/odep/user/firefly:read` 这类能覆盖两个目录的上级白名单。开始测试前应检查该用户
+现有 HDFS 资源，确保 `t1.csv` 会稳定命中 `NO_MATCHING_RESOURCE`。
+
+ODEP 的 HDFS 前缀匹配按路径段处理。`t.csv` 白名单只匹配该目录本身及其子路径，不会匹配同级的
+`t1.csv`，因此这两个现有目录可以稳定组成允许和拒绝用例。
+
+`qindongliang` 自己的 workspace 不需要 RMS HDFS 资源。Engine 通过可信 session subject 判断 workspace
+ownership，并直接允许 managed load 和 managed overwrite。也不要添加 HDFS write 白名单，写权限
+不会扩大 SparkOne 的写入范围。
+
+授权完成后等待 RMS 资源缓存刷新。先调用 ODEP 接口验证授权路径和未授权路径。
+
+```bash
+scripts/tests/odep-authz-api.sh qindongliang allow \
+  '[{"resourceType":"hdfs","path":"/public/odep/user/firefly/t.csv","action":"read"}]'
+
+scripts/tests/odep-authz-api.sh qindongliang deny \
+  '[{"resourceType":"hdfs","path":"/public/odep/user/firefly/t1.csv","action":"read"}]'
+```
+
+第一条应输出 `allowed=True reason=MATCHED`，第二条应输出
+`allowed=False reason=NO_MATCHING_RESOURCE`。不要用该 API 直接检查 `qindongliang` 自己的 workspace
+来判断 ownership，因为 ownership 放行发生在 Engine 内，Engine 不会为自有 managed 路径调用此接口。
+
+### 登录页面并选择 Engine
+
+打开 SparkOne 页面，以 `qindongliang` 登录，Engine 选择 `Kyuubi Local`。Session 建议选择
+`Run isolated`，每个依赖临时视图的案例都在同一次 Run 中提交。先执行 `select 1 as id;` 确认
+基础链路可用，这条 SQL 本身不触发权限检查。
+
+### 自有 workspace 读写
+
+一次 Run 执行下面整段 SQL。
+
+```sql
+view sparkone_hdfs_authz_seed as
+select * from values
+  (1L, 'qindongliang'),
+  (2L, 'qindongliang')
+as sparkone_hdfs_authz_seed(id, owner_name);
+
+save overwrite sparkone_hdfs_authz_seed
+as parquet.`sparkone-authz-test/self-roundtrip`;
+
+load parquet.`sparkone-authz-test/self-roundtrip`
+as sparkone_hdfs_authz_self;
+
+select count(*) as row_count
+from sparkone_hdfs_authz_self;
+```
+
+查询结果应为 `row_count=2`。最终目录应位于
+`/public/odep/user/qindongliang/sparkone-authz-test/self-roundtrip`。Engine 日志应包含以下
+ownership 放行记录，ODEP 不应收到这次 Run 的 HDFS 权限请求。
+
+```text
+Managed HDFS authorization allowed by workspace ownership, subject=qindongliang, action=write
+Managed HDFS authorization allowed by workspace ownership, subject=qindongliang, action=read
+```
+
+### 使用 owner 读取其他用户 workspace
+
+一次 Run 执行下面整段 SQL。
+
+```sql
+load csv.`t.csv`
+options owner="firefly" and header="true" and inferSchema="true"
+as sparkone_hdfs_authz_firefly_csv;
+
+select id
+from sparkone_hdfs_authz_firefly_csv;
+
+select count(*) as row_count
+from sparkone_hdfs_authz_firefly_csv;
+```
+
+结果应有一行 `id=1`，且 `row_count=1`。这里显式设置 `header="true"`，所以 CSV 第一行作为
+列名，不计入数据行；`inferSchema="true"` 只影响字段类型推断，不影响行数。ODEP 收到的 subject
+仍是 `qindongliang`，资源应为下面这一项。
+
+```text
+hdfs:/public/odep/user/firefly/t.csv:read
+```
+
+Engine 日志应包含以下记录。
+
+```text
+ODEP authorization allowed, subject=qindongliang, resourceCount=1
+```
+
+这条用例同时证明 `owner` 只改变 workspace 路径归属，不替换当前用户，也不会作为 CSV reader
+option 下传。
+
+### 使用原生 relation 读取任意已授权绝对路径
+
+执行下面的原生 Spark SQL。
+
+```sql
+select count(*) as row_count
+from csv.`/public/odep/user/firefly/t.csv`;
+```
+
+原生 CSV relation 没有设置 `header=true`，因此表头和值都会作为数据读取，结果应为 `row_count=2`。
+ODEP 请求使用当前登录用户和规范化后的绝对路径。
+
+```text
+subject=qindongliang
+hdfs:/public/odep/user/firefly/t.csv:read
+```
+
+再单独验证无 authority 的 HDFS URI。
+
+```sql
+select count(*) as row_count
+from csv.`hdfs:///public/odep/user/firefly/t.csv`;
+```
+
+结果应为 `row_count=2`，发送给 ODEP 的 path 仍为
+`/public/odep/user/firefly/t.csv`，不带 `hdfs://`。使用 ViewFS 的环境还可以把
+URI 改为 `viewfs:///public/odep/user/firefly/t.csv` 验证同一行为；没有配置
+ViewFS 的环境不执行该变体。
+
+### 文件格式参数与 `count(*)` 口径
+
+下面的差异属于 Spark reader 语义，与 ODEP/RMS 是否授权无关。测试时应固定参数，避免把解析差异
+误判为鉴权或数据丢失问题。
+
+| 格式 | 表头和 Schema 默认行为 | 对 `count(*)` 的影响 |
+| --- | --- | --- |
+| CSV | `header=false`，`inferSchema=false` | 未设置 `header=true` 时，表头作为普通数据行计数；目录包含多个带表头的 CSV 文件时，各文件的表头都可能被计入 |
+| Parquet | 没有文本表头，Schema 来自文件元数据 | 只统计实际数据行；`header`、`inferSchema` 不适用 |
+| Excel | 当前 `spark-excel 0.31.2` 默认 `header=true`、`inferSchema=false` | 默认不统计读取范围的首行；显式设置 `header=false` 时，首行作为数据计数 |
+
+CSV 和 Excel 测试建议显式设置 `header`，不要依赖 provider 默认值。`inferSchema` 只决定字段类型，
+不会增加或减少数据行。Excel 还应显式设置实际读取区域，例如：
+
+```sql
+load excel.`users.xlsx`
+options header="true"
+  and inferSchema="true"
+  and dataAddress="'Sheet1'!A1"
+as users_excel;
+
+select count(*) as row_count
+from users_excel;
+```
+
+`dataAddress` 的起始行必须是真正的表头行。如果 Sheet 顶部有标题或说明文字，应把起始位置调整到
+实际表头；否则错误的首行会被当作列名，真正的表头可能进入数据并影响 `count(*)`。
+
+### 拒绝未授权但真实存在的绝对路径
+
+执行下面的原生 Spark SQL。
+
+```sql
+select *
+from csv.`/public/odep/user/firefly/t1.csv`;
+```
+
+页面应在读取文件前返回下面的错误，不应附带 `NO_MATCHING_RESOURCE`。
+
+```text
+Resource access denied: hdfs:/public/odep/user/firefly/t1.csv:read
+```
+
+Engine 日志仍保留 RMS reason，便于排障。
+
+```text
+ODEP authorization denied, subject=qindongliang, resources=hdfs:/public/odep/user/firefly/t1.csv:read:NO_MATCHING_RESOURCE
+```
+
+如果页面得到两行数据，说明权限没有在物理读取前拦截。如果页面得到 `PATH_NOT_FOUND`，说明夹具
+没有准备好。如果页面得到 HDFS `Permission denied`，说明先被 NameNode ACL 拦截，这三种结果都
+不能记为本用例通过。
+
+### 验证路径输入边界
+
+下面每条语句分别点击 Compile，均应失败。
+
+```sql
+load csv.`/public/odep/user/firefly/t.csv`
+as invalid_absolute_load;
+
+load csv.`../firefly/t.csv`
+as invalid_traversal_load;
+
+select * from csv.`t.csv`;
+
+select * from csv.`hdfs://nameservice1/public/odep/user/firefly/t.csv`;
+
+select * from csv.`file:///tmp/t.csv`;
+
+select * from csv.`s3a://bucket/t.csv`;
+```
+
+前两条应包含 `LOAD managed HDFS requires a relative tenant workspace path`。后四条应包含
+`only supported file providers with an absolute HDFS path are allowed`。这组用例确认以下边界。
+
+- `load` 只接受受控 workspace 相对路径，跨用户读取必须显式使用 `options owner`。
+- 原生文件 relation 只接受 `/absolute/path`、`hdfs:///absolute/path` 或
+  `viewfs:///absolute/path`。
+- 相对 relation、带 authority 的 URI、本地文件和对象存储路径不会进入 RMS 鉴权，直接编译拒绝。
+
+### 验证所有文件写入边界
+
+先验证 `save owner` 不能把数据写入其他用户 workspace。
+
+```sql
+view sparkone_hdfs_authz_save_owner as select 1L as id;
+
+save overwrite sparkone_hdfs_authz_save_owner
+as parquet.`sparkone-authz-test/save-owner-denied`
+options owner="firefly";
+```
+
+Compile 应失败并包含以下错误。
+
+```text
+SAVE managed HDFS option is not allowed: owner
+```
+
+再验证 SparkOne 页面不接受原生文件路径写入。
+
+```sql
+insert overwrite directory '/public/odep/user/qindongliang/sparkone-authz-test/native-write-denied'
+using parquet
+select 1L as id;
+```
+
+Compile 应失败并包含 `only allows native read-only SQL`，ODEP 不应收到 HDFS write 请求。
+
+最后在隔离测试环境直连 Kyuubi，验证绕过 SparkOne 编译器时 Engine 仍会拦截原生写入。
+
+```bash
+$KYUUBI_HOME/bin/beeline \
+  -u 'jdbc:kyuubi://kyuubi-host:10009/default' \
+  -n qindongliang \
+  -e "insert overwrite directory '/public/odep/user/qindongliang/sparkone-authz-test/direct-write-denied' using parquet select 1L as id"
+```
+
+预期在写文件前返回 `Native HDFS path writes are disabled`。即使临时给该路径增加 RMS HDFS
+write 白名单，结果也必须保持拒绝，因为原生文件写入不会调用 ODEP。
+
+## HDFS 端到端自动测试
+
+先确认跨 owner 的共享目录已存在、当前 RMS 用户拥有该目录的 `hdfs read` 权限，并选择一个明确未授权的绝对路径。然后在仓库根目录执行：
+
+```bash
+SPARKONE_USERNAME=qindongliang \
+SPARKONE_ENGINE=kyuubi_local \
+SPARKONE_SHARED_OWNER=firefly \
+SPARKONE_SHARED_RELATIVE_PATH=t.csv \
+SPARKONE_SHARED_ABSOLUTE_PATH=/public/odep/user/firefly/t.csv \
+SPARKONE_DENIED_ABSOLUTE_PATH=/public/odep/user/firefly/t1.csv \
+SPARKONE_SHARED_FORMAT=csv \
+scripts/tests/kyuubi-hdfs-authz.sh
+```
+
+共享数据不是 Parquet 时，通过 `SPARKONE_SHARED_FORMAT=csv` 等参数指定 provider；原生绝对路径默认由 `/public/odep/user/${owner}/${relativePath}` 拼出，也可以用 `SPARKONE_SHARED_ABSOLUTE_PATH` 指向 workspace 外的共享目录。完整参数见：
+
+```bash
+scripts/tests/kyuubi-hdfs-authz.sh --help
+```
+
+脚本通过与页面相同的登录和 `/api/run` 接口依次验证：
+
+| 编号 | 场景 | 预期 |
+| --- | --- | --- |
+| H01 | 当前用户 managed overwrite 后 managed load | 成功，ODEP 无 HDFS 请求 |
+| H02 | `load ... options owner="firefly"` | 成功，ODEP 收到 firefly 目录的 read 请求 |
+| H03 | 原生绝对 HDFS relation | 成功，ODEP 收到绝对路径 read 请求 |
+| H04 | 原生未授权绝对路径 | 执行前拒绝，错误不附带 RMS reason |
+| H05 | `save ... options owner="firefly"` | 编译拒绝 |
+| H06 | SparkOne 原生路径写入 | 编译拒绝 |
+
+H06 验证 SparkOne 入口的第一层限制。Engine 层对直连 Kyuubi 的原生文件写入还有独立拒绝规则，
+完整命令见上一节。单元测试 `LogicalPlanResourceExtractorTest.rejectsNativeHdfsPathWrites` 也会直接
+构造 Spark 写计划验证该规则。
+
+## HDFS 测试数据清理
+
+自动和手工用例通过后，先在 RMS 删除本节新增的
+`white:/public/odep/user/firefly/t.csv:read`。确认下面的 `qindongliang` 目录只用于本次测试，再执行
+精确路径清理。`firefly/t.csv` 和 `firefly/t1.csv` 是已有历史数据，不能删除或覆盖。
+
+```bash
+hadoop fs -rm -r /public/odep/user/qindongliang/sparkone-authz-test
+```
+
+HDFS 开启 Trash 时可以按集群策略恢复；关闭 Trash 时目录删除不可恢复，所以清理前必须再次核对
+完整路径。
+
 ## Fail-closed 故障测试
 
 以下用例会修改服务状态或 Engine 配置，只在隔离测试环境执行，每次只引入一个故障：
@@ -594,8 +962,14 @@ ODEP authorization failed, subject=<RMS用户名>, resourceCount=<资源数>
 | E09 | 两种 Session 模式 | A | 结果一致 |  |  |  |
 | E10 | 无资源 SQL 边界 | C | SQL 成功但不代表有权限 |  |  |  |
 | E11 | 未知 Catalog | 任意 | 默认拒绝 |  |  |  |
+| H01 | 自有 workspace load/overwrite | qindongliang | 允许且不调用 ODEP |  |  |  |
+| H02 | 跨 owner managed load | qindongliang | RMS read 允许 |  |  |  |
+| H03 | 原生绝对 HDFS relation | qindongliang | RMS read 允许 |  |  |  |
+| H04 | 未授权绝对路径 | qindongliang | 执行前拒绝 |  |  |  |
+| H05 | save owner | qindongliang | 编译拒绝 |  |  |  |
+| H06 | 原生路径写入 | qindongliang | SparkOne/Engine 均拒绝 |  |  |  |
 
-发布准入要求：A01-A07、E01-E10 全部通过；E11 与计划启用的 Catalog 行为一致；至少完成一次
+发布准入要求：A01-A07、E01-E10、H01-H06 全部通过；E11 与计划启用的 Catalog 行为一致；至少完成一次
 ODEP 不可达的 fail-closed 验证。任何拒绝用例只在数据源执行后才报错，都视为不通过。
 
 ## 已知边界
@@ -608,3 +982,5 @@ ODEP 不可达的 fail-closed 验证。任何拒绝用例只在数据源执行�
 - 静态 `mysql_static`、`doris_static` Catalog 当前不在允许列表，会默认拒绝。
 - ODEP 不缓存权限判定；RMS 侧是否即时生效取决于 RMS SDK/资源缓存刷新机制。
 - 权限接口只读取 `getPlatformUserResourceFormat(subject)`，不合并 `app_username`。
+- HDFS RMS 资源只扩大读取范围，不扩大 SparkOne 的文件写入范围；用户不能用 write 白名单绕过 workspace ownership。
+- `load owner` 只改变 workspace 路径归属，Kyuubi 签名 subject 仍是当前 RMS 用户。

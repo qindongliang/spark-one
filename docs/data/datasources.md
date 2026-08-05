@@ -15,7 +15,7 @@ text
 libsvm
 ```
 
-文件 provider 的 `load` 只接受当前租户 workspace 下的相对路径，例如 `load parquet.\`extension-test/result\` as result`。Spark extension 会在 driver 内解析为 `/public/sparkone/user/${username}/extension-test/result`；绝对路径、HDFS/S3/OSS URI、路径穿越和内部 overwrite 工作目录都会在编译或执行阶段拒绝。原生 SQL/`view` 不能直接使用文件 provider path relation，必须先通过受控 `load` 注册临时视图。
+文件 provider 的 `load` 接受 workspace 相对路径，例如 `load parquet.\`extension-test/result\` as result`。默认解析到 `/public/odep/user/${username}/extension-test/result`；通过 `options owner="bob"` 可以读取其他用户 workspace，并在 Kyuubi Engine 中按绝对路径调用 ODEP/RMS `hdfs read` 鉴权。原生 SQL/`view` 也允许受支持文件 provider 使用无 authority 的绝对 HDFS 路径，并走相同的 RMS read 鉴权；相对原生 relation、本地文件、S3/OSS、路径穿越和内部 overwrite 工作目录仍拒绝。
 
 Catalog 表统一使用 Spark 原生三段式。当前 Kyuubi 静态 Catalog 使用 `mysql_static.<database>.<table>` 和 `doris_static.<database>.<table>`；ODEP 路由 Catalog 使用 `jdbc.<alias>.<table>` 和 `doris.<alias>.<table>`，由 alias 绑定连接和真实数据库。Hive 使用逻辑别名 `hive.<database>.<table>`，compiler 会改写为 Spark 内置 `spark_catalog.<database>.<table>`。平台协议不增加四段式。
 
@@ -311,7 +311,7 @@ include "datasources/hive.conf"
 
 文件类 save：
 
-- 已识别文件 provider 的相对路径会分类为当前逻辑租户的受控 HDFS workspace，基准目录是 `/public/sparkone/user/${username}`。
+- 已识别文件 provider 的相对路径会分类为受控 HDFS workspace，默认基准目录是 `/public/odep/user/${username}`。
 - 文件 append 不进入 MVP 路线，受控 HDFS 相对路径和 external path 的 append 都由固定能力矩阵永久拒绝。
 - 绝对路径或包含 URI scheme/authority 的路径分类为 external path；本地文件、S3、OSS 等 external path 的 append 和 overwrite 都永久拒绝。
 - 受控 HDFS overwrite 已由 Spark driver extension 开放，使用目标级 ZK ephemeral lock、固定同级 staging/backup 和 HDFS rename 发布；缺少可信 engine 配置时 fail closed。
@@ -320,9 +320,10 @@ include "datasources/hive.conf"
 
 文件类 load：
 
-- 已识别文件 provider 只接受当前逻辑租户 workspace 的相对路径，绝对路径和 URI 在编译阶段拒绝。
-- Local/Kyuubi 都将 load 编译为内部命令，由 Spark driver extension 使用可信 `workspaceRoot` 解析最终路径并注册临时视图。
-- 原生 SQL 或 `view` 中直接访问文件 provider path relation 会被拒绝，避免固定 keytab 执行身份绕过逻辑租户。
+- 已识别文件 provider 的 `load` 只接受 workspace 相对路径；省略 `owner` 时使用当前用户，`options owner="bob"` 时使用指定用户。
+- Local/Kyuubi 都将 load 编译为内部命令，由 Spark driver extension 使用可信 `workspaceRoot` 解析最终路径并注册临时视图。生产鉴权只由 Kyuubi Engine 扩展执行；Local 仍只是开发测试台。
+- Kyuubi Engine 对当前用户自己的 managed load 直接按 workspace ownership 放行；跨 owner load 使用解析后的绝对路径调用 ODEP/RMS `hdfs read`。
+- 原生 SQL 或 `view` 允许 `parquet/csv/json/orc/text/libsvm/binaryfile/excel` 使用 `/absolute/path`、`hdfs:///absolute/path` 或 `viewfs:///absolute/path`，并统一调用 ODEP/RMS `hdfs read`。带 authority 的 URI、相对路径、`file://`、S3/OSS 和未识别 provider 仍拒绝。
 - load 不使用 ZooKeeper、staging 或 backup；目标路径不存在时立即失败。
 - 未识别 provider 默认拒绝；新增文件格式必须先纳入受控 provider 清单和 workspace 测试，不能回退到通用 `USING provider OPTIONS(path ...)`。
 

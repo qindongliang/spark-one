@@ -58,7 +58,7 @@ engines {
       # workspaceRoot 同时用于受控 HDFS load/overwrite；只有 overwrite 需要 ZooKeeper 排他。
       zkConnect = "192.168.200.69:2181"
       zkRoot = "/sparkone/overwrite"
-      workspaceRoot = "/public/sparkone/user"
+      workspaceRoot = "/public/odep/user"
       zkSessionTimeoutMs = 60000
       zkConnectionTimeoutMs = 15000
     }
@@ -195,7 +195,7 @@ engines {
     # spark.sql.extensions=ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
     # spark.sparkone.overwrite.zk.connect=192.168.200.69:2181
     # spark.sparkone.overwrite.zk.root=/sparkone/overwrite
-    # spark.sparkone.overwrite.workspaceRoot=/public/sparkone/user
+    # spark.sparkone.overwrite.workspaceRoot=/public/odep/user
   }
 
   kyuubi_yarn_client {

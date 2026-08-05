@@ -92,7 +92,7 @@ private[overwrite] object ManagedHdfsCommandCodec {
     try {
       val version = input.readInt()
       if (version != Version) {
-        throw new IllegalArgumentException(s"Unsupported SparkOne managed HDFS overwrite command version: $version")
+        throw new IllegalArgumentException(s"Unsupported SparkOne managed HDFS $operation command version: $version")
       }
       val tenant = input.readUTF()
       val sourceTable = input.readUTF()

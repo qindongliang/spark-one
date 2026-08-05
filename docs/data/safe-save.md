@@ -46,7 +46,7 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 - Hive、Doris、MySQL overwrite 在编译阶段永久拒绝。
 - 所有文件 append 在编译阶段永久拒绝；裸文件 append 不进入 MVP 路线。
 - 绝对路径、带 scheme 的路径以及本地/S3/OSS 等外部路径 append 和 overwrite 都在编译阶段永久拒绝。
-- 已识别文件 provider 的 load 只接受租户 workspace 相对路径；绝对路径、URI 和原生 provider relation 在编译阶段拒绝。
+- 已识别文件 provider 的 load 只接受 workspace 相对路径，可通过 `options owner="..."` 读取其他用户 workspace；原生 provider relation 只允许无 authority 的绝对 HDFS/viewfs 路径读取。
 - 未识别 provider 的 append 和 overwrite 均在编译阶段拒绝。
 - 每条语句携带 `StatementIntent`；原生 SQL 只允许查询和只读检查命令，其他 Spark command 在编译阶段默认拒绝。
 - Hive、Doris、Kyuubi MySQL Catalog append 在 runtime 统一生成 `INSERT INTO TABLE target (目标列...) SELECT 源列...`，显式按目标列顺序投影，源列顺序不影响目标映射。
@@ -73,7 +73,7 @@ Kyuubi 的前三步都是只读预检，可以在连接失效时重连一次；�
 开发阶段每个逻辑租户的 workspace 固定为：
 
 ```text
-/public/sparkone/user/${username}
+/public/odep/user/${username}
 ```
 
 DSL 文件读取和写入都只接受相对路径，例如：
@@ -86,31 +86,33 @@ save overwrite city_stats as parquet.`reports/daily`;
 Spark extension 会把它解析到：
 
 ```text
-/public/sparkone/user/${username}/reports/daily
+/public/odep/user/${username}/reports/daily
 ```
 
 相对路径必须逐段校验。空路径、绝对路径、URI scheme、authority、query、fragment、百分号编码、反斜杠、空段、`.`、`..` 和内部 `.sparkone-overwrite-*` 目录都不能进入受控 workspace。下面这些路径都会被拒绝：
 
 ```text
-/public/sparkone/user/alice/reports
-hdfs:///public/sparkone/user/alice/reports
+/public/odep/user/alice/reports
+hdfs:///public/odep/user/alice/reports
 file:///tmp/reports
 s3a://bucket/reports
 ../reports
 reports/../daily
 ```
 
-客户端不能直接提交完整 workspace 路径，也不能提交其他用户名。最终绝对路径只能由服务端根据当前 `TenantContext` 计算。
+`save overwrite` 不能提交完整 workspace 路径或其他用户名，最终目标只能由服务端根据当前签名用户计算。`load` 可以通过 `options owner="bob"` 选择其他用户 workspace；Engine 将相对路径解析为绝对路径后调用 ODEP/RMS `hdfs read`，不会合并 owner 的权限。
 
-文件读取必须先通过 `load <format>.\`relative/path\` as view` 注册临时视图，再从该视图查询。原生 SQL 或 `view` 中直接写 `parquet.\`path\``、`csv.\`path\`` 等文件 provider relation 会被编译器拒绝，防止绕过逻辑租户。受控 load 只解析路径并注册视图，不使用 ZK 锁、staging 或 backup。
+当前用户自己的文件通常通过 `load <format>.\`relative/path\` as view` 注册临时视图；这种 managed load 由 Engine 按 workspace ownership 直接放行。跨 owner load 走 RMS read 鉴权。原生 SQL 或 `view` 允许受支持 provider 使用 `/absolute/path`、`hdfs:///absolute/path` 或 `viewfs:///absolute/path`，同样走 RMS read 鉴权；相对原生 relation、带 authority 的 URI、本地文件和对象存储路径拒绝。受控 load 只解析路径并注册视图，不使用 ZK 锁、staging 或 backup。
+
+所有原生文件路径写入都在 Engine 中拒绝，不调用 RMS；受控 overwrite 只允许签名 subject 与内部命令 tenant 相同，`save options owner=...` 也在编译阶段拒绝。RMS 的 HDFS write 资源不用于扩大 SparkOne 文件写入范围。
 
 ## HDFS overwrite 执行链路
 
 以租户 `alice` 和目标 `reports/daily` 为例，Spark driver 内的路径为：
 
 ```text
-final   = /public/sparkone/user/alice/reports/daily
-work    = /public/sparkone/user/alice/reports/.sparkone-overwrite-<targetHash>
+final   = /public/odep/user/alice/reports/daily
+work    = /public/odep/user/alice/reports/.sparkone-overwrite-<targetHash>
 staging = <work>/staging
 backup  = <work>/backup
 lock    = /sparkone/overwrite/alice/reports~daily--<qualifiedFinalPathSha256>

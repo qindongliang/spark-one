@@ -48,7 +48,7 @@ Shade jar：
 Spark engine 扩展依赖：
 
 - `sparkone-hdfs-overwrite-extension_2.12` 承载受控 HDFS load/overwrite，将 Spark SQL、Curator 和 SLF4J 标记为 `provided`，部署到 Kyuubi 时复用 Spark/Hadoop engine classpath，避免重复打包造成版本冲突。
-- `sparkone-kyuubi-odep-authz-extension` 承载 Engine 资源提取、Kyuubi session user 签名校验和 ODEP 批量鉴权；Spark SQL/Hive、Jackson 和 SLF4J 均为 `provided`。
+- `sparkone-kyuubi-odep-authz-extension` 承载 Engine 资源提取、Kyuubi session user 签名校验、HDFS workspace ownership 和 ODEP 批量鉴权；它以 `provided` 方式复用 `sparkone-hdfs-overwrite-extension_2.12` 的路径解析与 managed load plan 标记，因此生产 Engine 必须同时部署两个 JAR。
 - Local server 通过 Maven reactor 依赖并直接注册 HDFS extension；ODEP authz extension 只部署到 Kyuubi Spark Engine，两者都需要在 Kyuubi 侧单独部署 JAR 并配置 `spark.sql.extensions`。
 
 配置文件依赖：

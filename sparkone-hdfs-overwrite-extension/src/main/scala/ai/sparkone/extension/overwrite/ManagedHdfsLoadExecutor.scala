@@ -10,7 +10,7 @@ private[overwrite] object ManagedHdfsLoadExecutor {
 
   def execute(spark: SparkSession, request: ManagedHdfsLoadRequest): Unit = {
     ManagedHdfsWorkspacePolicy.validateRequest(
-      request.tenant,
+      request.workspaceOwner,
       request.targetTable,
       request.format,
       request.relativePath,
@@ -19,7 +19,7 @@ private[overwrite] object ManagedHdfsLoadExecutor {
       operation = "load")
     val target = ManagedHdfsWorkspacePolicy.resolveTarget(
       spark,
-      request.tenant,
+      request.workspaceOwner,
       request.relativePath)
     if (!target.fs.exists(target.finalPath)) {
       throw new IllegalArgumentException(
@@ -27,12 +27,20 @@ private[overwrite] object ManagedHdfsLoadExecutor {
     }
 
     logger.info(
-      s"Managed HDFS load started, tenant=${request.tenant}, table=${request.targetTable}, " +
+      s"Managed HDFS load started, workspaceOwner=${request.workspaceOwner}, table=${request.targetTable}, " +
         s"format=${request.format}, target=${target.finalPath}")
-    spark.read
-      .format(request.format.toLowerCase(Locale.ROOT))
-      .options(request.options)
-      .load(target.finalPath.toString)
-      .createOrReplaceTempView(request.targetTable)
+    val loaded = ManagedHdfsWorkspacePolicy.withManagedLoadRead(
+      spark.sparkContext,
+      request.workspaceOwner,
+      target.finalPath) {
+      spark.read
+        .format(request.format.toLowerCase(Locale.ROOT))
+        .options(request.options)
+        .load(target.finalPath.toString)
+    }
+    ManagedHdfsWorkspacePolicy.markManagedLoadRelations(
+      loaded.queryExecution.logical,
+      request.workspaceOwner)
+    loaded.createOrReplaceTempView(request.targetTable)
   }
 }

@@ -92,12 +92,14 @@ private[overwrite] object ManagedHdfsOverwriteExecutor {
       spark: SparkSession,
       request: ManagedHdfsOverwriteRequest,
       stagingPath: Path): Unit = {
-    spark.table(request.sourceTable)
-      .write
-      .format(request.format.toLowerCase(Locale.ROOT))
-      .options(request.options)
-      .mode(SaveMode.Overwrite)
-      .save(stagingPath.toString)
+    ManagedHdfsWorkspacePolicy.withManagedOverwriteWrite(spark.sparkContext) {
+      spark.table(request.sourceTable)
+        .write
+        .format(request.format.toLowerCase(Locale.ROOT))
+        .options(request.options)
+        .mode(SaveMode.Overwrite)
+        .save(stagingPath.toString)
+    }
   }
 
   private def recoverPreviousAttempt(paths: OverwritePaths): Unit = {

@@ -80,12 +80,23 @@ final class DataSourceResolver(
         throw new CompileException(
           s"LOAD managed HDFS requires a relative tenant workspace path: $path")
       }
-      options.foreach { case (key, _) =>
+      val ownerOptions = options.filter { case (key, _) => key.equalsIgnoreCase("owner") }
+      if (ownerOptions.size > 1) {
+        throw new CompileException("LOAD managed HDFS option 'owner' must be specified only once")
+      }
+      val workspaceOwner = ownerOptions.headOption.map(_._2.trim)
+      workspaceOwner.foreach { owner =>
+        if (!ManagedHdfsWorkspacePolicy.isValidWorkspaceOwner(owner)) {
+          throw new CompileException("LOAD managed HDFS option 'owner' is invalid")
+        }
+      }
+      val providerOptions = options.filterNot { case (key, _) => key.equalsIgnoreCase("owner") }
+      providerOptions.foreach { case (key, _) =>
         if (!ManagedHdfsWorkspacePolicy.isAllowedOption(key)) {
           throw new CompileException(s"LOAD managed HDFS option is not allowed: $key")
         }
       }
-      ManagedHdfsLoadSource(resolveProvider(format), path, options)
+      ManagedHdfsLoadSource(resolveProvider(format), path, providerOptions, workspaceOwner)
     } else {
       if (filter.nonEmpty) {
         throw new CompileException(s"LOAD source '$format' does not support WHERE filter in the MVP compiler")
@@ -412,7 +423,8 @@ sealed trait ResolvedLoadSource
 final case class ManagedHdfsLoadSource(
     provider: String,
     relativePath: String,
-    options: Seq[(String, String)]) extends ResolvedLoadSource
+    options: Seq[(String, String)],
+    workspaceOwner: Option[String]) extends ResolvedLoadSource
 final case class ProviderLoadSource(provider: String, options: Seq[(String, String)]) extends ResolvedLoadSource
 final case class CatalogTableSource(identifier: String) extends ResolvedLoadSource
 final case class MysqlLoadSource(dbtable: String, options: Seq[(String, String)]) extends ResolvedLoadSource

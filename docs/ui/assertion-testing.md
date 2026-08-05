@@ -31,7 +31,7 @@ mvn -pl sparkone-server -am \
 | A12 | 嵌套 SQL | 内部函数、子查询、`WHERE`、字符串和脚本变量保持原始 Spark SQL 语义。 |
 | A13 | 内联检查执行 | Local 上通过时继续，失败时返回样本并短路。 |
 | A14 | 内联 Kyuubi 对等 | Kyuubi 执行与 Local 相同的违规 SQL 和失败语义。 |
-| A15 | 非法内联输入 | 空查询、括号不匹配和原生文件 provider 路径在编译期拒绝。 |
+| A15 | 非法内联输入 | 空查询、括号不匹配，以及相对路径或非 HDFS 的原生文件 provider relation 在编译期拒绝。 |
 | A16 | 失败动作编译 | 省略动作和显式 `fail` 都生成 `Fail`，`stop` 生成 `Stop`，其他值拒绝。 |
 | A17 | 默认失败 | 违规行触发 `assertion_failed`，整次 Run 失败并停止后续 SQL。 |
 | A18 | 成功停止 | `on failure stop` 触发 `assertion_stopped`，整次 Run 成功但停止后续 SQL。 |

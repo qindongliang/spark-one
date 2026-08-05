@@ -2,7 +2,7 @@
 
 ## HDFS 和 Hive 测试
 
-如果使用 `conf/sparkone.conf` 配置了 Hadoop/Hive/Kerberos，Hive 表仍按 catalog 标识读取；HDFS 文件必须先放到当前租户的 `/public/sparkone/user/${username}` workspace，再在页面使用相对路径。
+如果使用 `conf/sparkone.conf` 配置了 Hadoop/Hive/Kerberos，Hive 表仍按 catalog 标识读取；个人 HDFS 文件默认放到 `/public/odep/user/${username}` workspace，并在页面使用相对路径。读取其他用户 workspace 可以使用 `load ... options owner="..."`，读取任意已授权 HDFS 目录可以使用原生绝对路径 relation；这两种生产用法都由 Kyuubi Engine 调用 ODEP/RMS 鉴权。
 
 HDFS CSV：
 
@@ -53,11 +53,25 @@ engines {
 
 ```sql
 load excel.`imports/jupyter_tasks.xlsx`
-options header="true" and inferSchema="true"
+options header="true"
+  and inferSchema="true"
+  and dataAddress="'Sheet1'!A1"
 as users_excel;
 
 select * from users_excel limit 20;
+
+select count(*) as row_count from users_excel;
 ```
+
+当前推荐的 `spark-excel 0.31.2` 默认使用 `header=true`、`inferSchema=false`。上例仍显式写出
+`header`，保证读取范围第一行作为列名且不计入 `count(*)`；改为 `header=false` 后，第一行会作为
+数据计数。`inferSchema` 只控制字段类型推断，不改变行数。
+
+`dataAddress` 决定 Excel 的实际读取区域，起始行必须是真正的表头行。如果 Sheet 顶部还有标题、
+说明或空行，应调整为实际表头的位置，例如 `"'Sheet1'!A3"`，否则选错的首行会被当作列名，
+真正的表头可能进入数据并改变 `count(*)`。Excel 的默认行为与 CSV 不同：CSV 默认
+`header=false`，未显式设置时会把表头作为普通数据计数；Parquet 没有文本表头，只统计实际数据行，
+也不使用 `header` 或 `inferSchema` 参数。
 
 如果 provider 没加载，`Compile` 可能成功，但 `Run` 会失败，因为真正解析 provider 的是 Spark runtime。
 

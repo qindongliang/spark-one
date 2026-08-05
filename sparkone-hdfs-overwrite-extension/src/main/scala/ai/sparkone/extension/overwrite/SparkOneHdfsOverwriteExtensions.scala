@@ -21,7 +21,7 @@ private final class SparkOneManagedHdfsParser(delegate: ParserInterface) extends
     ManagedHdfsLoadProtocol.parse(sqlText) match {
       case Some(request) =>
         SparkOneManagedHdfsLoadCommand(
-          request.tenant,
+          request.workspaceOwner,
           request.targetTable,
           request.format,
           request.relativePath,
@@ -47,7 +47,7 @@ private final class SparkOneManagedHdfsParser(delegate: ParserInterface) extends
 }
 
 private final case class SparkOneManagedHdfsLoadCommand(
-    tenant: String,
+    workspaceOwner: String,
     targetTable: String,
     format: String,
     relativePath: String,
@@ -56,7 +56,7 @@ private final case class SparkOneManagedHdfsLoadCommand(
   override def run(sparkSession: SparkSession): Seq[org.apache.spark.sql.Row] = {
     ManagedHdfsLoadExecutor.execute(
       sparkSession,
-      ManagedHdfsLoadRequest(tenant, targetTable, format, relativePath, options))
+      ManagedHdfsLoadRequest(workspaceOwner, targetTable, format, relativePath, options))
     Seq.empty
   }
 }

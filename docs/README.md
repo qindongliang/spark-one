@@ -28,7 +28,7 @@
 
 - [前端页面](ui/frontend.md)：静态前端资源、API 调用和后续页面演进。
 - [SQL 编辑器测试](ui/editor-testing.md)：编辑器、DSL、数据源、Kyuubi provider、HDFS/Hive 测试目录。
-- [ODEP 库表鉴权测试](ui/editor-testing/odep-authz.md)：RMS 库表资源、批量接口与 Kyuubi Engine 端到端验证。
+- [ODEP 库表与 HDFS 鉴权测试](ui/editor-testing/odep-authz.md)：RMS 库表/HDFS 资源、批量接口与 Kyuubi Engine 端到端验证。
 - [Assert 测试用例](ui/assertion-testing.md)：Local/Kyuubi 的通过、失败、短路与常用数据质量场景。
 
 ## Ops

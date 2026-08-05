@@ -35,7 +35,7 @@ final class SparkOneServerConfigTest {
   @Test
   def rendersManagedHdfsLoadCommandForUi(): Unit = {
     val command = ManagedHdfsLoadProtocol.render(ManagedHdfsLoadRequest(
-      tenant = "alice",
+      workspaceOwner = "alice",
       targetTable = "daily_result",
       format = "parquet",
       relativePath = "reports/daily",
@@ -45,7 +45,7 @@ final class SparkOneServerConfigTest {
 
     assertEquals(
       """MANAGED HDFS LOAD
-        |  tenant: alice
+        |  workspace owner: alice
         |  view: daily_result
         |  format: parquet
         |  source: reports/daily

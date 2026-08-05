@@ -258,7 +258,7 @@ object SparkOneServer {
     ManagedHdfsLoadProtocol.parse(sql).map { request =>
       Seq(
         "MANAGED HDFS LOAD",
-        s"  tenant: ${request.tenant}",
+        s"  workspace owner: ${request.workspaceOwner}",
         s"  view: ${request.targetTable}",
         s"  format: ${request.format}",
         s"  source: ${request.relativePath}",

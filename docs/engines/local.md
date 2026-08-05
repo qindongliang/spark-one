@@ -20,7 +20,7 @@ engines {
     overwrite {
       zkConnect = "127.0.0.1:2181"
       zkRoot = "/sparkone/overwrite"
-      workspaceRoot = "/public/sparkone/user"
+      workspaceRoot = "/public/odep/user"
       zkSessionTimeoutMs = 60000
       zkConnectionTimeoutMs = 15000
     }

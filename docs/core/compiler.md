@@ -59,7 +59,7 @@ SELECT 'SAVE MYSQL' AS sparkone_action, 'city_stats TO city_stats' AS sparkone_t
 SELECT 'SAVE CATALOG' AS sparkone_action, 'city_stats TO doris.app.city_stats' AS sparkone_target;
 ```
 
-受控 HDFS load 和 overwrite 都会编译为版本化内部命令。Local 或 Kyuubi 的 Spark extension 在 driver 内根据逻辑租户和相对路径解析最终 workspace 路径：load 注册临时视图；overwrite 先生成 `WritePlan` 并通过固定能力矩阵，再执行 ZK 排他、staging 写入和 HDFS rename 发布。内部命令不是新的用户 SQL 语法，Compile/Run API 会把 Base64 payload 转成可读的 `MANAGED HDFS LOAD/OVERWRITE` 摘要。
+受控 HDFS load 和 overwrite 都会编译为版本化内部命令。Local 或 Kyuubi 的 Spark extension 在 driver 内根据 workspace owner 和相对路径解析最终路径：load 注册临时视图；overwrite 的 owner 固定为当前逻辑租户，并在通过固定能力矩阵后执行 ZK 排他、staging 写入和 HDFS rename 发布。内部命令不是新的用户 SQL 语法，Compile/Run API 会把 Base64 payload 转成可读的 `MANAGED HDFS LOAD/OVERWRITE` 摘要。
 
 普通只读 Spark SQL 除 Hive 逻辑别名外原样透传：
 
@@ -84,7 +84,7 @@ select * from city_stats;
 - SparkOne 只支持普通字面量变量和 `set name as select ...` SQL 变量；不复刻 MLSQL 的 `where type="sql"`、`type="shell"`、`type="conf"`、`defaultParam`、`scope`、`mode` 等运行时能力。
 - 每条编译结果携带 `StatementIntent`。原生 SQL 只允许查询和 `SHOW/DESCRIBE/EXPLAIN/USE` 等只读命令；原生 DDL、DML、`SET/RESET` 和未识别 command 默认拒绝。
 - SparkOne `load/view` 内部生成的临时视图依靠受控 intent 执行；用户直接提交原生 `CREATE VIEW` 不会被放行。
-- 已识别文件 provider 的 `load` 只接受租户 workspace 相对路径；原生 SQL 或 `view` 中直接使用文件 provider relation 会被拒绝，必须先通过受控 `load ... as view` 注册临时视图。
+- 已识别文件 provider 的 `load` 只接受 workspace 相对路径，可用 `options owner="..."` 选择其他用户 workspace；原生 SQL 或 `view` 只允许受支持 provider 使用无 authority 的绝对 HDFS/viewfs 路径。
 - `SparkSqlValidator` 使用 `org.apache.spark.sql.execution.SparkSqlParser` 校验生成 SQL。
 - 不要使用 `CatalystSqlParser` 作为最终校验器；它会拒绝部分 Spark SQL execution 层语法。
 - 数据源映射集中在 `DataSourceResolver`，不要把 provider 别名和特殊 source 判断散落在 compiler 主流程。
@@ -103,7 +103,7 @@ select * from city_stats;
 - `save append` 写 Hive、MySQL、Doris 时要求目标表已存在；SparkOne 不自动建表，目标表和结构变更必须由平台外的 Hive/Doris/MySQL 管理入口完成。
 - Hive、Doris、MySQL append 在执行前要求源和目标列名集合完全一致，并在写入前校验类型兼容；写入统一按目标列顺序投影，不按列位置映射，也不为缺失 nullable 列自动补 `NULL`。
 - compiler 对每条 `save` 先生成携带逻辑租户、目标分类和执行类型的 `WritePlan`。Catalog 最终 SQL 延迟到 runtime 取得 schema 后渲染，Compile 接口只展示无副作用的安全占位 SQL。
-- 已识别的文件 provider 只有相对路径可进入受控 HDFS load/overwrite；所有文件 append 永久拒绝。文件 load 的绝对路径和 URI 在编译期拒绝；本地文件、S3、OSS 等 external path 的 append/overwrite 也永久拒绝。受控 overwrite 缺少 ZK 或 Spark extension 配置时 fail closed。
+- 已识别文件 provider 只有相对路径可进入受控 HDFS load/overwrite；所有文件 append 永久拒绝。`load` 的绝对路径和 URI 在编译期拒绝，但原生只读 relation 可使用无 authority 的绝对 HDFS/viewfs 路径；本地文件、S3、OSS 读写以及所有原生文件路径写入永久拒绝。受控 overwrite 缺少 ZK 或 Spark extension 配置时 fail closed。
 - `StatementPolicy` 在 compiler 统一出口使用 Spark `SparkSqlParser` 校验原生只读边界，因此 Local/Kyuubi 的 Compile 和 Run 行为一致。
 - ODEP 数据源推荐直接使用标准 Spark SQL：`show namespaces in jdbc`、`show tables in jdbc.alias`、`select * from jdbc.alias.table`；Doris 同理。当前静态数据源使用 `mysql_static.db.table`、`doris_static.db.table`，Hive 用户侧使用 `hive.db.table`。裸写 `show databases` 和 `db.table` 仍表示当前 Catalog。
 - `excel` 是外部 Spark DataSource provider，编译成 `USING excel`，由依赖注册 provider 短名。

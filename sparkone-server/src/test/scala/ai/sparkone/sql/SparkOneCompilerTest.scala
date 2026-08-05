@@ -23,7 +23,7 @@ final class SparkOneCompilerTest {
     val load = ai.sparkone.extension.overwrite.ManagedHdfsLoadProtocol.parse(statements.head.sql)
 
     assertTrue(load.isDefined)
-    assertEquals("compiler", load.get.tenant)
+    assertEquals("compiler", load.get.workspaceOwner)
     assertEquals("users", load.get.targetTable)
     assertEquals("parquet", load.get.format)
     assertEquals("datasets/users", load.get.relativePath)
@@ -163,13 +163,13 @@ final class SparkOneCompilerTest {
   def inlineQueryAssertCannotBypassNativeProviderPathPolicy(): Unit = {
     val error = tryCompile(
       """assert (
-        |  select * from parquet.`/tmp/quality_metrics`
+        |  select * from parquet.`file:///tmp/quality_metrics`
         |)
         |where "row_count > 0"
         |message "invalid";
         |""".stripMargin)
 
-    assertTrue(error.getMessage.contains("Native provider path 'parquet' is disabled"))
+    assertTrue(error.getMessage.contains("only supported file providers with an absolute HDFS path"))
   }
 
   @Test
@@ -587,10 +587,26 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def compilesManagedHdfsLoadWithWorkspaceOwner(): Unit = {
+    val statement = compiler.compile(
+      """load parquet.`reports/daily`
+        |options owner="bob" and mergeSchema="false"
+        |as shared_reports;
+        |""".stripMargin).head
+
+    val request = ai.sparkone.extension.overwrite.ManagedHdfsLoadProtocol.parse(statement.sql)
+    assertTrue(request.isDefined)
+    assertEquals("bob", request.get.workspaceOwner)
+    assertEquals("reports/daily", request.get.relativePath)
+    assertEquals(Map("mergeSchema" -> "false"), request.get.options)
+    assertFalse(statement.load.exists(_.options.contains("owner")))
+  }
+
+  @Test
   def rejectsUnsafeManagedHdfsLoadPathsAndOptions(): Unit = {
     Seq(
-      "/public/sparkone/user/alice/result",
-      "hdfs:///public/sparkone/user/alice/result",
+      "/public/odep/user/alice/result",
+      "hdfs:///public/odep/user/alice/result",
       "../alice/result",
       "reports/../result",
       "reports/.sparkone-overwrite-target/staging").foreach { path =>
@@ -606,6 +622,16 @@ final class SparkOneCompilerTest {
 
     val unknownProvider = tryCompile("load avro.`reports/daily` as result;")
     assertTrue(unknownProvider.getMessage.contains("provider 'avro' is not supported"))
+
+    Seq("", "../bob", "bob/team").foreach { owner =>
+      val error = tryCompile(
+        s"load parquet.`reports/daily` options owner='$owner' as result;")
+      assertTrue(owner, error.getMessage.contains("option 'owner' is invalid"))
+    }
+
+    val duplicateOwner = tryCompile(
+      "load parquet.`reports/daily` options owner='bob' and OWNER='alice' as result;")
+    assertTrue(duplicateOwner.getMessage.contains("must be specified only once"))
   }
 
   @Test
@@ -625,7 +651,7 @@ final class SparkOneCompilerTest {
 
   @Test
   def rejectsSensitiveOptionsForManagedHdfsOverwrite(): Unit = {
-    Seq("path", "url", "password", "access_key").foreach { option =>
+    Seq("path", "url", "owner", "password", "access_key").foreach { option =>
       val error = tryCompile(
         s"save overwrite users as parquet.`reports/daily` options $option='secret';")
       assertTrue(option, error.getMessage.contains("option is not allowed"))

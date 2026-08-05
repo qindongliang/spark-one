@@ -16,7 +16,7 @@ SparkOne DSL + native Spark SQL script
 - Web 服务默认仍是本地测试台，方便快速 compile/run。
 - 当前用户名登录只创建开发态逻辑租户上下文，不是生产认证；生产身份后续由 RMS 提供。
 - Kyuubi 作为远程 SQL gateway 接入；YARN、Kubernetes、Standalone 等终态由 Kyuubi engine 侧承接，不放进 SparkOne。
-- 受控 HDFS load/overwrite 是 Spark SQL 难以安全表达的少数 runtime adapter：薄 compiler 生成内部命令，`sparkone-hdfs-overwrite-extension` 在 Spark driver 内解析租户 workspace；overwrite 的任务状态和文件发布职责不会放进 SparkOne Web 进程。
+- 受控 HDFS load/overwrite 是 Spark SQL 难以安全表达的少数 runtime adapter：薄 compiler 生成内部命令，`sparkone-hdfs-overwrite-extension` 在 Spark driver 内解析 workspace owner 和相对路径；overwrite 的任务状态和文件发布职责不会放进 SparkOne Web 进程。
 
 主要代码：
 

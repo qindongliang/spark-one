@@ -7,7 +7,7 @@ final class ManagedHdfsLoadProtocolTest {
   @Test
   def roundTripsInternalCommand(): Unit = {
     val request = ManagedHdfsLoadRequest(
-      tenant = "alice",
+      workspaceOwner = "alice",
       targetTable = "daily_result",
       format = "parquet",
       relativePath = "reports/daily",
