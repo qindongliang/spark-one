@@ -1,7 +1,5 @@
 package ai.sparkone.runtime
 
-import ai.sparkone.sql.{MysqlLoadProfile, MysqlLoadProfileStrategy}
-
 final class SparkOneEngineRegistry private (
     val defaultId: String,
     private val engines: Map[String, SparkOneEngine])
@@ -88,7 +86,7 @@ object SparkOneEngineRegistry {
       password = property(s"$prefix.password"),
       driver = driver,
       properties = optionProperties(prefix))
-    new KyuubiJdbcEngine(id, label(id, "Kyuubi"), config, kyuubiMysqlLoadProfiles(id))
+    new KyuubiJdbcEngine(id, label(id, "Kyuubi"), config)
   }
 
   private def engineType(id: String): String = {
@@ -125,39 +123,6 @@ object SparkOneEngineRegistry {
     sys.props.toSeq.collect {
       case (key, value) if key.startsWith(localPrefix) && value.trim.nonEmpty =>
         key.stripPrefix(localPrefix) -> value.trim
-    }.toMap
-  }
-
-  private def kyuubiMysqlLoadProfiles(id: String): Map[String, MysqlLoadProfile] = {
-    val prefix = s"sparkone.engine.$id.kyuubi.mysqlLoadProfile."
-    val names = sys.props.keys.flatMap { key =>
-      if (key.startsWith(prefix)) {
-        val remaining = key.stripPrefix(prefix)
-        val dot = remaining.indexOf('.')
-        if (dot > 0) Some(remaining.substring(0, dot)) else None
-      } else {
-        None
-      }
-    }.filter(validId).toSet
-
-    names.map { name =>
-      val profilePrefix = s"$prefix$name"
-      val profile = MysqlLoadProfile(
-        name = name,
-        strategy = property(s"$profilePrefix.strategy")
-          .map(MysqlLoadProfileStrategy.fromString)
-          .getOrElse(MysqlLoadProfileStrategy.Catalog),
-        catalog = property(s"$profilePrefix.catalog"),
-        namespace = property(s"$profilePrefix.namespace").orElse(property(s"$profilePrefix.defaultNamespace")),
-        provider = property(s"$profilePrefix.provider").getOrElse("sparkone_mysql"),
-        remoteProfileName = property(s"$profilePrefix.remoteProfile"),
-        allowedTables = property(s"$profilePrefix.allowedTables")
-          .map(_.split("[,\\n]").map(_.trim).filter(_.nonEmpty).toSet)
-          .getOrElse(Set.empty),
-        maxNumPartitions = property(s"$profilePrefix.maxNumPartitions").map(_.toInt),
-        defaultFetchSize = property(s"$profilePrefix.defaultFetchSize"))
-        .validate()
-      name -> profile
     }.toMap
   }
 

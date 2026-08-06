@@ -91,7 +91,9 @@ final class SparkOneMysqlDataSourceTest {
           "numPartitions" -> "2",
           "fetchsize" -> "100"))
 
-      assertEquals("sync_search", relation.asInstanceOf[SparkOneMysqlRelation].sparkOneAuthzDatabase)
+      assertEquals("odep", relation.asInstanceOf[SparkOneMysqlRelation].sparkOneAuthzMode)
+      assertEquals("jdbc", relation.asInstanceOf[SparkOneMysqlRelation].sparkOneAuthzCatalog)
+      assertEquals("sync_search", relation.asInstanceOf[SparkOneMysqlRelation].sparkOneAuthzNamespace)
       assertEquals(
         "drug_ai_drug_decision",
         relation.asInstanceOf[SparkOneMysqlRelation].sparkOneAuthzTable)
@@ -103,6 +105,67 @@ final class SparkOneMysqlDataSourceTest {
     } finally {
       spark.stop()
       server.stop(0)
+      SparkSession.clearActiveSession()
+      SparkSession.clearDefaultSession()
+    }
+  }
+
+  @Test
+  def readsStaticMysqlCatalogWithoutOdepRouting(): Unit = {
+    val h2Url = "jdbc:h2:mem:static_mysql_provider;MODE=MYSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false"
+    val mysqlUrl = "jdbc:mysql:h2:mem:static_mysql_provider;MODE=MYSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false"
+    val h2 = new org.h2.Driver
+    val properties = new Properties()
+    properties.setProperty("user", "sa")
+    properties.setProperty("password", "")
+    val connection = h2.connect(h2Url, properties)
+    try {
+      val statement = connection.createStatement()
+      try {
+        statement.execute("CREATE SCHEMA `app`")
+        statement.execute("CREATE TABLE `app`.`orders` (`id` BIGINT PRIMARY KEY, `name` VARCHAR(32))")
+        statement.execute("INSERT INTO `app`.`orders` VALUES (1, 'alpha'), (2, 'beta')")
+      } finally {
+        statement.close()
+      }
+    } finally {
+      connection.close()
+    }
+
+    val spark = SparkSession.builder()
+      .master("local[2]")
+      .appName("sparkone-static-mysql-provider-test")
+      .config("spark.ui.enabled", "false")
+      .config("spark.driver.host", "127.0.0.1")
+      .config("spark.driver.bindAddress", "127.0.0.1")
+      .config("spark.sql.catalog.mysql_static", "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog")
+      .config("spark.sql.catalog.mysql_static.url", mysqlUrl)
+      .config("spark.sql.catalog.mysql_static.driver", classOf[MysqlLikeH2Driver].getName)
+      .config("spark.sql.catalog.mysql_static.user", "sa")
+      .config("spark.sql.catalog.mysql_static.password", "")
+      .getOrCreate()
+
+    try {
+      spark.sparkContext.setLogLevel("ERROR")
+      val relation = new SparkOneMysqlDataSource().createRelation(
+        spark.sqlContext,
+        Map(
+          "catalog" -> "mysql_static",
+          "dbtable" -> "app.orders",
+          "partitionColumn" -> "id",
+          "lowerBound" -> "1",
+          "upperBound" -> "2",
+          "numPartitions" -> "2"))
+
+      val wrapped = relation.asInstanceOf[SparkOneMysqlRelation]
+      assertEquals("static", wrapped.sparkOneAuthzMode)
+      assertEquals("mysql_static", wrapped.sparkOneAuthzCatalog)
+      assertEquals("app", wrapped.sparkOneAuthzNamespace)
+      assertEquals("orders", wrapped.sparkOneAuthzTable)
+      val data = spark.sqlContext.baseRelationToDataFrame(relation)
+      assertEquals(Seq("alpha", "beta"), data.orderBy("id").collect().map(_.getString(1)).toSeq)
+    } finally {
+      spark.stop()
       SparkSession.clearActiveSession()
       SparkSession.clearDefaultSession()
     }

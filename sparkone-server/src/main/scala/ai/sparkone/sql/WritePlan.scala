@@ -18,8 +18,7 @@ final case class WritePlan(
 final case class WriteTarget(
     kind: WriteTargetKind,
     identifier: String,
-    provider: Option[String] = None,
-    connectionOptions: Map[String, String] = Map.empty)
+    provider: Option[String] = None)
 
 sealed trait WriteMode {
   def name: String
@@ -43,7 +42,7 @@ sealed trait WriteTargetKind {
 object WriteTargetKind {
   case object HiveCatalog extends WriteTargetKind { override val name: String = "hive-catalog" }
   case object DorisCatalog extends WriteTargetKind { override val name: String = "doris-catalog" }
-  case object Mysql extends WriteTargetKind { override val name: String = "mysql" }
+  case object JdbcCatalog extends WriteTargetKind { override val name: String = "jdbc-catalog" }
   case object ManagedHdfs extends WriteTargetKind { override val name: String = "managed-hdfs" }
   case object ExternalPath extends WriteTargetKind { override val name: String = "external-path" }
   case object UnknownProvider extends WriteTargetKind { override val name: String = "unknown-provider" }
@@ -53,7 +52,6 @@ sealed trait WriteExecutionType
 
 object WriteExecutionType {
   case object CatalogSql extends WriteExecutionType
-  case object MysqlAdapter extends WriteExecutionType
   case object FileProvider extends WriteExecutionType
 }
 
@@ -64,7 +62,7 @@ object WriteCapabilityMatrix {
   private val Capabilities: Map[WriteTargetKind, Set[WriteMode]] = Map(
     HiveCatalog -> Set(Append),
     DorisCatalog -> Set(Append),
-    Mysql -> Set(Append),
+    JdbcCatalog -> Set(Append),
     ManagedHdfs -> Set(Overwrite),
     ExternalPath -> Set.empty,
     UnknownProvider -> Set.empty)
@@ -174,7 +172,7 @@ final class WritePlanner {
         val kind = targetType match {
           case SaveTargetType.Catalog => HiveCatalog
           case SaveTargetType.DorisCatalog => DorisCatalog
-          case SaveTargetType.MysqlCatalog => Mysql
+          case SaveTargetType.JdbcCatalog => JdbcCatalog
           case other => throw new CompileException(s"Unsupported catalog write target type: $other")
         }
         WritePlan(
@@ -185,18 +183,6 @@ final class WritePlanner {
           format = format,
           partitionColumns = partitionColumns,
           executionType = CatalogSql)
-      case MysqlSaveSource(dbtable, connectionOptions) =>
-        if (partitionColumns.nonEmpty) {
-          throw new CompileException("SAVE partitionBy is not supported for mysql source")
-        }
-        WritePlan(
-          tenant = tenant,
-          mode = writeMode,
-          sourceTable = sourceTable,
-          target = WriteTarget(Mysql, dbtable, connectionOptions = connectionOptions.toMap),
-          format = format,
-          providerOptions = providerOptions.toMap,
-          executionType = MysqlAdapter)
     }
     WriteCapabilityMatrix.validate(plan)
     plan
@@ -232,10 +218,6 @@ private[sql] object WriteSqlRenderer {
     case CatalogSql =>
       SparkOneSqlRender.renderSparkOneAction(
         "SAVE CATALOG",
-        s"${plan.sourceTable} TO ${plan.target.identifier}")
-    case MysqlAdapter =>
-      SparkOneSqlRender.renderSparkOneAction(
-        "SAVE MYSQL",
         s"${plan.sourceTable} TO ${plan.target.identifier}")
     case FileProvider =>
       ManagedHdfsOverwriteProtocol.render(ManagedHdfsOverwriteRequest(

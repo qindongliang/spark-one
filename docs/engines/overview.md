@@ -23,7 +23,7 @@ Javalin HTTP service
 - [Local](local.md)：进程内 `SparkSession`，用于 IDEA、本地调试、MVP 冒烟验证。
 - [Kyuubi](kyuubi.md)：通过 Kyuubi JDBC 提交 Spark SQL，作为远程 SQL gateway；YARN、Kubernetes、Standalone 等终态由 Kyuubi engine 侧承接。
 
-Local 和 Kyuubi 的目标不是实现完全一样的运行时能力，而是让 SQL 主路径尽量对等。具体边界见 [capability-diff.md](capability-diff.md)。
+Local 和 Kyuubi 的 SQL、ODEP Catalog、RMS 鉴权和数据执行主路径保持对等；仅会话签名/恢复、ZooKeeper 服务发现、`run_isolated` 和生产多租户隔离保留为 Kyuubi 能力。具体边界见 [capability-diff.md](capability-diff.md)。
 
 ## API
 

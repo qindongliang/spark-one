@@ -140,6 +140,44 @@ public class OdepDatasourceClientTest {
         assertEquals("ODEP_API_URL must be configured", error.getMessage());
     }
 
+    @Test
+    public void shouldUseRuntimePropertiesWhenEnvironmentIsMissing() {
+        respond("/api/datasource/index", "{\"code\":200,\"success\":true,\"results\":[]}");
+        Map<String, String> properties = new LinkedHashMap<>();
+        properties.put("sparkone.odep.api.url", apiUrl);
+        properties.put("sparkone.odep.app.id", APP_ID);
+        properties.put("sparkone.odep.sign.key", SIGN_KEY);
+        properties.put("sparkone.odep.connect.timeout.seconds", "2");
+        properties.put("sparkone.odep.request.timeout.seconds", "2");
+
+        OdepDatasourceClient.fromRuntimeConfiguration(Collections.emptyMap(), properties)
+                .loadIndex("jdbc");
+
+        assertEquals(APP_ID, requests.get("/api/datasource/index").get("appId"));
+    }
+
+    @Test
+    public void shouldPreferEnvironmentOverRuntimeProperties() {
+        respond("/api/datasource/index", "{\"code\":200,\"success\":true,\"results\":[]}");
+        Map<String, String> properties = new LinkedHashMap<>();
+        properties.put("sparkone.odep.api.url", "ftp://invalid.example");
+        properties.put("sparkone.odep.app.id", "wrong-app");
+        properties.put("sparkone.odep.sign.key", "wrong-key");
+        properties.put("sparkone.odep.connect.timeout.seconds", "invalid");
+        properties.put("sparkone.odep.request.timeout.seconds", "invalid");
+        Map<String, String> environment = new LinkedHashMap<>();
+        environment.put("ODEP_API_URL", apiUrl);
+        environment.put("ODEP_KYUUBI_APP_ID", APP_ID);
+        environment.put("ODEP_KYUUBI_SIGN_KEY", SIGN_KEY);
+        environment.put("ODEP_CONNECT_TIMEOUT_SECONDS", "2");
+        environment.put("ODEP_REQUEST_TIMEOUT_SECONDS", "2");
+
+        OdepDatasourceClient.fromRuntimeConfiguration(environment, properties)
+                .loadIndex("jdbc");
+
+        assertEquals(APP_ID, requests.get("/api/datasource/index").get("appId"));
+    }
+
     private OdepDatasourceClient client() {
         return new OdepDatasourceClient(apiUrl, APP_ID, SIGN_KEY, 2000, 2000);
     }

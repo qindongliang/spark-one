@@ -24,6 +24,21 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>ai.sparkone</groupId>
+            <artifactId>sparkone-kyuubi-odep-plugin</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.sparkone</groupId>
+            <artifactId>sparkone-mysql-provider_2.12</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.sparkone</groupId>
+            <artifactId>sparkone-kyuubi-odep-authz-extension</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.scala-lang</groupId>
             <artifactId>scala-library</artifactId>
             <version>${scala.version}</version>

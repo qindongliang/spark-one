@@ -50,7 +50,7 @@
 - Spark SQL 是开放执行协议，优先承载加载、计算、保存等 SQL-first 数据分析链路。
 - `view name as select ...` 是注册临时视图的主语法糖；不支持尾部 `select ... as table`，避免跟 Spark 原生别名冲突。
 - `save ... as hive` 走 Spark catalog 表写入，优先编译成 `INSERT INTO/OVERWRITE TABLE`，不使用文件目录备份语义。
-- MySQL 统一使用 `load/save mysql`，连接信息来自 HOCON；不支持 `load/save jdbc`。
+- JDBC 统一使用 `load/save jdbc`：ODEP 动态路由使用 `jdbc.alias.table`，静态 Catalog 使用 `catalog_static.database.table`；静态连接信息只来自受信任的 Spark Catalog 配置。
 - 原生 `DROP TABLE` 默认被危险 DDL 策略拦截，只能通过启动 HOCON 显式打开。
 - DataFrame API 只作为少数 Spark SQL 难表达能力的 runtime adapter，不作为 MVP 主路径。
 - 不复刻 MLSQL 的重运行时；吸收其 SQL 体验，但保持 compiler/runtime 边界轻。

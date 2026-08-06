@@ -25,6 +25,19 @@ engines {
     enabled = true
     label = "Local"
 
+    # Local 默认内置并注册 ODEP jdbc/doris 路由 Catalog、sparkone_mysql provider 和
+    # RMS 鉴权扩展，不需要功能开关。只有第一次访问 ODEP 资源时才读取配置并调用接口。
+    # 同名 ODEP_* 环境变量会覆盖这里的值；Kyuubi Spark Engine 仍使用环境变量。
+    # Local subject 来自当前服务端 TenantContext，仅用于 IDEA 调试，不构成生产安全边界。
+
+    odep {
+      apiUrl = "http://127.0.0.1:8080"
+      appId = "sparkone"
+      signKey = "change-me"
+      connectTimeoutSeconds = 5
+      requestTimeoutSeconds = 60
+    }
+
     spark {
       master = "local[*]"
       # local 模式会自动使用 127.0.0.1。
@@ -63,30 +76,17 @@ engines {
       zkConnectionTimeoutMs = 15000
     }
 
-    datasources.mysql {
-      # MySQL 连接统一放在 HOCON 中，SQL 里只引用连接名，例如 mysql.`analytics.users`。
-      analytics {
-        url = "jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
-        driver = "com.mysql.cj.jdbc.Driver"
-        user = "root"
-        password = "change-me"
-
-        # 这里放 Spark JDBC reader/writer 通用参数；SQL 里的 options 可继续补充 batchsize、fetchsize 等非连接参数。
-        options {
-          fetchsize = 1000
-          batchsize = 1000
-        }
-      }
-    }
-
     catalogs {
-      mysql {
-        # Spark JDBC Catalog 固定注册为 catalog 名 mysql。
-        # SQL 主路径：show namespaces in mysql; show tables in mysql.app; select * from mysql.app.table;
-        # Spark JDBC Catalog 会把 mysql.app 中的 app 作为 JDBC schemaPattern 传给 DatabaseMetaData。
+      mysql_static {
+        # 静态 Spark JDBC Catalog 固定注册为 catalog 名 mysql_static，避免与 ODEP 路由冲突。
+        # SQL 主路径：show namespaces in mysql_static; show tables in mysql_static.app;
+        # select * from mysql_static.app.table;
+        # Spark JDBC Catalog 会把 mysql_static.app 中的 app 作为 JDBC schemaPattern 传给 DatabaseMetaData。
         # MySQL Connector/J 默认把 database 视为 catalog；这里必须设置 databaseTerm=SCHEMA，
-        # 才能让 show tables in mysql.app 按 MySQL database 正确过滤。
-        # 这是原生 catalog 浏览/查询能力；load/save mysql 仍走上面的 datasources.mysql adapter。
+        # 才能让 show tables in mysql_static.app 按 MySQL database 正确过滤。
+        # 直接查询：select * from mysql_static.app.table;
+        # DSL：load jdbc.`mysql_static.app.table` as t;
+        # 写入：save append t as jdbc.`mysql_static.app.target_table`;
         url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
         driver = "com.mysql.cj.jdbc.Driver"
         user = "root"
@@ -97,9 +97,10 @@ engines {
         }
       }
 
-      doris {
-        # Spark Doris Catalog 固定注册为 catalog 名 doris。
-        # SQL 主路径：show namespaces in doris; select * from doris.db.table;
+      doris_static {
+        # 静态 Spark Doris Catalog 固定注册为 catalog 名 doris_static。
+        # `doris` 保留给默认启用的 ODEP 路由 Catalog。
+        # SQL 主路径：show namespaces in doris_static; select * from doris_static.db.table;
         fenodes = "127.0.0.1:8030"
         queryPort = 9030
         user = "root"
@@ -156,39 +157,16 @@ engines {
     #   select * from doris.recommend_prod.r_qa_log;
     # `jdbc`/`doris` 的连接参数和 physicalNamespace 不配置在 SparkOne HOCON。
     #
-    # Kyuubi MySQL load/save 首选直接复用远端 Spark JDBC Catalog，例如：
-    #   load mysql.`mysql_A.Dworks.orders` as orders;
-    #   load mysql.`mysql_A.Dworks.big_orders` options partitionColumn="id" ... as big_orders;
-    #   save append source_view as mysql.`mysql_A.Dworks.target_table`;
+    # 静态 JDBC Catalog 统一使用以 _static 结尾的三段式名称，例如：
+    #   select * from mysql_static.Dworks.orders;
+    #   load jdbc.`mysql_static.Dworks.orders` as orders;
+    #   load jdbc.`mysql_static.Dworks.big_orders` options partitionColumn="id" ... as big_orders;
+    #   save append source_view as jdbc.`mysql_static.Dworks.target_table`;
     #
-    # MySQL url/user/password 必须放在 Kyuubi/Spark engine 侧，例如 spark.sql.catalog.mysql_A.*。
-    # Kyuubi save mysql 必须使用 catalog.database.table 三段式路径，且不接受 SQL OPTIONS。
+    # MySQL url/user/password 必须放在 Kyuubi/Spark engine 侧，例如 spark.sql.catalog.mysql_static.*。
+    # 静态 save jdbc 必须使用 catalog_static.database.table 三段式路径，且不接受 SQL OPTIONS。
     # 带 partitionColumn/lowerBound/upperBound/numPartitions/fetchsize 的大表 load 会编译为
     # USING sparkone_mysql，Kyuubi/Spark engine 侧需要把 sparkone-mysql-provider jar 放进 classpath。
-    #
-    # 兼容/治理增强：仍可使用 SparkOne 侧 mysqlLoadProfiles 做别名、白名单和调参上限。
-    #
-    # 兼容 alias catalog 策略：适合浏览、过滤和轻量读取，编译为 SELECT * FROM mysql_A.Dworks.orders。
-    # mysqlLoadProfiles.sales {
-    #   strategy = "catalog"
-    #   catalog = "mysql_A"
-    #   namespace = "Dworks"
-    #   allowedTables = ["orders", "users"]
-    # }
-    #
-    # 兼容 alias provider 策略：适合大表读取。Kyuubi/Spark engine 侧需要提供 sparkone_mysql provider，
-    # 由 provider 根据 profile/remoteProfile 读取远端 SparkConf/catalog 中的连接信息。
-    # 新主线直接使用 load mysql.`mysql_A.Dworks.orders`，不需要 remoteProfile。
-    # SparkOne 只传 dbtable、whereClauseBase64、partitionColumn/lowerBound/upperBound/numPartitions/fetchsize。
-    # mysqlLoadProfiles.sales_big {
-    #   strategy = "provider"
-    #   provider = "sparkone_mysql"
-    #   remoteProfile = "mysql_A"
-    #   namespace = "Dworks"
-    #   maxNumPartitions = 32
-    #   defaultFetchSize = 10000
-    #   allowedTables = ["orders"]
-    # }
     #
     # 受控 HDFS load/overwrite 由 Kyuubi 拉起的 Spark engine 执行。扩展 jar 和以下 Spark 配置
     # 必须放到 Kyuubi/Spark engine 侧，不通过本 HOCON 或 LOAD/SAVE OPTIONS 下发：

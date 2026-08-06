@@ -2,7 +2,7 @@
 
 ## HDFS 和 Hive 测试
 
-如果使用 `conf/sparkone.conf` 配置了 Hadoop/Hive/Kerberos，Hive 表仍按 catalog 标识读取；个人 HDFS 文件默认放到 `/public/odep/user/${username}` workspace，并在页面使用相对路径。读取其他用户 workspace 可以使用 `load ... options owner="..."`，读取任意已授权 HDFS 目录可以使用原生绝对路径 relation；这两种生产用法都由 Kyuubi Engine 调用 ODEP/RMS 鉴权。
+如果使用 `conf/sparkone.conf` 配置了 Hadoop/Hive/Kerberos，Hive 表仍按 catalog 标识读取；个人 HDFS 文件默认放到 `/public/odep/user/${username}` workspace，并在页面使用相对路径。读取其他用户 workspace 可以使用 `load ... options owner="..."`，读取任意已授权 HDFS 目录可以使用原生绝对路径 relation。Local 和 Kyuubi 共用 ODEP/RMS 资源规则：Local 使用开发态 `TenantContext` subject，Kyuubi 使用签名 session user；Local 配置来自 SparkOne HOCON，Kyuubi 配置来自远端 Spark Engine。
 
 HDFS CSV：
 

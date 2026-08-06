@@ -55,7 +55,7 @@ final class SparkOneServerConfigTest {
   }
 
   @Test
-  def loadsMysqlDatasourceFromHocon(): Unit = {
+  def ignoresRemovedMysqlDatasourceConfig(): Unit = {
     val file = Files.createTempFile("sparkone-mysql-datasource-", ".conf")
     Files.write(file,
       """engines.local {
@@ -78,13 +78,42 @@ final class SparkOneServerConfigTest {
     try {
       val properties = ServerConfigFile.load(file.toString)
 
-      assertEquals("jdbc:mysql://host:3306/app", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.url"))
-      assertEquals("com.mysql.cj.jdbc.Driver", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.driver"))
-      assertEquals("reader", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.user"))
-      assertEquals("secret", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.password"))
-      assertEquals("1000", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.option.fetchsize"))
-      assertEquals("convertToNull", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.option.zeroDateTimeBehavior"))
-      assertFalse(properties.contains(s"$LocalPrefix.spark.sql.catalog.mysql"))
+      assertFalse(properties.keys.exists(_.contains("sparkone.datasource.mysql")))
+    } finally {
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
+  def loadsLocalOdepConfigFromHocon(): Unit = {
+    val file = Files.createTempFile("sparkone-local-odep-", ".conf")
+    Files.write(file,
+      """engines.local {
+        |  type = "local"
+        |
+        |  odep {
+        |    apiUrl = "http://odep-api.example"
+        |    appId = "sparkone"
+        |    signKey = "local-development-key"
+        |    connectTimeoutSeconds = 3
+        |    requestTimeoutSeconds = 10
+        |  }
+        |}
+        |""".stripMargin.getBytes("UTF-8"))
+
+    try {
+      val properties = ServerConfigFile.load(file.toString)
+
+      assertEquals("http://odep-api.example",
+        properties(s"$LocalPrefix.sparkone.odep.api.url"))
+      assertEquals("sparkone",
+        properties(s"$LocalPrefix.sparkone.odep.app.id"))
+      assertEquals("local-development-key",
+        properties(s"$LocalPrefix.sparkone.odep.sign.key"))
+      assertEquals("3",
+        properties(s"$LocalPrefix.sparkone.odep.connect.timeout.seconds"))
+      assertEquals("10",
+        properties(s"$LocalPrefix.sparkone.odep.request.timeout.seconds"))
     } finally {
       Files.deleteIfExists(file)
     }
@@ -126,7 +155,7 @@ final class SparkOneServerConfigTest {
   }
 
   @Test
-  def loadsMysqlDatasourceWithHoconObjectReuse(): Unit = {
+  def ignoresRemovedMysqlDatasourceConfigWithHoconObjectReuse(): Unit = {
     val file = Files.createTempFile("sparkone-mysql-datasource-reuse-", ".conf")
     Files.write(file,
       """engines.local {
@@ -152,11 +181,7 @@ final class SparkOneServerConfigTest {
     try {
       val properties = ServerConfigFile.load(file.toString)
 
-      assertEquals("jdbc:mysql://host:3306/reporting", properties(s"$LocalPrefix.sparkone.datasource.mysql.reporting.url"))
-      assertEquals("reader", properties(s"$LocalPrefix.sparkone.datasource.mysql.reporting.user"))
-      assertEquals("2000", properties(s"$LocalPrefix.sparkone.datasource.mysql.reporting.option.fetchsize"))
-      assertEquals("1000", properties(s"$LocalPrefix.sparkone.datasource.mysql.reporting.option.batchsize"))
-      assertFalse(properties.contains(s"$LocalPrefix.spark.sql.catalog.mysql"))
+      assertFalse(properties.keys.exists(_.contains("sparkone.datasource.mysql")))
     } finally {
       Files.deleteIfExists(file)
     }
@@ -169,7 +194,7 @@ final class SparkOneServerConfigTest {
       """engines.local {
         |  type = "local"
         |
-        |  catalogs.mysql {
+        |  catalogs.mysql_static {
         |    url = "jdbc:mysql://host:3306/?databaseTerm=SCHEMA"
         |    driver = "com.mysql.cj.jdbc.Driver"
         |    user = "reader"
@@ -188,14 +213,14 @@ final class SparkOneServerConfigTest {
       val properties = ServerConfigFile.load(file.toString)
 
       assertEquals("org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog",
-        properties(s"$LocalPrefix.spark.sql.catalog.mysql"))
-      assertEquals("jdbc:mysql://host:3306/?databaseTerm=SCHEMA", properties(s"$LocalPrefix.spark.sql.catalog.mysql.url"))
-      assertEquals("com.mysql.cj.jdbc.Driver", properties(s"$LocalPrefix.spark.sql.catalog.mysql.driver"))
-      assertEquals("reader", properties(s"$LocalPrefix.spark.sql.catalog.mysql.user"))
-      assertEquals("secret", properties(s"$LocalPrefix.spark.sql.catalog.mysql.password"))
-      assertEquals("1000", properties(s"$LocalPrefix.spark.sql.catalog.mysql.fetchsize"))
-      assertFalse(properties.contains(s"$LocalPrefix.spark.sql.catalog.mysql.dbtable"))
-      assertFalse(properties.contains(s"$LocalPrefix.spark.sql.catalog.mysql.query"))
+        properties(s"$LocalPrefix.spark.sql.catalog.mysql_static"))
+      assertEquals("jdbc:mysql://host:3306/?databaseTerm=SCHEMA", properties(s"$LocalPrefix.spark.sql.catalog.mysql_static.url"))
+      assertEquals("com.mysql.cj.jdbc.Driver", properties(s"$LocalPrefix.spark.sql.catalog.mysql_static.driver"))
+      assertEquals("reader", properties(s"$LocalPrefix.spark.sql.catalog.mysql_static.user"))
+      assertEquals("secret", properties(s"$LocalPrefix.spark.sql.catalog.mysql_static.password"))
+      assertEquals("1000", properties(s"$LocalPrefix.spark.sql.catalog.mysql_static.fetchsize"))
+      assertFalse(properties.contains(s"$LocalPrefix.spark.sql.catalog.mysql_static.dbtable"))
+      assertFalse(properties.contains(s"$LocalPrefix.spark.sql.catalog.mysql_static.query"))
     } finally {
       Files.deleteIfExists(file)
     }
@@ -208,7 +233,7 @@ final class SparkOneServerConfigTest {
       """engines.local {
         |  type = "local"
         |
-        |  catalogs.doris {
+        |  catalogs.doris_static {
         |    fenodes = "fe-1:8030,fe-2:8030"
         |    queryPort = 9030
         |    user = "reader"
@@ -225,13 +250,13 @@ final class SparkOneServerConfigTest {
     try {
       val properties = ServerConfigFile.load(file.toString)
 
-      assertEquals("org.apache.doris.spark.catalog.DorisTableCatalog", properties(s"$LocalPrefix.spark.sql.catalog.doris"))
-      assertEquals("fe-1:8030,fe-2:8030", properties(s"$LocalPrefix.spark.sql.catalog.doris.doris.fenodes"))
-      assertEquals("9030", properties(s"$LocalPrefix.spark.sql.catalog.doris.doris.query.port"))
-      assertEquals("reader", properties(s"$LocalPrefix.spark.sql.catalog.doris.doris.user"))
-      assertEquals("secret", properties(s"$LocalPrefix.spark.sql.catalog.doris.doris.password"))
-      assertEquals("5", properties(s"$LocalPrefix.spark.sql.catalog.doris.doris.request.retries"))
-      assertEquals("arrow", properties(s"$LocalPrefix.spark.sql.catalog.doris.doris.read.mode"))
+      assertEquals("org.apache.doris.spark.catalog.DorisTableCatalog", properties(s"$LocalPrefix.spark.sql.catalog.doris_static"))
+      assertEquals("fe-1:8030,fe-2:8030", properties(s"$LocalPrefix.spark.sql.catalog.doris_static.doris.fenodes"))
+      assertEquals("9030", properties(s"$LocalPrefix.spark.sql.catalog.doris_static.doris.query.port"))
+      assertEquals("reader", properties(s"$LocalPrefix.spark.sql.catalog.doris_static.doris.user"))
+      assertEquals("secret", properties(s"$LocalPrefix.spark.sql.catalog.doris_static.doris.password"))
+      assertEquals("5", properties(s"$LocalPrefix.spark.sql.catalog.doris_static.doris.request.retries"))
+      assertEquals("arrow", properties(s"$LocalPrefix.spark.sql.catalog.doris_static.doris.read.mode"))
     } finally {
       Files.deleteIfExists(file)
     }
@@ -307,7 +332,7 @@ final class SparkOneServerConfigTest {
   }
 
   @Test
-  def loadsKyuubiMysqlLoadProfilesFromHocon(): Unit = {
+  def ignoresRemovedKyuubiMysqlLoadProfiles(): Unit = {
     val file = Files.createTempFile("sparkone-kyuubi-mysql-load-profile-", ".conf")
     Files.write(file,
       """engines.kyuubi {
@@ -330,16 +355,7 @@ final class SparkOneServerConfigTest {
 
     try {
       val properties = ServerConfigFile.load(file.toString)
-      val prefix = "sparkone.engine.kyuubi.kyuubi.mysqlLoadProfile.sales"
-
-      assertEquals("provider", properties(s"$prefix.strategy"))
-      assertEquals("mysql_A", properties(s"$prefix.catalog"))
-      assertEquals("Dworks", properties(s"$prefix.namespace"))
-      assertEquals("sparkone_mysql", properties(s"$prefix.provider"))
-      assertEquals("mysql_A", properties(s"$prefix.remoteProfile"))
-      assertEquals("orders\nusers", properties(s"$prefix.allowedTables"))
-      assertEquals("32", properties(s"$prefix.maxNumPartitions"))
-      assertEquals("10000", properties(s"$prefix.defaultFetchSize"))
+      assertFalse(properties.keys.exists(_.contains("mysqlLoadProfile")))
     } finally {
       Files.deleteIfExists(file)
     }
@@ -377,12 +393,10 @@ final class SparkOneServerConfigTest {
       "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;" +
         "zooKeeperNamespace=sparkone-kyuubi?kyuubi.session.conf.profile=yarn-cluster",
       properties("sparkone.engine.kyuubi_yarn_cluster.kyuubi.url"))
-    assertEquals("jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",
-      properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.url"))
-    assertEquals("1000", properties(s"$LocalPrefix.sparkone.datasource.mysql.analytics.option.fetchsize"))
+    assertFalse(properties.keys.exists(_.contains("sparkone.datasource.mysql")))
     assertEquals("org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog",
-      properties(s"$LocalPrefix.spark.sql.catalog.mysql"))
+      properties(s"$LocalPrefix.spark.sql.catalog.mysql_static"))
     assertEquals("jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",
-      properties(s"$LocalPrefix.spark.sql.catalog.mysql.url"))
+      properties(s"$LocalPrefix.spark.sql.catalog.mysql_static.url"))
   }
 }

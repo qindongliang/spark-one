@@ -260,41 +260,35 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def compilesMysqlLoadFromHoconDatasourceWithoutRenderingCredentials(): Unit = {
-    withSystemProperties(Map(
-      "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
-      "sparkone.datasource.mysql.analytics.user" -> "reader",
-      "sparkone.datasource.mysql.analytics.password" -> "secret",
-      "sparkone.datasource.mysql.analytics.option.fetchsize" -> "1000")) {
-      val statement = compiler.compile(
-        """load mysql.`analytics.users`
-          |options numPartitions = "4"
-          |as users;
-          |""".stripMargin).head
+  def compilesStaticJdbcPartitionLoadWithoutRenderingCredentials(): Unit = {
+    val statement = compiler.compile(
+      """load jdbc.`mysql_static.analytics.users`
+        |options partitionColumn = "id" and numPartitions = "4"
+        |as users;
+        |""".stripMargin).head
 
-      assertEquals("SELECT 'LOAD MYSQL' AS sparkone_action, 'users AS users' AS sparkone_target", statement.sql)
-      assertFalse(statement.sql.contains("secret"))
-      assertEquals(Some(LoadTargetType.Mysql), statement.load.map(_.targetType))
-      assertEquals(Some("users"), statement.load.map(_.path))
-      assertEquals(Some("jdbc:mysql://host:3306/app"), statement.load.flatMap(_.options.get("url")))
-      assertEquals(Some("secret"), statement.load.flatMap(_.options.get("password")))
-      assertEquals(Some("users"), statement.load.flatMap(_.options.get("dbtable")))
-      assertEquals(Some("1000"), statement.load.flatMap(_.options.get("fetchsize")))
-      assertEquals(Some("4"), statement.load.flatMap(_.options.get("numPartitions")))
-    }
+    assertTrue(statement.sql.startsWith(
+      "CREATE OR REPLACE TEMPORARY VIEW users USING sparkone_mysql OPTIONS"))
+    assertTrue(statement.sql.contains("catalog 'mysql_static'"))
+    assertTrue(statement.sql.contains("dbtable 'analytics.users'"))
+    assertEquals(Some(LoadTargetType.Provider), statement.load.map(_.targetType))
+    assertEquals(Some("mysql_static.analytics.users"), statement.load.map(_.path))
+    assertEquals(Some("id"), statement.load.flatMap(_.options.get("partitionColumn")))
+    assertEquals(Some("4"), statement.load.flatMap(_.options.get("numPartitions")))
+    assertEquals(Some("10000"), statement.load.flatMap(_.options.get("fetchsize")))
   }
 
   @Test
-  def givesHelpfulMessageForMysqlLoadMissingTargetAlias(): Unit = {
+  def givesHelpfulMessageForJdbcLoadMissingTargetAlias(): Unit = {
     val validatingCompiler = new SparkOneCompiler(new SparkSqlValidator)
 
     try {
-      validatingCompiler.compile("load mysql.`Dworks.sparkone_city_result`;")
+      validatingCompiler.compile("load jdbc.`Dworks.sparkone_city_result`;")
       fail("Expected CompileException")
     } catch {
       case e: CompileException =>
         assertTrue(e.getMessage, e.getMessage.contains("SparkOne LOAD requires a target temp view"))
-        assertTrue(e.getMessage, e.getMessage.contains("load mysql.`Dworks.sparkone_city_result` as sparkone_city_result"))
+        assertTrue(e.getMessage, e.getMessage.contains("load jdbc.`Dworks.sparkone_city_result` as sparkone_city_result"))
         assertTrue(e.getMessage, e.getMessage.contains("Add `as sparkone_city_result`"))
         assertFalse(e.getMessage, e.getMessage.contains("select * from mysql"))
     }
@@ -361,13 +355,9 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def compilesMysqlLoadWhereAsDbtableSubqueryForPartitionedRead(): Unit = {
-    withSystemProperties(Map(
-      "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
-      "sparkone.datasource.mysql.analytics.user" -> "reader",
-      "sparkone.datasource.mysql.analytics.password" -> "secret")) {
+  def compilesStaticJdbcLoadWhereForPartitionedRead(): Unit = {
       val statement = compiler.compile(
-        """load mysql.`analytics.big_orders`
+        """load jdbc.`mysql_static.analytics.big_orders`
           |where "biz_date = '2026-06-10' and status = 'PAID'"
           |options partitionColumn="id"
           |and lowerBound="1"
@@ -377,49 +367,36 @@ final class SparkOneCompilerTest {
           |as big_orders_paid;
           |""".stripMargin).head
 
-      val expectedDbtable =
-        "(select * from big_orders where biz_date = '2026-06-10' and status = 'PAID') as sparkone_mysql_load"
-      assertEquals(
-        s"SELECT 'LOAD MYSQL' AS sparkone_action, '${expectedDbtable.replace("'", "''")} AS big_orders_paid' AS sparkone_target",
-        statement.sql)
-      assertEquals(Some(expectedDbtable), statement.load.flatMap(_.options.get("dbtable")))
+      assertTrue(statement.sql.startsWith(
+        "CREATE OR REPLACE TEMPORARY VIEW big_orders_paid USING sparkone_mysql OPTIONS"))
+      assertEquals(Some("analytics.big_orders"), statement.load.flatMap(_.options.get("dbtable")))
+      assertTrue(statement.load.exists(_.options.contains("whereClauseBase64")))
       assertEquals(Some("id"), statement.load.flatMap(_.options.get("partitionColumn")))
       assertEquals(Some("1"), statement.load.flatMap(_.options.get("lowerBound")))
       assertEquals(Some("30000000"), statement.load.flatMap(_.options.get("upperBound")))
       assertEquals(Some("24"), statement.load.flatMap(_.options.get("numPartitions")))
       assertEquals(Some("10000"), statement.load.flatMap(_.options.get("fetchsize")))
-      assertFalse(statement.sql.contains("secret"))
-    }
   }
 
   @Test
-  def compilesMysqlLoadWhereWithoutPartitionOptions(): Unit = {
-    withSystemProperties(Map(
-      "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
-      "sparkone.datasource.mysql.analytics.user" -> "reader",
-      "sparkone.datasource.mysql.analytics.password" -> "secret")) {
+  def compilesStaticJdbcLoadWhereWithoutPartitionOptions(): Unit = {
       val statement = compiler.compile(
-        """load mysql.`analytics.sparkone_mysql_orders_demo`
+        """load jdbc.`mysql_static.analytics.sparkone_mysql_orders_demo`
           |where "biz_date = '2026-06-10' and status = 'PAID'"
           |as orders_paid_0610;
           |""".stripMargin).head
 
-      val expectedDbtable =
-        "(select * from sparkone_mysql_orders_demo where biz_date = '2026-06-10' and status = 'PAID') as sparkone_mysql_load"
-      assertEquals(Some(expectedDbtable), statement.load.flatMap(_.options.get("dbtable")))
+      assertEquals(
+        "CREATE OR REPLACE TEMPORARY VIEW orders_paid_0610 AS SELECT * FROM " +
+          "mysql_static.analytics.sparkone_mysql_orders_demo WHERE biz_date = '2026-06-10' and status = 'PAID'",
+        statement.sql)
       assertFalse(statement.load.exists(_.options.contains("partitionColumn")))
-      assertFalse(statement.sql.contains("secret"))
-    }
   }
 
   @Test
-  def compilesMysqlLoadPartitionOptionsWithoutWhere(): Unit = {
-    withSystemProperties(Map(
-      "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
-      "sparkone.datasource.mysql.analytics.user" -> "reader",
-      "sparkone.datasource.mysql.analytics.password" -> "secret")) {
+  def compilesStaticJdbcLoadPartitionOptionsWithoutWhere(): Unit = {
       val statement = compiler.compile(
-        """load mysql.`analytics.sparkone_mysql_orders_demo`
+        """load jdbc.`mysql_static.analytics.sparkone_mysql_orders_demo`
           |options partitionColumn="id"
           |and lowerBound="1"
           |and upperBound="8"
@@ -427,38 +404,29 @@ final class SparkOneCompilerTest {
           |as orders_partitioned;
           |""".stripMargin).head
 
-      assertEquals(Some("sparkone_mysql_orders_demo"), statement.load.flatMap(_.options.get("dbtable")))
+      assertEquals(Some("analytics.sparkone_mysql_orders_demo"), statement.load.flatMap(_.options.get("dbtable")))
       assertEquals(Some("id"), statement.load.flatMap(_.options.get("partitionColumn")))
       assertEquals(Some("1"), statement.load.flatMap(_.options.get("lowerBound")))
       assertEquals(Some("8"), statement.load.flatMap(_.options.get("upperBound")))
       assertEquals(Some("4"), statement.load.flatMap(_.options.get("numPartitions")))
-      assertFalse(statement.sql.contains("secret"))
-    }
   }
 
   @Test
-  def compilesMysqlLoadPartitionColumnOnlyForRuntimeAutoBounds(): Unit = {
-    withSystemProperties(Map(
-      "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
-      "sparkone.datasource.mysql.analytics.user" -> "reader",
-      "sparkone.datasource.mysql.analytics.password" -> "secret")) {
+  def compilesOdepJdbcLoadPartitionColumnOnlyForRuntimeAutoBounds(): Unit = {
       val statement = compiler.compile(
-        """load mysql.`analytics.big_orders`
+        """load jdbc.`analytics.big_orders`
           |where "biz_date = '2026-06-10' and status = 'PAID'"
           |options partitionColumn="id"
           |as big_orders_paid;
           |""".stripMargin).head
 
-      val expectedDbtable =
-        "(select * from big_orders where biz_date = '2026-06-10' and status = 'PAID') as sparkone_mysql_load"
-      assertEquals(Some(expectedDbtable), statement.load.flatMap(_.options.get("dbtable")))
+      assertEquals(Some("big_orders"), statement.load.flatMap(_.options.get("dbtable")))
+      assertEquals(Some("analytics"), statement.load.flatMap(_.options.get("alias")))
       assertEquals(Some("id"), statement.load.flatMap(_.options.get("partitionColumn")))
       assertFalse(statement.load.exists(_.options.contains("lowerBound")))
       assertFalse(statement.load.exists(_.options.contains("upperBound")))
-      assertFalse(statement.load.exists(_.options.contains("numPartitions")))
-      assertFalse(statement.load.exists(_.options.contains("fetchsize")))
-      assertFalse(statement.sql.contains("secret"))
-    }
+      assertEquals(Some("10"), statement.load.flatMap(_.options.get("numPartitions")))
+      assertEquals(Some("10000"), statement.load.flatMap(_.options.get("fetchsize")))
   }
 
   @Test
@@ -473,14 +441,10 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def rejectsMysqlLoadQueryOptionBecauseDbtableIsManagedBySparkOne(): Unit = {
-    withSystemProperties(Map(
-      "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
-      "sparkone.datasource.mysql.analytics.user" -> "reader",
-      "sparkone.datasource.mysql.analytics.password" -> "secret")) {
+  def rejectsJdbcLoadQueryOptionBecauseDbtableIsManagedBySparkOne(): Unit = {
       try {
         compiler.compile(
-          """load mysql.`analytics.big_orders`
+          """load jdbc.`analytics.big_orders`
             |options query="select * from big_orders where status = 'PAID'"
             |as big_orders_paid;
             |""".stripMargin)
@@ -489,7 +453,6 @@ final class SparkOneCompilerTest {
         case e: CompileException =>
           assertTrue(e.getMessage.contains("query"))
       }
-    }
   }
 
   @Test
@@ -885,30 +848,20 @@ final class SparkOneCompilerTest {
   }
 
   @Test
-  def compilesMysqlSaveAsRuntimeAdapter(): Unit = {
-    withSystemProperties(Map(
-      "sparkone.datasource.mysql.analytics.url" -> "jdbc:mysql://host:3306/app",
-      "sparkone.datasource.mysql.analytics.user" -> "writer",
-      "sparkone.datasource.mysql.analytics.password" -> "secret")) {
-      val statement = compiler.compile(
-        """save append users as mysql.`analytics.user_stats`
-          |options batchsize="500";
-          |""".stripMargin).head
+  def compilesStaticJdbcSaveAsCatalogSql(): Unit = {
+    val statement = compiler.compile(
+      "save append users as jdbc.`mysql_static.analytics.user_stats`;").head
 
-      assertEquals("SELECT 'SAVE MYSQL' AS sparkone_action, 'users TO user_stats' AS sparkone_target", statement.sql)
-      assertFalse(statement.sql.contains("secret"))
-      assertEquals(Some(WriteMode.Append), statement.writePlan.map(_.mode))
-      assertEquals(Some(WriteTargetKind.Mysql), statement.writePlan.map(_.target.kind))
-      assertEquals(Some("user_stats"), statement.writePlan.map(_.target.identifier))
-      assertEquals(Some("jdbc:mysql://host:3306/app"), statement.writePlan.flatMap(_.target.connectionOptions.get("url")))
-      assertEquals(Some("secret"), statement.writePlan.flatMap(_.target.connectionOptions.get("password")))
-      assertEquals(Some("user_stats"), statement.writePlan.flatMap(_.target.connectionOptions.get("dbtable")))
-      assertEquals(Some("500"), statement.writePlan.flatMap(_.target.connectionOptions.get("batchsize")))
-    }
+    assertEquals(
+      "SELECT 'SAVE CATALOG' AS sparkone_action, 'users TO mysql_static.analytics.user_stats' AS sparkone_target",
+      statement.sql)
+    assertEquals(Some(WriteMode.Append), statement.writePlan.map(_.mode))
+    assertEquals(Some(WriteTargetKind.JdbcCatalog), statement.writePlan.map(_.target.kind))
+    assertEquals(Some("mysql_static.analytics.user_stats"), statement.writePlan.map(_.target.identifier))
   }
 
   @Test
-  def compilesJdbcLoadAsOdepRoutingCatalogReadButStillRejectsSave(): Unit = {
+  def compilesJdbcLoadAsOdepRoutingCatalogReadButRejectsOdepSave(): Unit = {
     val load = compiler.compile(
       """load jdbc.`search_prod.users`
         |where "status = 'ACTIVE'"
@@ -931,6 +884,15 @@ final class SparkOneCompilerTest {
   }
 
   @Test
+  def preservesDirectThreePartSelectForOdepAndStaticCatalogs(): Unit = {
+    Seq(
+      "select * from jdbc.search_prod.users",
+      "select * from mysql_static.analytics.users").foreach { sql =>
+      assertEquals(sql, compiler.compile(sql + ";").head.sql)
+    }
+  }
+
+  @Test
   def rejectsJdbcConnectionOptionsAndNonAliasTablePaths(): Unit = {
     val connectionOption = tryCompile(
       "load jdbc.`search_prod.users` options url='jdbc:mysql://leaked' as users;")
@@ -938,14 +900,21 @@ final class SparkOneCompilerTest {
 
     Seq(
       "load jdbc.`users` as users;",
-      "load jdbc.`jdbc.search_prod.users` as users;").foreach { sql =>
+      "load jdbc.`jdbc_prod.search_prod.users` as users;").foreach { sql =>
       val error = tryCompile(sql)
       assertTrue(error.getMessage.contains("LOAD jdbc"))
     }
 
-    val localPartitionOption = tryCompile(
-      "load jdbc.`search_prod.users` options partitionColumn='id' as users;")
-    assertTrue(localPartitionOption.getMessage.contains("require a Kyuubi engine"))
+    val partitioned = compiler.compile(
+      "load jdbc.`search_prod.users` options partitionColumn='id' as users;").head
+    assertTrue(partitioned.sql.startsWith(
+      "CREATE OR REPLACE TEMPORARY VIEW users USING sparkone_mysql OPTIONS"))
+    assertTrue(partitioned.sql.contains("catalog 'jdbc'"))
+    assertTrue(partitioned.sql.contains("alias 'search_prod'"))
+    assertTrue(partitioned.sql.contains("dbtable 'users'"))
+    assertTrue(partitioned.sql.contains("partitionColumn 'id'"))
+    assertTrue(partitioned.sql.contains("numPartitions '10'"))
+    assertTrue(partitioned.sql.contains("fetchsize '10000'"))
   }
 
   @Test

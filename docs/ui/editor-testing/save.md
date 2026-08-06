@@ -74,7 +74,7 @@ order by city;
 
 Compile 应显示 `MANAGED HDFS LOAD` 摘要，Run 后只包含本次结果。修改 `city_stats` 后再次 overwrite，再重新执行 load，路径中应只包含第二次完整结果。执行期间，同目标的第二个 overwrite 应失败并包含 `already running`，同时显示占用锁的 `operationId`、`target` 和包含租户的 ZK `lockPath`；不同目标应可并发。成功或明确失败后，正式目录同级不应残留 `.sparkone-overwrite-*`；模拟 driver 中断留下 work 目录时，下次取得锁的 overwrite 应先恢复/清理残留再执行。
 
-绝对 HDFS 路径只读 relation 已开放，并在 Kyuubi Engine 中走 ODEP/RMS `hdfs read` 鉴权：
+绝对 HDFS 路径只读 relation 已开放，Local 和 Kyuubi Engine 都走 ODEP/RMS `hdfs read` 鉴权。Local 使用 `TenantContext` subject，Kyuubi 使用签名 session user：
 
 ```sql
 select * from parquet.`/public/odep/user/alice/reports/city_stats`;

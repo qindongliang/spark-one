@@ -75,8 +75,52 @@ final class OdepAuthzClientTest {
         Seq(OdepAuthzResource.table("hive", "default", "users", "read"))))
   }
 
+  @Test
+  def usesRuntimePropertiesWhenEnvironmentIsMissing(): Unit = {
+    response = allowedJdbcResponse
+    val properties = Map(
+      "sparkone.odep.api.url" -> apiUrl,
+      "sparkone.odep.app.id" -> appId,
+      "sparkone.odep.sign.key" -> signKey,
+      "sparkone.odep.connect.timeout.seconds" -> "2",
+      "sparkone.odep.request.timeout.seconds" -> "2")
+
+    val result = OdepAuthzClient.fromRuntimeConfiguration(Map.empty, properties)
+      .check("alice", Seq(OdepAuthzResource.table("jdbc", "analytics", "events", "read")))
+
+    assertTrue(result.allowed)
+    assertEquals(appId, capturedForm("appId"))
+  }
+
+  @Test
+  def prefersEnvironmentOverRuntimeProperties(): Unit = {
+    response = allowedJdbcResponse
+    val properties = Map(
+      "sparkone.odep.api.url" -> "ftp://invalid.example",
+      "sparkone.odep.app.id" -> "wrong-app",
+      "sparkone.odep.sign.key" -> "wrong-key",
+      "sparkone.odep.connect.timeout.seconds" -> "invalid",
+      "sparkone.odep.request.timeout.seconds" -> "invalid")
+    val environment = Map(
+      "ODEP_API_URL" -> apiUrl,
+      "ODEP_KYUUBI_APP_ID" -> appId,
+      "ODEP_KYUUBI_SIGN_KEY" -> signKey,
+      "ODEP_CONNECT_TIMEOUT_SECONDS" -> "2",
+      "ODEP_REQUEST_TIMEOUT_SECONDS" -> "2")
+
+    val result = OdepAuthzClient.fromRuntimeConfiguration(environment, properties)
+      .check("alice", Seq(OdepAuthzResource.table("jdbc", "analytics", "events", "read")))
+
+    assertTrue(result.allowed)
+    assertEquals(appId, capturedForm("appId"))
+  }
+
   private def client(): OdepAuthzClient =
     new OdepAuthzClient(apiUrl, appId, signKey, 2000, 2000)
+
+  private def allowedJdbcResponse: String =
+    """{"code":200,"success":true,"results":{"allowed":true,"decisions":[""" +
+      """{"resource":{"resourceType":"jdbc","database":"analytics","table":"events","action":"read"},"allowed":true,"reason":"MATCHED"}]}}"""
 
   private def handle(exchange: HttpExchange): Unit = {
     capturedForm = parseForm(readAll(exchange.getRequestBody))

@@ -217,11 +217,6 @@ final class SparkOneCompiler(
           SparkOneSqlRender.renderCreateTempViewAsSelect(table, identifier),
           load = Some(LoadStatementMetadata(table, format, identifier, Map.empty)),
           intent = StatementIntent.Load)
-      case MysqlLoadSource(dbtable, jdbcOptions) =>
-        CompileResult(
-          SparkOneSqlRender.renderSparkOneAction("LOAD MYSQL", s"$dbtable AS $table"),
-          load = Some(LoadStatementMetadata(table, format, dbtable, jdbcOptions.toMap, LoadTargetType.Mysql)),
-          intent = StatementIntent.Load)
     }
   }
 

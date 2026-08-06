@@ -94,8 +94,8 @@ final class WritePolicyRuntimeTest {
   }
 
   @Test
-  def localMysqlAppendMapsColumnsByNameAndFailsBeforeUnsafeWrites(): Unit = {
-    val root = Files.createTempDirectory("sparkone-write-policy-mysql-")
+  def localJdbcCatalogAppendMapsColumnsByNameAndFailsBeforeUnsafeWrites(): Unit = {
+    val root = Files.createTempDirectory("sparkone-write-policy-jdbc-")
     val spark = localSpark(root)
     val tenant = TenantContext.development("alice")
     val jdbcUrl = s"jdbc:derby:${root.resolve("mysql-db").toAbsolutePath};create=true"
@@ -109,14 +109,16 @@ final class WritePolicyRuntimeTest {
     }
 
     try {
-      withSystemProperties(Map(
-        "sparkone.datasource.mysql.analytics.url" -> jdbcUrl,
-        "sparkone.datasource.mysql.analytics.driver" -> "org.apache.derby.jdbc.EmbeddedDriver")) {
+        spark.conf.set(
+          "spark.sql.catalog.derby_static",
+          "org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog")
+        spark.conf.set("spark.sql.catalog.derby_static.url", jdbcUrl)
+        spark.conf.set("spark.sql.catalog.derby_static.driver", "org.apache.derby.jdbc.EmbeddedDriver")
         val runtime = new SparkOneRuntime(spark)
         val success = runtime.run(
           tenant,
           """view mysql_source as select 7 as id, 'alice' as name;
-            |save append mysql_source as mysql.`analytics.TARGET_USERS`;
+            |save append mysql_source as jdbc.`derby_static.APP.TARGET_USERS`;
             |""".stripMargin,
           10)
 
@@ -126,7 +128,7 @@ final class WritePolicyRuntimeTest {
         val missingColumn = runtime.run(
           tenant,
           """view mysql_missing_column as select 8 as id;
-            |save append mysql_missing_column as mysql.`analytics.TARGET_USERS`;
+            |save append mysql_missing_column as jdbc.`derby_static.APP.TARGET_USERS`;
             |""".stripMargin,
           10)
         assertFalse(missingColumn.success)
@@ -137,25 +139,24 @@ final class WritePolicyRuntimeTest {
         val incompatibleType = runtime.run(
           tenant,
           """view mysql_incompatible_type as select 'not-an-int' as id, 'bob' as name;
-            |save append mysql_incompatible_type as mysql.`analytics.TARGET_USERS`;
+            |save append mysql_incompatible_type as jdbc.`derby_static.APP.TARGET_USERS`;
             |""".stripMargin,
           10)
         assertFalse(incompatibleType.success)
-        assertTrue(incompatibleType.statements.flatMap(_.error).mkString("\n")
-          .contains("schema is incompatible"))
+        assertTrue(incompatibleType.statements.flatMap(_.error).mkString("\n").toLowerCase
+          .contains("incompatible data"))
         assertEquals(1, readMysqlRows(jdbcUrl).size)
 
         val missingTarget = runtime.run(
           tenant,
           """view mysql_missing_target_source as select 9 as id, 'carol' as name;
-            |save append mysql_missing_target_source as mysql.`analytics.MISSING_USERS`;
+            |save append mysql_missing_target_source as jdbc.`derby_static.APP.MISSING_USERS`;
             |""".stripMargin,
           10)
         assertFalse(missingTarget.success)
         assertTrue(missingTarget.statements.flatMap(_.error).mkString("\n")
           .contains("target table does not exist"))
         assertEquals(1, readMysqlRows(jdbcUrl).size)
-      }
     } finally {
       spark.stop()
       deleteRecursively(root)
@@ -179,19 +180,6 @@ final class WritePolicyRuntimeTest {
       }
     } finally {
       connection.close()
-    }
-  }
-
-  private def withSystemProperties[T](values: Map[String, String])(body: => T): T = {
-    val previous = values.keys.map(key => key -> sys.props.get(key)).toMap
-    values.foreach { case (key, value) => sys.props.put(key, value) }
-    try {
-      body
-    } finally {
-      previous.foreach {
-        case (key, Some(value)) => sys.props.put(key, value)
-        case (key, None) => sys.props.remove(key)
-      }
     }
   }
 

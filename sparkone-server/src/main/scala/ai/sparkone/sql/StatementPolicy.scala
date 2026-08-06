@@ -6,9 +6,7 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.execution.SparkSqlParser
 import org.slf4j.LoggerFactory
 
-import java.net.URI
 import java.util.Locale
-import scala.util.Try
 
 final class StatementPolicy {
   import StatementIntent._
@@ -76,23 +74,7 @@ final class StatementPolicy {
 
   private def isAllowedNativeHdfsRelation(provider: String, path: String): Boolean = {
     ManagedHdfsWorkspacePolicy.ReadFormats.contains(provider.toLowerCase(Locale.ROOT)) &&
-      isAbsoluteHdfsPath(path)
-  }
-
-  private def isAbsoluteHdfsPath(path: String): Boolean = {
-    if (path == null || path.trim != path || path.contains("\\")) {
-      false
-    } else {
-      Try(new URI(path)).toOption.exists { uri =>
-        val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT))
-        val supportedScheme = scheme.forall(value => value == "hdfs" || value == "viewfs")
-        val segments = Option(uri.getPath).getOrElse("").split("/", -1)
-        supportedScheme && uri.getAuthority == null &&
-          uri.getQuery == null && uri.getFragment == null &&
-          Option(uri.getPath).exists(_.startsWith("/")) &&
-          !segments.exists(segment => segment == "." || segment == "..")
-      }
-    }
+      ManagedHdfsWorkspacePolicy.normalizeNativeHdfsReadPath(path).nonEmpty
   }
 
   private def looksLikePath(value: String): Boolean = {

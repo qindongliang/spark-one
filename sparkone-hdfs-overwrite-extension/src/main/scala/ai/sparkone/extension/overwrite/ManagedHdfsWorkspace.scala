@@ -31,6 +31,7 @@ object ManagedHdfsWorkspacePolicy {
   private val SensitiveOptionNames = Set(
     "path", "url", "uri", "user", "username", "owner", "password", "token",
     "accesskey", "accesskeyid", "secretkey", "secretaccesskey", "credential", "credentials")
+  private val NativePathGlobCharacters = Set('*', '?', '[', ']', '{', '}')
 
   def isManagedRelativePath(path: String): Boolean = {
     val trimmed = path.trim
@@ -45,6 +46,29 @@ object ManagedHdfsWorkspacePolicy {
           segments.forall(segment =>
             segment.nonEmpty && segment != "." && segment != ".." &&
               !segment.toLowerCase(Locale.ROOT).startsWith(InternalWorkPrefix))
+      }
+    }
+  }
+
+  def normalizeNativeHdfsReadPath(path: String): Option[String] = {
+    if (path == null || path.trim != path || path.contains("\\") || path.contains("%") ||
+        path.exists(NativePathGlobCharacters.contains)) {
+      None
+    } else {
+      Try(new URI(path)).toOption.flatMap { uri =>
+        val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT))
+        val supportedScheme = scheme.forall(value => value == "hdfs" || value == "viewfs")
+        val rawPath = Option(uri.getPath).getOrElse("")
+        val normalizedPath = if (rawPath == "/") rawPath else rawPath.stripSuffix("/")
+        val segments = normalizedPath.split("/", -1).drop(1)
+        val validSegments = normalizedPath == "/" ||
+          segments.forall(segment => segment.nonEmpty && segment != "." && segment != "..")
+        if (supportedScheme && uri.getAuthority == null && uri.getQuery == null &&
+            uri.getFragment == null && normalizedPath.startsWith("/") && validSegments) {
+          Some(normalizedPath)
+        } else {
+          None
+        }
       }
     }
   }

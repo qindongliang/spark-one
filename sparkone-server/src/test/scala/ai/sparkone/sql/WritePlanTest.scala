@@ -15,12 +15,12 @@ final class WritePlanTest {
 
     assertTrue(WriteCapabilityMatrix.supports(HiveCatalog, Append))
     assertTrue(WriteCapabilityMatrix.supports(DorisCatalog, Append))
-    assertTrue(WriteCapabilityMatrix.supports(Mysql, Append))
+    assertTrue(WriteCapabilityMatrix.supports(JdbcCatalog, Append))
     assertTrue(WriteCapabilityMatrix.supports(ManagedHdfs, Overwrite))
 
     assertFalse(WriteCapabilityMatrix.supports(HiveCatalog, Overwrite))
     assertFalse(WriteCapabilityMatrix.supports(DorisCatalog, Overwrite))
-    assertFalse(WriteCapabilityMatrix.supports(Mysql, Overwrite))
+    assertFalse(WriteCapabilityMatrix.supports(JdbcCatalog, Overwrite))
     assertFalse(WriteCapabilityMatrix.supports(ManagedHdfs, Append))
     assertFalse(WriteCapabilityMatrix.supports(ExternalPath, Append))
     assertFalse(WriteCapabilityMatrix.supports(ExternalPath, Overwrite))
@@ -104,12 +104,11 @@ final class WritePlanTest {
   }
 
   @Test
-  def catalogAndMysqlOverwriteArePermanentlyDenied(): Unit = {
+  def catalogOverwriteIsPermanentlyDenied(): Unit = {
     val targets = Seq[ResolvedSaveSource](
       CatalogSaveSource("default.target", SaveTargetType.Catalog, supportsPartitionBy = true),
       CatalogSaveSource("doris.app.target", SaveTargetType.DorisCatalog, supportsPartitionBy = false),
-      CatalogSaveSource("mysql.app.target", SaveTargetType.MysqlCatalog, supportsPartitionBy = false),
-      MysqlSaveSource("target", Seq("url" -> "jdbc:mysql://host/db")))
+      CatalogSaveSource("mysql_static.app.target", SaveTargetType.JdbcCatalog, supportsPartitionBy = false))
 
     targets.foreach { target =>
       val error = expectCompileException {
@@ -177,14 +176,12 @@ final class WritePlanTest {
   private def targetFormat(source: ResolvedSaveSource): String = source match {
     case CatalogSaveSource(_, SaveTargetType.Catalog, _) => "hive"
     case CatalogSaveSource(_, SaveTargetType.DorisCatalog, _) => "doris"
-    case CatalogSaveSource(_, SaveTargetType.MysqlCatalog, _) => "mysql"
-    case _: MysqlSaveSource => "mysql"
+    case CatalogSaveSource(_, SaveTargetType.JdbcCatalog, _) => "jdbc"
     case _ => "unknown"
   }
 
   private def targetPath(source: ResolvedSaveSource): String = source match {
     case CatalogSaveSource(identifier, _, _) => identifier
-    case MysqlSaveSource(dbtable, _) => dbtable
     case _ => "unknown"
   }
 

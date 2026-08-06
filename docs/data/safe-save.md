@@ -42,17 +42,16 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 
 第二阶段、3A、3B 及受控 HDFS workspace 已经实现：
 
-- Hive、Doris、MySQL append 生成对应的 catalog SQL 或 runtime adapter 计划。
-- Hive、Doris、MySQL overwrite 在编译阶段永久拒绝。
+- Hive、Doris、JDBC Catalog append 生成对应的 Catalog SQL 计划。
+- Hive、Doris、JDBC Catalog overwrite 在编译阶段永久拒绝。
 - 所有文件 append 在编译阶段永久拒绝；裸文件 append 不进入 MVP 路线。
 - 绝对路径、带 scheme 的路径以及本地/S3/OSS 等外部路径 append 和 overwrite 都在编译阶段永久拒绝。
 - 已识别文件 provider 的 load 只接受 workspace 相对路径，可通过 `options owner="..."` 读取其他用户 workspace；原生 provider relation 只允许无 authority 的绝对 HDFS/viewfs 路径读取。
 - 未识别 provider 的 append 和 overwrite 均在编译阶段拒绝。
 - 每条语句携带 `StatementIntent`；原生 SQL 只允许查询和只读检查命令，其他 Spark command 在编译阶段默认拒绝。
-- Hive、Doris、Kyuubi MySQL Catalog append 在 runtime 统一生成 `INSERT INTO TABLE target (目标列...) SELECT 源列...`，显式按目标列顺序投影，源列顺序不影响目标映射。
-- Local MySQL append 通过 JDBC adapter 读取目标 schema，并在 DataFrame JDBC write 前按相同规则重排和转换源列。
-- Hive、Doris、MySQL append 要求目标存在且源和目标列名集合完全一致；缺列、多列、重名列或类型不兼容均在写入前失败。
-- Local MySQL 使用 `mysql.\`connection.table\`` 和 HOCON 数据源；Kyuubi MySQL 使用 `mysql.\`catalog.database.table\`` 和远端 JDBC Catalog。Kyuubi save 不接受 SQL `OPTIONS`，两条路径都不会把 URL、用户名或密码放进 SQL。
+- Hive、Doris、JDBC Catalog append 在 runtime 统一生成 `INSERT INTO TABLE target (目标列...) SELECT 源列...`，显式按目标列顺序投影，源列顺序不影响目标映射。
+- Catalog append 要求目标存在且源和目标列名集合完全一致；缺列、多列、重名列或类型不兼容均在写入前失败。
+- 静态 JDBC 统一使用 `save append ... as jdbc.\`catalog_static.database.table\``。Local 从 HOCON Catalog 读取连接，Kyuubi 从远端 Engine Catalog 读取连接；两边都不接受 SQL `OPTIONS`，也不会把 URL、用户名或密码放进 SQL。
 - Kyuubi 在 Catalog append 前依次检查目标 schema、源 schema，并对最终显式列 `INSERT` 执行 `EXPLAIN`；任何一步失败都不会提交写语句。
 - Catalog append 使用 Spark 3.3.4 已支持的 column list 语法，不做 Spark 版本分支。
 - Kyuubi `save` 写语句遇到连接异常时不会自动重试。错误会明确提示写入状态未知，需要人工核查目标后再决定是否重提。
@@ -60,7 +59,7 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 - 受控 HDFS load 使用同一 extension 解析租户和相对路径并注册临时视图，不使用 ZK 或 staging。
 - 文件 append 以及本地/S3/OSS 写入仍属于固定策略拒绝，不提供 SQL option 或 HOCON 放行开关。
 
-Hive、Doris、MySQL append 的受控执行顺序为：
+Hive、Doris、JDBC Catalog append 的受控执行顺序为：
 
 ```text
 确认目标存在 -> 比较源/目标列名集合 -> 按目标顺序生成显式列 SQL -> 分析类型兼容 -> INSERT
@@ -102,7 +101,7 @@ reports/../daily
 
 `save overwrite` 不能提交完整 workspace 路径或其他用户名，最终目标只能由服务端根据当前签名用户计算。`load` 可以通过 `options owner="bob"` 选择其他用户 workspace；Engine 将相对路径解析为绝对路径后调用 ODEP/RMS `hdfs read`，不会合并 owner 的权限。
 
-当前用户自己的文件通常通过 `load <format>.\`relative/path\` as view` 注册临时视图；这种 managed load 由 Engine 按 workspace ownership 直接放行。跨 owner load 走 RMS read 鉴权。原生 SQL 或 `view` 允许受支持 provider 使用 `/absolute/path`、`hdfs:///absolute/path` 或 `viewfs:///absolute/path`，同样走 RMS read 鉴权；相对原生 relation、带 authority 的 URI、本地文件和对象存储路径拒绝。受控 load 只解析路径并注册视图，不使用 ZK 锁、staging 或 backup。
+当前用户自己的文件通常通过 `load <format>.\`relative/path\` as view` 注册临时视图；这种 managed load 由 Engine 按 workspace ownership 直接放行。跨 owner load 走 RMS read 鉴权。原生 SQL 或 `view` 允许受支持 provider 使用 `/absolute/path`、`hdfs:///absolute/path` 或 `viewfs:///absolute/path`；Engine 在 Analyzer 访问文件系统前先按原始规范化路径走一次 RMS read 鉴权，允许后才解析 relation，并使用绑定当前计划的证明在 analysis 后本地复核最终路径。相对原生 relation、带 authority 的 URI、本地文件、对象存储、glob 和百分号编码路径拒绝。受控 load 只解析路径并注册视图，不使用 ZK 锁、staging 或 backup。
 
 所有原生文件路径写入都在 Engine 中拒绝，不调用 RMS；受控 overwrite 只允许签名 subject 与内部命令 tenant 相同，`save options owner=...` 也在编译阶段拒绝。RMS 的 HDFS write 资源不用于扩大 SparkOne 文件写入范围。
 
@@ -163,7 +162,7 @@ SparkOne MVP 不提供 Parquet、ORC、CSV、JSON、Text、Excel 等裸文件或
 
 判断基于 Spark `SparkSqlParser` 的 LogicalPlan 和 compiler 生成的 `StatementIntent`，不依赖 SQL 字符串前缀。SparkOne `load/view` 内部生成的临时视图命令只有携带对应 intent 时才能执行，用户直接提交原生 `CREATE VIEW` 仍会被拒绝。
 
-Hive、Doris、MySQL 目标表必须由平台外的 catalog/数据库治理入口预建。SparkOne 不提供建表、删表或改表结构入口。
+Hive、Doris、JDBC Catalog 目标表必须由平台外的 catalog/数据库治理入口预建。SparkOne 不提供建表、删表或改表结构入口。
 
 ## 本阶段验证
 
@@ -172,17 +171,15 @@ Hive、Doris、MySQL 目标表必须由平台外的 catalog/数据库治理入�
 ```sql
 save append source_view as hive.`default.target_table`;
 save append source_view as doris.`app.target_table`;
-save append source_view as mysql.`analytics.target_table`;
--- Kyuubi engine 使用三段式远端 Catalog 路径：
-save append source_view as mysql.`analytics.app.target_table`;
+save append source_view as jdbc.`mysql_static.app.target_table`;
 ```
 
-Hive、Doris、Kyuubi MySQL 的 Compile 结果是无副作用的安全占位 SQL；Run 取得 schema 后生成类似下面的最终按列名写入 SQL：
+Hive、Doris、JDBC Catalog 的 Compile 结果是无副作用的安全占位 SQL；Run 取得 schema 后生成类似下面的最终按列名写入 SQL：
 
 ```sql
 INSERT INTO TABLE default.target_table (`city`, `cnt`) SELECT `city`, `cnt` FROM source_view;
 INSERT INTO TABLE doris.app.target_table (`city`, `cnt`) SELECT `city`, `cnt` FROM source_view;
-INSERT INTO TABLE analytics.app.target_table (`city`, `cnt`) SELECT `city`, `cnt` FROM source_view;
+INSERT INTO TABLE mysql_static.app.target_table (`city`, `cnt`) SELECT `city`, `cnt` FROM source_view;
 ```
 
 应在编译阶段永久拒绝：
@@ -190,7 +187,7 @@ INSERT INTO TABLE analytics.app.target_table (`city`, `cnt`) SELECT `city`, `cnt
 ```sql
 save overwrite source_view as hive.`default.target_table`;
 save overwrite source_view as doris.`app.target_table`;
-save overwrite source_view as mysql.`analytics.target_table`;
+save overwrite source_view as jdbc.`mysql_static.app.target_table`;
 save append source_view as parquet.`reports/daily`;
 save append source_view as parquet.`s3a://bucket/target`;
 save overwrite source_view as parquet.`/tmp/target`;

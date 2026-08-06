@@ -83,7 +83,7 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
             add(catalogTableResource(relation.tableMeta, Read))
 
           case table: ResolvedTable =>
-            add(catalogIdentifierResource(table.catalog, table.identifier, Read))
+            catalogIdentifierResource(table.catalog, table.identifier, Read).foreach(add)
 
           case other =>
             other.children.foreach(visit)
@@ -154,17 +154,17 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
     case relation: DataSourceV2Relation => dataSourceV2Resource(relation, Write)
     case relation: LogicalRelation => logicalRelationResources(relation, Write).headOption
     case relation: HiveTableRelation => Some(catalogTableResource(relation.tableMeta, Write))
-    case table: ResolvedTable => Some(catalogIdentifierResource(table.catalog, table.identifier, Write))
+    case table: ResolvedTable => catalogIdentifierResource(table.catalog, table.identifier, Write)
     case identifier: ResolvedDBObjectName =>
       val parts = identifier.nameParts
       if (parts.length < 2) {
         throw new OdepAuthorizationException(
           s"Authorization requires a database and table: ${parts.mkString(".")}")
       }
-      Some(catalogIdentifierResource(
+      catalogIdentifierResource(
         identifier.catalog,
         Identifier.of(parts.dropRight(1).toArray, parts.last),
-        Write))
+        Write)
     case other =>
       throw new OdepAuthorizationException(
         s"Unsupported Spark write target for authorization: ${other.nodeName}")
@@ -184,7 +184,7 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
       action: String): Option[OdepAuthzResource] = {
     (relation.catalog, relation.identifier) match {
       case (Some(catalog), Some(identifier)) =>
-        Some(catalogIdentifierResource(catalog, identifier, action))
+        catalogIdentifierResource(catalog, identifier, action)
       case (None, None) => relation.table match {
         case fileTable: FileTable =>
           if (action == Write && ManagedHdfsWorkspacePolicy.isManagedOverwriteWrite(spark.sparkContext)) {
@@ -230,9 +230,9 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
             paths.map(path => OdepAuthzResource.hdfs(path.toString, action))
           }
         case baseRelation =>
-          sparkOneMysqlResource(baseRelation, action).toSeq match {
-            case resources if resources.nonEmpty => resources
-            case _ =>
+          sparkOneMysqlResources(baseRelation, action) match {
+            case Some(resources) => resources
+            case None =>
               throw new OdepAuthorizationException(
                 s"Anonymous V1 data source is not supported by ODEP authorization: $baseRelation")
           }
@@ -240,19 +240,26 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
     }
   }
 
-  private def sparkOneMysqlResource(
+  private def sparkOneMysqlResources(
       relation: org.apache.spark.sql.sources.BaseRelation,
-      action: String): Option[OdepAuthzResource] = {
+      action: String): Option[Seq[OdepAuthzResource]] = {
     if (relation.getClass.getName != "ai.sparkone.provider.mysql.SparkOneMysqlRelation") {
       None
     } else {
       def invoke(name: String): String =
         relation.getClass.getMethod(name).invoke(relation).asInstanceOf[String]
-      Some(OdepAuthzResource.table(
-        "jdbc",
-        invoke("sparkOneAuthzDatabase"),
-        invoke("sparkOneAuthzTable"),
-        action))
+      invoke("sparkOneAuthzMode") match {
+        case "static" => Some(Seq.empty)
+        case "odep" =>
+          Some(Seq(OdepAuthzResource.table(
+            invoke("sparkOneAuthzCatalog"),
+            invoke("sparkOneAuthzNamespace"),
+            invoke("sparkOneAuthzTable"),
+            action)))
+        case mode =>
+          throw new OdepAuthorizationException(
+            s"Unsupported sparkone_mysql authorization mode: $mode")
+      }
     }
   }
 
@@ -267,7 +274,7 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
   private def catalogIdentifierResource(
       catalog: CatalogPlugin,
       identifier: Identifier,
-      action: String): OdepAuthzResource = {
+      action: String): Option[OdepAuthzResource] = {
     val namespace = identifier.namespace()
     if (namespace.length != 1) {
       throw new OdepAuthorizationException(
@@ -277,10 +284,11 @@ private[authz] final class LogicalPlanResourceExtractor(spark: SparkSession) {
       case "jdbc" => "jdbc"
       case "doris" => "doris"
       case name if isHiveCatalog(name) => "hive"
+      case name if name.endsWith("_static") => return None
       case name =>
         throw new OdepAuthorizationException(s"Unsupported catalog for authorization: $name")
     }
-    OdepAuthzResource.table(resourceType, namespace.head, identifier.name(), action)
+    Some(OdepAuthzResource.table(resourceType, namespace.head, identifier.name(), action))
   }
 
   private def relationName(catalog: CatalogPlugin, identifier: Identifier): String =

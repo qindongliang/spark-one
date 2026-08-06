@@ -1,6 +1,8 @@
 package ai.sparkone.runtime
 
 import ai.sparkone.extension.overwrite.{ManagedHdfsWorkspacePolicy, SparkOneHdfsOverwriteExtensions}
+import ai.sparkone.identity.TenantContext
+import ai.sparkone.kyuubi.odep.authz.LocalExecutionSubject
 import org.apache.spark.sql.SparkSession
 import org.junit.Assert._
 import org.junit.Test
@@ -9,6 +11,78 @@ import java.nio.file.{Files, Path}
 import scala.collection.JavaConverters._
 
 final class SparkOneRuntimePreviewTest {
+  @Test
+  def scopesLocalSubjectForRunAndPreview(): Unit = {
+    val root = Files.createTempDirectory("sparkone-runtime-subject-")
+    var observedSubjects = Seq.empty[Option[String]]
+    val spark = SparkSession.builder()
+      .appName("SparkOne LocalSubjectTest")
+      .master("local[1]")
+      .config("spark.ui.enabled", "false")
+      .config("spark.driver.host", "127.0.0.1")
+      .config("spark.driver.bindAddress", "127.0.0.1")
+      .config("spark.sql.warehouse.dir", root.resolve("warehouse").toString)
+      .withExtensions { extensions =>
+        extensions.injectCheckRule { currentSpark => _ =>
+          observedSubjects :+= LocalExecutionSubject.current(currentSpark.sparkContext)
+        }
+      }
+      .getOrCreate()
+
+    try {
+      import spark.implicits._
+      Seq(1).toDF("id").createOrReplaceTempView("subject_preview")
+      val runtime = new SparkOneRuntime(spark)
+
+      observedSubjects = Seq.empty
+      val runResult = runtime.run(TenantContext.development("alice"), "select 1 as id", 1)
+      assertTrue(runResult.success)
+      assertTrue(observedSubjects.nonEmpty)
+      assertTrue(observedSubjects.forall(_.contains("alice")))
+
+      observedSubjects = Seq.empty
+      val preview = runtime.previewTable(
+        TenantContext.development("bob"),
+        "subject_preview",
+        1)
+      assertTrue(preview.success)
+      assertTrue(observedSubjects.nonEmpty)
+      assertTrue(observedSubjects.forall(_.contains("bob")))
+      assertEquals(None, LocalExecutionSubject.current(spark.sparkContext))
+    } finally {
+      spark.stop()
+      SparkSession.clearActiveSession()
+      SparkSession.clearDefaultSession()
+      deleteRecursively(root)
+    }
+  }
+
+  @Test
+  def localRuntimeRegistersOdepCapabilitiesWithoutEagerOdepAccess(): Unit = {
+    withSystemProperties(Map("spark.master" -> "local[1]")) {
+      val runtime = SparkOneRuntime.local()
+      try {
+        val spark = SparkSession.getActiveSession.get
+        assertEquals(
+          "ai.sparkone.kyuubi.odep.catalog.OdepRoutingCatalog",
+          spark.conf.get("spark.sql.catalog.jdbc"))
+        assertEquals(
+          "ai.sparkone.kyuubi.odep.catalog.OdepRoutingCatalog",
+          spark.conf.get("spark.sql.catalog.doris"))
+
+        val result = runtime.run(
+          TenantContext.development("alice"),
+          "select 1 as id",
+          1)
+        assertTrue(result.statements.flatMap(_.error).mkString("\n"), result.success)
+      } finally {
+        runtime.close()
+        SparkSession.clearActiveSession()
+        SparkSession.clearDefaultSession()
+      }
+    }
+  }
+
   @Test
   def loadStatementReturnsPreviewRowsFromRegisteredView(): Unit = {
     val root = Files.createTempDirectory("sparkone-runtime-preview-")

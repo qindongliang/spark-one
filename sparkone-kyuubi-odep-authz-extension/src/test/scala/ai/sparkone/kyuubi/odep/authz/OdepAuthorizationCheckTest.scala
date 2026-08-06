@@ -1,8 +1,13 @@
 package ai.sparkone.kyuubi.odep.authz
 
-import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
-import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, Literal}
+import org.apache.spark.sql.catalyst.plans.logical.{Limit, LocalRelation}
 import org.apache.spark.sql.connector.catalog.{CatalogPlugin, Identifier, Table, TableCapability}
+import org.apache.spark.sql.execution.SparkSqlParser
+import org.apache.spark.sql.execution.datasources.{FileIndex, HadoopFsRelation, LogicalRelation, PartitionDirectory}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -19,6 +24,7 @@ final class OdepAuthorizationCheckTest {
 
   @Before
   def setUp(): Unit = {
+    OdepPreAnalysisAuthorizationContext.clear()
     spark = SparkSession.builder()
       .master("local[1]")
       .appName("sparkone-odep-authz-rule-test")
@@ -32,6 +38,7 @@ final class OdepAuthorizationCheckTest {
 
   @After
   def tearDown(): Unit = {
+    OdepPreAnalysisAuthorizationContext.clear()
     spark.stop()
     SparkSession.clearActiveSession()
     SparkSession.clearDefaultSession()
@@ -80,6 +87,53 @@ final class OdepAuthorizationCheckTest {
     assertThrows(
       classOf[OdepAuthorizationException],
       () => rule(relation("hive", "default", "users")))
+  }
+
+  @Test
+  def allowsStaticCatalogWithoutSubjectOrOdepCall(): Unit = {
+    var authorizeCalls = 0
+    val rule = new OdepAuthorizationCheck(spark, (_, _) => {
+      authorizeCalls += 1
+      OdepAuthzResult(allowed = true, Seq.empty)
+    })
+
+    rule(relation("mysql_static", "Dworks", "orders"))
+    rule(relation("doris_static", "dataagent", "events"))
+
+    assertEquals(0, authorizeCalls)
+  }
+
+  @Test
+  def localRuleUsesScopedSubjectAndRestoresIt(): Unit = {
+    var checkedSubject = ""
+    val rule = new OdepAuthorizationCheck(
+      spark,
+      (subject, _) => {
+        checkedSubject = subject
+        OdepAuthzResult(allowed = true, Seq.empty)
+      },
+      LocalExecutionSubject.resolve)
+
+    LocalExecutionSubject.withSubject(spark.sparkContext, "alice") {
+      rule(relation("doris", "analytics", "events"))
+      assertEquals(Some("alice"), LocalExecutionSubject.current(spark.sparkContext))
+    }
+
+    assertEquals("alice", checkedSubject)
+    assertEquals(None, LocalExecutionSubject.current(spark.sparkContext))
+  }
+
+  @Test
+  def kyuubiRuleDoesNotAcceptLocalSubject(): Unit = {
+    val rule = new OdepAuthorizationCheck(
+      spark,
+      (_, _) => OdepAuthzResult(allowed = true, Seq.empty))
+
+    LocalExecutionSubject.withSubject(spark.sparkContext, "alice") {
+      assertThrows(
+        classOf[OdepAuthorizationException],
+        () => rule(relation("jdbc", "analytics", "events")))
+    }
   }
 
   @Test
@@ -132,11 +186,114 @@ final class OdepAuthorizationCheckTest {
     assertEquals(0, authorizeCalls)
   }
 
+  @Test
+  def reusesPlanBoundHdfsProofAcrossCsvAnalysisAndPreviewPlans(): Unit = {
+    var authorizeCalls = 0
+    val authorize = (_: String, _: Seq[OdepAuthzResource]) => {
+      authorizeCalls += 1
+      OdepAuthzResult(allowed = true, Seq.empty)
+    }
+    val parser = new OdepPreAnalysisAuthorizationParser(
+      spark,
+      new SparkSqlParser,
+      authorize,
+      LocalExecutionSubject.resolve)
+    val rule = new OdepAuthorizationCheck(
+      spark,
+      authorize,
+      LocalExecutionSubject.resolve)
+
+    LocalExecutionSubject.withSubject(spark.sparkContext, "alice") {
+      val parsed = parser.parsePlan("select count(*) from csv.`hdfs:///public/events`")
+      val unresolved = parsed.collect {
+        case relation: UnresolvedRelation
+            if relation.getTagValue(OdepPreAnalysisAuthorizationContext.ProofTag).nonEmpty =>
+          relation
+      }.head
+
+      rule(hdfsRelation("hdfs:///public/events/part-00000.csv"))
+      rule(hdfsRelation("hdfs:///public/events/nested/part-00001.csv"))
+
+      val resolved = hdfsRelation("hdfs:///public/events")
+      resolved.copyTagsFrom(unresolved)
+      rule(resolved)
+      rule(Limit(Literal(101), resolved))
+    }
+
+    assertEquals(1, authorizeCalls)
+    assertEquals(Set.empty, OdepPreAnalysisAuthorizationContext.current)
+  }
+
+  @Test
+  def rejectsResolvedHdfsPathThatDiffersFromPlanBoundProof(): Unit = {
+    var authorizeCalls = 0
+    val rule = new OdepAuthorizationCheck(
+      spark,
+      (_, _) => {
+        authorizeCalls += 1
+        OdepAuthzResult(allowed = true, Seq.empty)
+      },
+      LocalExecutionSubject.resolve)
+    val relation = hdfsRelation("hdfs:///public/changed")
+    relation.setTagValue(
+      OdepPreAnalysisAuthorizationContext.ProofTag,
+      OdepPreAuthorizedHdfsRead("alice", "/public/original"))
+    OdepPreAnalysisAuthorizationContext.activate(
+      Set(OdepPreAuthorizedHdfsRead("alice", "/public/original")))
+
+    val error = LocalExecutionSubject.withSubject(spark.sparkContext, "alice") {
+      assertThrows(classOf[OdepAuthorizationException], () => rule(relation))
+    }
+
+    assertEquals(
+      "Native HDFS relation resolved to a path that was not authorized before analysis",
+      error.getMessage)
+    assertEquals(0, authorizeCalls)
+    assertEquals(Set.empty, OdepPreAnalysisAuthorizationContext.current)
+  }
+
+  @Test
+  def rejectsSiblingPathThatOnlySharesAuthorizedPrefix(): Unit = {
+    var authorizeCalls = 0
+    val rule = new OdepAuthorizationCheck(
+      spark,
+      (_, _) => {
+        authorizeCalls += 1
+        OdepAuthzResult(allowed = true, Seq.empty)
+      },
+      LocalExecutionSubject.resolve)
+    OdepPreAnalysisAuthorizationContext.activate(
+      Set(OdepPreAuthorizedHdfsRead("alice", "/public/events")))
+
+    val error = LocalExecutionSubject.withSubject(spark.sparkContext, "alice") {
+      assertThrows(
+        classOf[OdepAuthorizationException],
+        () => rule(hdfsRelation("hdfs:///public/events-other/part-00000.csv")))
+    }
+
+    assertEquals(
+      "Native HDFS relation resolved to a path that was not authorized before analysis",
+      error.getMessage)
+    assertEquals(0, authorizeCalls)
+    assertEquals(Set.empty, OdepPreAnalysisAuthorizationContext.current)
+  }
+
   private def relation(catalog: String, database: String, table: String): DataSourceV2Relation =
     DataSourceV2Relation.create(
       new RuleTestTable(table),
       Some(new RuleTestCatalog(catalog)),
       Some(Identifier.of(Array(database), table)))
+
+  private def hdfsRelation(path: String): LogicalRelation = {
+    val schema = StructType(Seq(StructField("id", LongType, nullable = false)))
+    LogicalRelation(HadoopFsRelation(
+      new RuleTestFileIndex(path),
+      StructType(Nil),
+      schema,
+      None,
+      new ParquetFileFormat(),
+      Map.empty)(spark))
+  }
 
   private def managedHdfsCommand(
       className: String,
@@ -175,4 +332,15 @@ private final class RuleTestTable(private val tableName: String) extends Table {
   override def schema(): StructType =
     StructType(Seq(StructField("id", LongType, nullable = false)))
   override def capabilities(): java.util.Set[TableCapability] = Collections.emptySet()
+}
+
+private final class RuleTestFileIndex(path: String) extends FileIndex {
+  override def rootPaths: Seq[Path] = Seq(new Path(path))
+  override def listFiles(
+      partitionFilters: Seq[Expression],
+      dataFilters: Seq[Expression]): Seq[PartitionDirectory] = Seq.empty
+  override def inputFiles: Array[String] = Array(path)
+  override def refresh(): Unit = {}
+  override def sizeInBytes: Long = 0L
+  override def partitionSchema: StructType = StructType(Nil)
 }

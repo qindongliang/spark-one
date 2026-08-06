@@ -15,7 +15,7 @@
     <packaging>jar</packaging>
 
     <name>SparkOne MySQL Provider</name>
-    <description>Spark datasource provider used by SparkOne load mysql catalog reads.</description>
+    <description>Spark datasource provider used by SparkOne partitioned JDBC catalog reads.</description>
 
     <dependencies>
         <dependency>

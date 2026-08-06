@@ -1,13 +1,15 @@
 # Doris 测试
 
-先在 `conf/sparkone.conf` 配置 Spark Doris Catalog。SparkOne 本地运行时会把它转成 `spark.sql.catalog.doris.*`；非 ODEP Kyuubi 环境也可以使用同样的静态配置。ODEP 模式使用后文单独的 alias 测试，不重复配置 `spark.sql.catalog.doris.*`：
+先在 Local 的 `conf/sparkone.conf` 配置静态 Spark Doris Catalog；Kyuubi 测试则把同等参数放在
+远端 Spark Engine。SparkOne 本地运行时会把它转成 `spark.sql.catalog.doris_static.*`；默认的
+`doris` 名称保留给 ODEP 路由 Catalog：
 
 ```hocon
 engines {
   local {
     type = "local"
 
-    catalogs.doris {
+    catalogs.doris_static {
       fenodes = "fe-1:8030,fe-2:8030"
       queryPort = 9030
       user = "root"
@@ -31,21 +33,23 @@ engines {
 show databases;
 ```
 
-查看默认 Doris catalog 的库列表，两种写法都可以：
+查看静态 Doris catalog 的库列表，两种写法都可以：
 
 ```sql
-show namespaces in doris;
+show namespaces in doris_static;
 ```
 
 ```sql
-show databases in doris;
+show databases in doris_static;
 ```
 
-查看 Local `catalogs.doris` 中某个 Doris 库下的表列表：
+查看 Local `catalogs.doris_static` 中某个 Doris 库下的表列表：
 
 ```sql
-show tables in doris.dataagent;
+show tables in doris_static.dataagent;
 ```
+
+静态 Catalog 的元数据可用于确认 connector 配置，但当前 RMS 资源模型不识别 `doris_static`，表读取会 fail closed。下文 `doris.app.<table>` 的读写用例要求 ODEP 中存在逻辑 alias `app`；Local 和 Kyuubi 都通过同一个 ODEP 路由与 RMS 鉴权链路执行。
 
 Doris 测试表可以先用 Doris/MySQL 协议客户端准备。下面的 `replication_num` 按本地单副本测试环境写，生产集群按实际副本数调整：
 
@@ -330,5 +334,5 @@ as doris.`app.sparkone_doris_city_result`;
 
 - `doris.\`app.sparkone_doris_city_result\`` 中 `app` 是 Doris database，`sparkone_doris_city_result` 是 Doris 表名；SparkOne 会补成 Spark Catalog 表名 `doris.app.sparkone_doris_city_result`。
 - `save append ... as doris` 要求目标表已存在；SparkOne 不会自动创建 Doris 表。表结构、key、distribution、分区等用 Doris DDL 先建好。
-- `save doris` 不支持在 SQL 里写 `fenodes/user/password` 等连接 options，这些统一放在 `engines.local.catalogs.doris` 或 Kyuubi/Spark engine 配置。
+- `save doris` 不支持在 SQL 里写 `fenodes/user/password` 等连接 options，这些统一放在 `engines.local.catalogs.doris_static` 或 Kyuubi/Spark engine 配置。
 - `save doris` 不支持 `partitionBy`，Doris 的分布、分区和表结构应由 Doris DDL 管理。

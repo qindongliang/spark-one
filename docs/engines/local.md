@@ -2,6 +2,8 @@
 
 Local engine 是 SparkOne 的本地开发测试台。它在 SparkOne 服务进程内启动 `SparkSession`，适合 IDEA 调试、编译器验证、前端冒烟和本机数据源实验，不是多租户生产运行时。
 
+Local 默认具备与 Kyuubi Spark Engine 一致的 ODEP 数据链路：启动时注册 `jdbc`/`doris` 路由 Catalog、`sparkone_mysql` 分区读取 provider 和 RMS 鉴权扩展，不提供额外功能开关。注册是惰性的，普通 `select 1`、编译器调试和服务启动不会访问 ODEP；第一次枚举或读取 ODEP Catalog、第一次分析需鉴权资源时才读取 `engines.local.odep` 或同名 `ODEP_*` 环境变量并调用 ODEP。缺少配置或接口异常时对应资源访问 fail closed。
+
 ## 配置示例
 
 ```hocon
@@ -12,6 +14,14 @@ engines {
     type = "local"
     enabled = true
     label = "Local"
+
+    odep {
+      apiUrl = "http://127.0.0.1:8080"
+      appId = "sparkone"
+      signKey = "change-me"
+      connectTimeoutSeconds = 5
+      requestTimeoutSeconds = 60
+    }
 
     spark {
       master = "local[*]"
@@ -84,7 +94,29 @@ engines {
 - `spark.sparkone.overwrite.zk.sessionTimeoutMs` -> `engines.local.overwrite.zkSessionTimeoutMs`
 - `spark.sparkone.overwrite.zk.connectionTimeoutMs` -> `engines.local.overwrite.zkConnectionTimeoutMs`
 
-Local runtime 会直接注册 `SparkOneHdfsOverwriteExtensions`。`overwrite.workspaceRoot` 同时用于受控 HDFS load 和 overwrite；load 不依赖 ZooKeeper。没有配置 `zkConnect` 时，受控 HDFS overwrite 会 fail closed，受控 load 和其他只读能力不受影响。
+## ODEP 与 RMS 鉴权
+
+Local 默认从 `engines.local.odep` 读取 ODEP API 配置。环境变量优先级更高，可用于临时覆盖 HOCON：
+
+```bash
+export ODEP_API_URL=http://127.0.0.1:8080
+export ODEP_KYUUBI_APP_ID=sparkone
+export ODEP_KYUUBI_SIGN_KEY=change-me
+export ODEP_CONNECT_TIMEOUT_SECONDS=3
+export ODEP_REQUEST_TIMEOUT_SECONDS=10
+```
+
+Kyuubi Spark Engine 不读取 SparkOne Server HOCON，继续通过上述环境变量或部署平台的 Secret 注入配置。实际 `conf/sparkone.conf` 已被 Git 忽略；提交的模板只能保留占位密钥。
+
+- `jdbc.<alias>.<table>`、`doris.<alias>.<table>`、Hive 表、跨 owner HDFS load 和原生绝对 HDFS 读取使用同一套 RMS 资源判定；原生绝对路径在 Analyzer 访问 HDFS 前只请求一次 RMS，并在 analysis 后使用当前计划的证明本地复核。
+- Local Run 和 Preview 都从服务端 `TenantContext.username` 设置当前 subject；SQL、DSL options 和 Spark `SET` 不能替换它。
+- Kyuubi 扩展仍只接受 ECDSA session 签名，不会回退到 Local subject。
+- 当前用户自己的 managed workspace load/overwrite继续按 ownership 判定；跨 owner overwrite 和原生文件写入继续拒绝。
+- 以 `_static` 结尾的 V2 Catalog 和 `sparkone_mysql` 静态分区 relation 不走 RMS；未知 V1 provider 和未知 V2 Catalog 仍 fail closed。Local 不再提供 `load/save mysql` adapter。
+
+Local subject 来自开发登录 session，不等价于 RMS 登录认证，因此这条链路只用于在 IDEA 中断点调试 ODEP Catalog、授权请求和 Spark LogicalPlan，不能作为生产安全边界。
+
+Local runtime 会直接注册 `SparkOneHdfsOverwriteExtensions` 和 `SparkOneLocalOdepAuthzExtension`。`overwrite.workspaceRoot` 同时用于受控 HDFS load 和 overwrite；load 不依赖 ZooKeeper。没有配置 `zkConnect` 时，受控 HDFS overwrite 会 fail closed，受控 load 和其他只读能力不受影响。
 
 Local engine 是单进程测试台，仍使用一个 SparkSession 和全局执行锁，只接受 `sessionMode=tenant_shared`，不承诺多租户并发隔离。`run_isolated` 是生产 Kyuubi 路径的能力，Local 收到该模式会明确拒绝，避免给定时任务提供错误的隔离语义。
 

@@ -1,7 +1,7 @@
 package ai.sparkone.runtime
 
 import ai.sparkone.identity.TenantContext
-import ai.sparkone.sql.{CatalogWriteSqlRenderer, CompileException, CompiledStatement, DataSourceResolver, LoadTargetType, MysqlLoadMode, MysqlLoadProfile, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType, WriteMode, WritePlan}
+import ai.sparkone.sql.{CatalogWriteSqlRenderer, CompileException, CompiledStatement, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType, WriteMode, WritePlan}
 import org.slf4j.LoggerFactory
 
 import java.sql.{Connection, DriverManager, ResultSet, ResultSetMetaData, Statement}
@@ -25,7 +25,6 @@ trait SparkOneEngine extends AutoCloseable {
 }
 
 final case class EngineCapabilities(
-    mysqlAdapter: Boolean,
     externalCatalogConfiguredBySparkOne: Boolean,
     sessionScopedTempViews: Boolean,
     kyuubiExternalEngineConfig: Boolean,
@@ -33,21 +32,19 @@ final case class EngineCapabilities(
 
 object EngineCapabilities {
   val Local: EngineCapabilities = EngineCapabilities(
-    mysqlAdapter = true,
     externalCatalogConfiguredBySparkOne = true,
     sessionScopedTempViews = true,
     kyuubiExternalEngineConfig = false,
     compileDiagnostics = Nil)
 
   val Kyuubi: EngineCapabilities = EngineCapabilities(
-    mysqlAdapter = false,
     externalCatalogConfiguredBySparkOne = false,
     sessionScopedTempViews = true,
     kyuubiExternalEngineConfig = true,
     compileDiagnostics = Seq(
-      "Kyuubi engine does not read engines.local catalog, datasource, or jars config; configure catalogs and provider jars in Kyuubi/Spark engine.",
-      "Kyuubi load mysql can use mysql.`catalog.db.table`; big-table options require sparkone_mysql provider in Kyuubi/Spark engine.",
-      "Kyuubi save mysql requires mysql.`catalog.db.table` and reuses the JDBC Catalog configured in Kyuubi/Spark engine."))
+      "Kyuubi engine does not read engines.local catalog or jars config; configure catalogs and provider jars in Kyuubi/Spark engine.",
+      "Kyuubi load jdbc can use jdbc.`catalog_static.database.table`; partition options require sparkone_mysql provider in Kyuubi/Spark engine.",
+      "Kyuubi save jdbc requires jdbc.`catalog_static.database.table` and reuses the JDBC Catalog configured in Kyuubi/Spark engine."))
 }
 
 final case class EngineInfo(id: String, label: String, engineType: String, capabilities: EngineCapabilities)
@@ -86,7 +83,7 @@ final class LocalSparkEngine(
 
   override def previewTable(tenant: TenantContext, table: String, limit: Int): StatementResult = {
     withLocalProperties {
-      delegate.previewTable(table, limit)
+      delegate.previewTable(tenant, table, limit)
     }
   }
 
@@ -131,7 +128,6 @@ final class KyuubiJdbcEngine(
     val id: String,
     val label: String,
     config: KyuubiJdbcConfig,
-    mysqlLoadProfiles: Map[String, MysqlLoadProfile] = Map.empty,
     compilerOverride: Option[SparkOneCompiler] = None,
     connectionFactory: KyuubiJdbcConfig => Connection = KyuubiJdbcEngine.openConnection)
   extends SparkOneEngine {
@@ -140,20 +136,11 @@ final class KyuubiJdbcEngine(
   override val capabilities: EngineCapabilities = EngineCapabilities.Kyuubi
 
   private val logger = LoggerFactory.getLogger(getClass)
-  private val compiler = compilerOverride.getOrElse {
-    new SparkOneCompiler(
-      new SparkSqlValidator,
-      new DataSourceResolver(
-        mysqlLoadMode = MysqlLoadMode.KyuubiProfile,
-        mysqlLoadProfiles = mysqlLoadProfiles))
-  }
+  private val compiler = compilerOverride.getOrElse(new SparkOneCompiler(new SparkSqlValidator))
   private val tenantSessions = TrieMap.empty[String, TenantJdbcSession]
 
   override def compile(tenant: TenantContext, script: String): Seq[CompiledStatement] = {
-    compiler.compile(tenant, script).map { statement =>
-      validateSupported(statement)
-      statement
-    }
+    compiler.compile(tenant, script)
   }
 
   override def run(
@@ -194,7 +181,6 @@ final class KyuubiJdbcEngine(
           source,
           variables.toMap)
         statement = Some(compiledStatement)
-        validateSupported(compiledStatement)
         val executableStatement = prepareWriteStatement(session, compiledStatement)
         statement = Some(executableStatement)
         execute(session, executableStatement, variables, previewLimit, offset + 1, started)
@@ -440,20 +426,6 @@ final class KyuubiJdbcEngine(
         schemaInfo(resultSet.getMetaData).map(_.name)
       } finally {
         resultSet.close()
-      }
-    }
-  }
-
-  private def validateSupported(statement: CompiledStatement): Unit = {
-    statement.load.foreach { metadata =>
-      if (metadata.targetType == LoadTargetType.Mysql) {
-        throw new CompileException("Kyuubi engine does not support SparkOne load mysql adapter yet; use catalog SQL or local engine")
-      }
-    }
-    statement.writePlan.foreach { plan =>
-      if (plan.executionType == WriteExecutionType.MysqlAdapter) {
-        throw new CompileException(
-          "Kyuubi engine does not support the local MySQL save adapter; use mysql.`catalog.db.table` for MySQL append")
       }
     }
   }

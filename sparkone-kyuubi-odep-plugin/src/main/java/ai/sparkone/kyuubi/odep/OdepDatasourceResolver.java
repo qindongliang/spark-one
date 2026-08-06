@@ -188,7 +188,7 @@ public final class OdepDatasourceResolver {
 
     private static final class DefaultHolder {
         private static final OdepDatasourceResolver INSTANCE =
-                new OdepDatasourceResolver(OdepDatasourceClient.fromEnvironment());
+                new OdepDatasourceResolver(OdepDatasourceClient.fromRuntimeConfiguration());
     }
 
     public static class Metadata {

@@ -26,6 +26,13 @@ final class OdepDatasourceClient {
     private static final int DEFAULT_CONNECT_TIMEOUT_SECONDS = 5;
     private static final int DEFAULT_READ_TIMEOUT_SECONDS = 60;
     private static final int MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+    private static final String API_URL_PROPERTY = "sparkone.odep.api.url";
+    private static final String APP_ID_PROPERTY = "sparkone.odep.app.id";
+    private static final String SIGN_KEY_PROPERTY = "sparkone.odep.sign.key";
+    private static final String CONNECT_TIMEOUT_PROPERTY =
+            "sparkone.odep.connect.timeout.seconds";
+    private static final String REQUEST_TIMEOUT_PROPERTY =
+            "sparkone.odep.request.timeout.seconds";
     private static final char[] NONCE_ALPHABET =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
 
@@ -38,8 +45,49 @@ final class OdepDatasourceClient {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final SecureRandom secureRandom = new SecureRandom();
 
-    static OdepDatasourceClient fromEnvironment() {
-        return fromEnvironment(System.getenv());
+    static OdepDatasourceClient fromRuntimeConfiguration() {
+        Map<String, String> properties = new LinkedHashMap<>();
+        properties.put(API_URL_PROPERTY, System.getProperty(API_URL_PROPERTY));
+        properties.put(APP_ID_PROPERTY, System.getProperty(APP_ID_PROPERTY));
+        properties.put(SIGN_KEY_PROPERTY, System.getProperty(SIGN_KEY_PROPERTY));
+        properties.put(CONNECT_TIMEOUT_PROPERTY, System.getProperty(CONNECT_TIMEOUT_PROPERTY));
+        properties.put(REQUEST_TIMEOUT_PROPERTY, System.getProperty(REQUEST_TIMEOUT_PROPERTY));
+        return fromRuntimeConfiguration(System.getenv(), properties);
+    }
+
+    static OdepDatasourceClient fromRuntimeConfiguration(
+            Map<String, String> environment,
+            Map<String, String> properties) {
+        Map<String, String> configuration = new LinkedHashMap<>();
+        copyNonBlank(configuration, "ODEP_API_URL", properties.get(API_URL_PROPERTY));
+        copyNonBlank(configuration, "ODEP_KYUUBI_APP_ID", properties.get(APP_ID_PROPERTY));
+        copyNonBlank(configuration, "ODEP_KYUUBI_SIGN_KEY", properties.get(SIGN_KEY_PROPERTY));
+        copyNonBlank(
+                configuration,
+                "ODEP_CONNECT_TIMEOUT_SECONDS",
+                properties.get(CONNECT_TIMEOUT_PROPERTY));
+        copyNonBlank(
+                configuration,
+                "ODEP_REQUEST_TIMEOUT_SECONDS",
+                properties.get(REQUEST_TIMEOUT_PROPERTY));
+        copyNonBlank(configuration, "ODEP_API_URL", environment.get("ODEP_API_URL"));
+        copyNonBlank(
+                configuration,
+                "ODEP_KYUUBI_APP_ID",
+                environment.get("ODEP_KYUUBI_APP_ID"));
+        copyNonBlank(
+                configuration,
+                "ODEP_KYUUBI_SIGN_KEY",
+                environment.get("ODEP_KYUUBI_SIGN_KEY"));
+        copyNonBlank(
+                configuration,
+                "ODEP_CONNECT_TIMEOUT_SECONDS",
+                environment.get("ODEP_CONNECT_TIMEOUT_SECONDS"));
+        copyNonBlank(
+                configuration,
+                "ODEP_REQUEST_TIMEOUT_SECONDS",
+                environment.get("ODEP_REQUEST_TIMEOUT_SECONDS"));
+        return fromEnvironment(configuration);
     }
 
     static OdepDatasourceClient fromEnvironment(Map<String, String> environment) {
@@ -291,6 +339,15 @@ final class OdepDatasourceClient {
 
     private static String required(Map<String, String> environment, String name) {
         return requireNonBlank(environment.get(name), name);
+    }
+
+    private static void copyNonBlank(
+            Map<String, String> target,
+            String name,
+            String value) {
+        if (value != null && !value.trim().isEmpty()) {
+            target.put(name, value.trim());
+        }
     }
 
     private static String requireNonBlank(String value, String name) {

@@ -1,6 +1,6 @@
 # SQL 编辑器基础测试
 
-这个页面是 SparkOne MVP 的本地测试台，用来快速验证 Spark SQL、SparkOne 薄 DSL 转译、HDFS/Hive 配置和数据源读写。
+这个页面是 SparkOne MVP 的双引擎测试台，用来验证 Spark SQL、SparkOne 薄 DSL 转译、HDFS/Hive 配置和数据源读写。Local 适合 IDEA 断点调试，Kyuubi 适合远程 Engine 和生产链路验收。
 
 数据质量 `assert` 的完整用例单独见 [Assert 测试用例](../assertion-testing.md)。
 
@@ -13,6 +13,17 @@ http://127.0.0.1:7070
 首次打开页面需要输入用户名。这个页面只在开发测试环境选择逻辑租户，不校验密码，也不代表生产身份认证。登录后刷新页面应保持当前 session；点击 `Log out` 后，编译、执行和预览接口都应返回未登录状态。
 
 页面选择 Kyuubi 引擎时会显示 `Session` 下拉框，可以直接切换 `Tenant shared` 和 `Run isolated` 测试两种会话模式。Local 引擎不显示该控件。
+
+## 用例复用规则
+
+UI 操作流程和大部分 SQL 用例是两边共用的，但不是把 Local 和 Kyuubi 当成同一个运行时：
+
+- 公共用例应分别选择 `Local` 和 `Kyuubi` 执行一次。`select`、`view`、`set`、`assert`、选区执行、结果展示、失败短路，以及 `jdbc.<alias>.<table>` / `doris.<alias>.<table>` ODEP 路由的预期结果应保持一致。
+- 静态 `load/save jdbc` 在 Local/Kyuubi 使用相同 SQL；Local 从 HOCON 注入 Catalog，Kyuubi 从远端 Engine 配置 Catalog 和 provider JAR。IDEA 断点调试仍属于 Local 专属能力。
+- `Session` 下拉框、ECDSA session 签名、连接恢复、ZooKeeper 服务发现和 `run_isolated` 属于 Kyuubi 专属验证，不能由 Local UI 用例替代。
+- Local 使用一个服务进程内的 SparkSession 和全局执行锁，subject 来自 `TenantContext.username`；Kyuubi 的 `tenant_shared` / `run_isolated` 由远端 JDBC session 决定，subject 来自签名 session user。
+
+因此，页面操作手册通常只保留一份公共 SQL，执行记录中标注引擎；只有运行时边界不同的场景才单独列出 Local 或 Kyuubi 用例。
 
 ## 页面区域
 
@@ -28,6 +39,8 @@ http://127.0.0.1:7070
 - 右侧结果区：展示每条语句的编译后 SQL、耗时、schema 和预览数据；schema 和预览数据通过 tab 切换，失败语句会显示错误信息。
 
 ## 基础冒烟测试
+
+下面的基础 SQL 先在 Local 执行，再在 Kyuubi 的 `Tenant shared` 模式执行。两边都应返回相同的结果和 schema；Kyuubi 连接或远端 Catalog 未准备好时，应把失败归因到环境前置条件，不要修改公共 SQL 预期。
 
 最小 SQL：
 
@@ -46,7 +59,7 @@ show tables in hive.default;
 `hive` 是 SparkOne 对内置 `spark_catalog` 的逻辑别名。注意 Spark SQL 使用复数
 `SHOW DATABASES`，不支持 `show database in hive`；测试手册统一使用等价且更清晰的
 `SHOW NAMESPACES IN hive`。`SHOW CATALOGS` 不枚举全部配置，只列出当前 Session 已实例化
-的 Catalog；Kyuubi 下的完整验证顺序见 [Kyuubi 数据源测试](kyuubi.md#catalog-配置与-show-catalogs-的差异)。
+的 Catalog；完整的 Local/Kyuubi 验证顺序见 [Catalog 与远程 Engine 数据源测试](kyuubi.md#catalog-配置与-show-catalogs-的差异)。
 
 ## 默认结果 Tab
 
@@ -90,7 +103,7 @@ group by city;
 select * from city_stats order by city;
 ```
 
-页面服务不重启时，临时视图会留在当前本地 Spark 会话里；服务重启后临时视图会消失。
+Local 的临时视图会留在当前服务进程的单个 SparkSession 里，服务重启后消失；Kyuubi 的 `tenant_shared` 会在同一租户 session 中跨 Run 保留，`run_isolated` 只在当前 Run 内有效。
 
 ## Kyuubi Session 隔离
 
@@ -152,13 +165,13 @@ where create_time >= timestamp '${start_date}'
   and create_time < timestamp '${end_date}';
 ```
 
-MySQL 增量加载可按同样方式拼接 `load mysql ... where` 的过滤条件：
+静态 MySQL 和 ODEP MySQL 都可使用 `load jdbc ... where`；静态路径写 `catalog_static.database.table`，ODEP 路径写 `alias.table`。
 
 ```sql
 set start_date as select date_sub(current_date(), 1) as dt;
 set end_date as select current_date() as dt;
 
-load mysql.`analytics.orders`
+load jdbc.`mysql_static.analytics.orders`
 where "createTime >= '${start_date}' and createTime < '${end_date}'"
 as orders_delta;
 ```

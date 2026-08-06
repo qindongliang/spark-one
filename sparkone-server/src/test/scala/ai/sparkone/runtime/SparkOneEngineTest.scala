@@ -2,7 +2,7 @@ package ai.sparkone.runtime
 
 import ai.sparkone.extension.overwrite.{ManagedHdfsLoadProtocol, ManagedHdfsOverwriteProtocol}
 import ai.sparkone.identity.TenantContext
-import ai.sparkone.sql.{CompileException, MysqlLoadProfile, MysqlLoadProfileStrategy, WriteExecutionType, WriteTargetKind}
+import ai.sparkone.sql.{CompileException, WriteExecutionType, WriteTargetKind}
 import org.junit.Assert._
 import org.junit.Test
 
@@ -43,11 +43,9 @@ final class SparkOneEngineTest {
       try {
         val infos = registry.infos.map(info => info.id -> info).toMap
 
-        assertTrue(infos("local").capabilities.mysqlAdapter)
         assertTrue(infos("local").capabilities.externalCatalogConfiguredBySparkOne)
         assertFalse(infos("local").capabilities.kyuubiExternalEngineConfig)
 
-        assertFalse(infos("kyuubi").capabilities.mysqlAdapter)
         assertFalse(infos("kyuubi").capabilities.externalCatalogConfiguredBySparkOne)
         assertTrue(infos("kyuubi").capabilities.kyuubiExternalEngineConfig)
       } finally {
@@ -81,7 +79,7 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiCompileRejectsUnknownMysqlLoadProfileBeforeRun(): Unit = {
+  def kyuubiCompileRejectsRemovedMysqlSyntaxBeforeRun(): Unit = {
     val engine = kyuubiEngine()
 
     try {
@@ -89,8 +87,8 @@ final class SparkOneEngineTest {
       fail("Expected CompileException")
     } catch {
       case e: CompileException =>
-        assertTrue(e.getMessage.contains("Kyuubi MySQL load profile 'analytics' is not configured"))
-        assertTrue(e.getMessage.contains("mysql.`catalog.db.table`"))
+        assertTrue(e.getMessage.contains("LOAD mysql has been removed"))
+        assertTrue(e.getMessage.contains("LOAD jdbc"))
     } finally {
       engine.close()
     }
@@ -148,19 +146,42 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiCompileMysqlCatalogPathAsRemoteCatalogSql(): Unit = {
+  def localCompileOdepJdbcAliasWithPartitionColumnAsProviderSql(): Unit = {
+    val engine = new LocalSparkEngine(
+      "local",
+      "Local",
+      throw new AssertionError("compile must not initialize the local runtime"),
+      Map.empty)
+
+    try {
+      val sql = engine.compile(tenant,
+        "load jdbc.`sync_search.orders` options partitionColumn='id' as orders;").head.sql
+
+      assertTrue(sql.startsWith(
+        "CREATE OR REPLACE TEMPORARY VIEW orders USING sparkone_mysql OPTIONS"))
+      assertTrue(sql.contains("catalog 'jdbc'"))
+      assertTrue(sql.contains("alias 'sync_search'"))
+      assertTrue(sql.contains("dbtable 'orders'"))
+      assertTrue(sql.contains("partitionColumn 'id'"))
+    } finally {
+      engine.close()
+    }
+  }
+
+  @Test
+  def kyuubiCompileStaticJdbcCatalogPathAsRemoteCatalogSql(): Unit = {
     val engine = kyuubiEngine()
 
     try {
       val statements = engine.compile(tenant,
-        """load mysql.`analytics.Dworks.orders`
+        """load jdbc.`mysql_static.Dworks.orders`
           |where "biz_date = '2026-07-07'"
           |as orders;
           |""".stripMargin)
 
       assertEquals(1, statements.size)
       assertEquals(
-        "CREATE OR REPLACE TEMPORARY VIEW orders AS SELECT * FROM analytics.Dworks.orders WHERE biz_date = '2026-07-07'",
+        "CREATE OR REPLACE TEMPORARY VIEW orders AS SELECT * FROM mysql_static.Dworks.orders WHERE biz_date = '2026-07-07'",
         statements.head.sql)
       assertFalse(statements.head.sql.contains("jdbc:mysql"))
       assertFalse(statements.head.sql.toLowerCase.contains("password"))
@@ -170,12 +191,12 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiCompileMysqlCatalogPathWithPartitionOptionsAsProviderSql(): Unit = {
+  def kyuubiCompileStaticJdbcCatalogPathWithPartitionOptionsAsProviderSql(): Unit = {
     val engine = kyuubiEngine()
 
     try {
       val statements = engine.compile(tenant,
-        """load mysql.`analytics.Dworks.big_orders`
+        """load jdbc.`mysql_static.Dworks.big_orders`
           |where "biz_date = '2026-06-10' and status = 'PAID'"
           |options partitionColumn="id"
           |and lowerBound="1"
@@ -187,7 +208,7 @@ final class SparkOneEngineTest {
 
       val sql = statements.head.sql
       assertTrue(sql.startsWith("CREATE OR REPLACE TEMPORARY VIEW big_orders_paid USING sparkone_mysql OPTIONS"))
-      assertTrue(sql.contains("catalog 'analytics'"))
+      assertTrue(sql.contains("catalog 'mysql_static'"))
       assertTrue(sql.contains("dbtable 'Dworks.big_orders'"))
       assertTrue(sql.contains("whereClauseBase64 'Yml6X2RhdGUgPSAnMjAyNi0wNi0xMCcgYW5kIHN0YXR1cyA9ICdQQUlEJw=='"))
       assertTrue(sql.contains("partitionColumn 'id'"))
@@ -203,12 +224,12 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiCompileMysqlCatalogPathWithPartitionColumnOnlyUsesProviderDefaults(): Unit = {
+  def kyuubiCompileStaticJdbcCatalogPathWithPartitionColumnOnlyUsesProviderDefaults(): Unit = {
     val engine = kyuubiEngine()
 
     try {
       val statements = engine.compile(tenant,
-        """load mysql.`analytics.Dworks.big_orders`
+        """load jdbc.`mysql_static.Dworks.big_orders`
           |where "biz_date = '2026-06-10' and status = 'PAID'"
           |options partitionColumn="id"
           |as big_orders_paid;
@@ -216,7 +237,7 @@ final class SparkOneEngineTest {
 
       val sql = statements.head.sql
       assertTrue(sql.startsWith("CREATE OR REPLACE TEMPORARY VIEW big_orders_paid USING sparkone_mysql OPTIONS"))
-      assertTrue(sql.contains("catalog 'analytics'"))
+      assertTrue(sql.contains("catalog 'mysql_static'"))
       assertTrue(sql.contains("dbtable 'Dworks.big_orders'"))
       assertTrue(sql.contains("whereClauseBase64 'Yml6X2RhdGUgPSAnMjAyNi0wNi0xMCcgYW5kIHN0YXR1cyA9ICdQQUlEJw=='"))
       assertTrue(sql.contains("partitionColumn 'id'"))
@@ -230,18 +251,18 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiCompileMysqlCatalogPathWithPartitionColumnOnlyWithoutWhereStillUsesProviderDefaults(): Unit = {
+  def kyuubiCompileStaticJdbcCatalogPathWithPartitionColumnOnlyWithoutWhereStillUsesProviderDefaults(): Unit = {
     val engine = kyuubiEngine()
 
     try {
       val statements = engine.compile(tenant,
-        """load mysql.`analytics.Dworks.big_orders`
+        """load jdbc.`mysql_static.Dworks.big_orders`
           |options partitionColumn="id"
           |as big_orders_paid;
           |""".stripMargin)
 
       val sql = statements.head.sql
-      assertTrue(sql.contains("catalog 'analytics'"))
+      assertTrue(sql.contains("catalog 'mysql_static'"))
       assertTrue(sql.contains("dbtable 'Dworks.big_orders'"))
       assertTrue(sql.contains("partitionColumn 'id'"))
       assertTrue(sql.contains("numPartitions '10'"))
@@ -255,24 +276,23 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiCompileMysqlSaveAsRemoteCatalogPlan(): Unit = {
+  def kyuubiCompileStaticJdbcSaveAsRemoteCatalogPlan(): Unit = {
     val engine = kyuubiEngine()
 
     try {
       val statements = engine.compile(tenant,
         """view users as select 1 as id;
-          |save append users as mysql.`analytics.app.target_users`;
+          |save append users as jdbc.`mysql_static.app.target_users`;
           |""".stripMargin)
 
       val save = statements.last
       assertEquals(
         "SELECT 'SAVE CATALOG' AS sparkone_action, " +
-          "'users TO analytics.app.target_users' AS sparkone_target",
+          "'users TO mysql_static.app.target_users' AS sparkone_target",
         save.sql)
-      assertEquals(Some(WriteTargetKind.Mysql), save.writePlan.map(_.target.kind))
+      assertEquals(Some(WriteTargetKind.JdbcCatalog), save.writePlan.map(_.target.kind))
       assertEquals(Some(WriteExecutionType.CatalogSql), save.writePlan.map(_.executionType))
-      assertEquals(Some("analytics.app.target_users"), save.writePlan.map(_.target.identifier))
-      assertTrue(save.writePlan.toSeq.flatMap(_.target.connectionOptions).isEmpty)
+      assertEquals(Some("mysql_static.app.target_users"), save.writePlan.map(_.target.identifier))
       assertFalse(save.sql.contains("jdbc:mysql"))
       assertFalse(save.sql.toLowerCase.contains("password"))
     } finally {
@@ -281,19 +301,19 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiCompileMysqlSaveRequiresCatalogDatabaseTableAndRejectsOptions(): Unit = {
+  def kyuubiCompileJdbcSaveRequiresStaticCatalogAndRejectsOptions(): Unit = {
     val engine = kyuubiEngine()
 
     try {
       Seq(
-        "save append users as mysql.`analytics.target_users`;",
-        "save append users as mysql.`analytics.app.target_users` options batchsize='500';").foreach { sql =>
+        "save append users as jdbc.`analytics.target_users`;",
+        "save append users as jdbc.`mysql_static.app.target_users` options batchsize='500';").foreach { sql =>
         try {
           engine.compile(tenant, sql)
           fail("Expected CompileException")
         } catch {
           case e: CompileException =>
-            assertTrue(e.getMessage.contains("catalog.database.table") || e.getMessage.contains("does not support SQL OPTIONS"))
+            assertTrue(e.getMessage.contains("ODEP alias") || e.getMessage.contains("does not support SQL OPTIONS"))
         }
       }
     } finally {
@@ -302,158 +322,16 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiCompileRejectsMysqlOverwriteByFixedMatrix(): Unit = {
+  def kyuubiCompileRejectsStaticJdbcOverwriteByFixedMatrix(): Unit = {
     val engine = kyuubiEngine()
 
     try {
-      engine.compile(tenant, "save overwrite users as mysql.`analytics.app.target_users`;")
+      engine.compile(tenant, "save overwrite users as jdbc.`mysql_static.app.target_users`;")
       fail("Expected CompileException")
     } catch {
       case e: CompileException =>
-        assertTrue(e.getMessage.contains("mysql"))
+        assertTrue(e.getMessage.contains("jdbc-catalog"))
         assertTrue(e.getMessage.contains("permanently denied"))
-    } finally {
-      engine.close()
-    }
-  }
-
-  @Test
-  def kyuubiCompileMysqlCatalogProfileAsRemoteCatalogSql(): Unit = {
-    val engine = kyuubiEngine(Map(
-      "sales" -> MysqlLoadProfile(
-        name = "sales",
-        strategy = MysqlLoadProfileStrategy.Catalog,
-        catalog = Some("mysql_A"),
-        namespace = Some("Dworks"),
-        allowedTables = Set("orders")).validate()))
-
-    try {
-      val statements = engine.compile(tenant,
-        """load mysql.`sales.orders`
-          |where "biz_date = '2026-07-07'"
-          |as orders;
-          |""".stripMargin)
-
-      assertEquals(1, statements.size)
-      assertEquals(
-        "CREATE OR REPLACE TEMPORARY VIEW orders AS SELECT * FROM mysql_A.Dworks.orders WHERE biz_date = '2026-07-07'",
-        statements.head.sql)
-      assertFalse(statements.head.sql.contains("jdbc:mysql"))
-      assertFalse(statements.head.sql.toLowerCase.contains("password"))
-    } finally {
-      engine.close()
-    }
-  }
-
-  @Test
-  def kyuubiCatalogMysqlProfileRejectsPerLoadPartitionOptions(): Unit = {
-    val engine = kyuubiEngine(Map(
-      "sales" -> MysqlLoadProfile(
-        name = "sales",
-        strategy = MysqlLoadProfileStrategy.Catalog,
-        catalog = Some("mysql_A"),
-        namespace = Some("Dworks")).validate()))
-
-    try {
-      engine.compile(tenant,
-        """load mysql.`sales.orders`
-          |options partitionColumn="id"
-          |and lowerBound="1"
-          |and upperBound="8"
-          |and numPartitions="4"
-          |as orders;
-          |""".stripMargin)
-      fail("Expected CompileException")
-    } catch {
-      case e: CompileException =>
-        assertTrue(e.getMessage.contains("catalog strategy"))
-        assertTrue(e.getMessage.contains("provider strategy"))
-    } finally {
-      engine.close()
-    }
-  }
-
-  @Test
-  def kyuubiCompileMysqlProviderProfilePassesOnlyProfileTableWhereAndPartitionOptions(): Unit = {
-    val engine = kyuubiEngine(Map(
-      "sales" -> MysqlLoadProfile(
-        name = "sales",
-        strategy = MysqlLoadProfileStrategy.Provider,
-        provider = "sparkone_mysql",
-        remoteProfileName = Some("mysql_A"),
-        namespace = Some("Dworks"),
-        maxNumPartitions = Some(8),
-        defaultFetchSize = Some("10000")).validate()))
-
-    try {
-      val statements = engine.compile(tenant,
-        """load mysql.`sales.orders`
-          |where "biz_date = '2026-07-07'"
-          |options partitionColumn="id"
-          |and lowerBound="1"
-          |and upperBound="8"
-          |and numPartitions="4"
-          |as orders;
-          |""".stripMargin)
-
-      val sql = statements.head.sql
-      assertTrue(sql.startsWith("CREATE OR REPLACE TEMPORARY VIEW orders USING sparkone_mysql OPTIONS"))
-      assertTrue(sql.contains("profile 'mysql_A'"))
-      assertTrue(sql.contains("dbtable 'Dworks.orders'"))
-      assertTrue(sql.contains("whereClauseBase64 'Yml6X2RhdGUgPSAnMjAyNi0wNy0wNyc='"))
-      assertTrue(sql.contains("partitionColumn 'id'"))
-      assertTrue(sql.contains("lowerBound '1'"))
-      assertTrue(sql.contains("upperBound '8'"))
-      assertTrue(sql.contains("numPartitions '4'"))
-      assertTrue(sql.contains("fetchsize '10000'"))
-      assertFalse(sql.contains("jdbc:mysql"))
-      assertFalse(sql.toLowerCase.contains("password"))
-    } finally {
-      engine.close()
-    }
-  }
-
-  @Test
-  def kyuubiMysqlProviderProfileLimitsNumPartitions(): Unit = {
-    val engine = kyuubiEngine(Map(
-      "sales" -> MysqlLoadProfile(
-        name = "sales",
-        strategy = MysqlLoadProfileStrategy.Provider,
-        remoteProfileName = Some("mysql_A"),
-        maxNumPartitions = Some(2)).validate()))
-
-    try {
-      engine.compile(tenant,
-        """load mysql.`sales.orders`
-          |options partitionColumn="id"
-          |and lowerBound="1"
-          |and upperBound="8"
-          |and numPartitions="4"
-          |as orders;
-          |""".stripMargin)
-      fail("Expected CompileException")
-    } catch {
-      case e: CompileException =>
-        assertTrue(e.getMessage.contains("numPartitions=4 exceeds profile 'sales' maxNumPartitions=2"))
-    } finally {
-      engine.close()
-    }
-  }
-
-  @Test
-  def kyuubiThreePartMysqlPathPrefersCatalogSemanticsOverProfileAlias(): Unit = {
-    val engine = kyuubiEngine(Map(
-      "sales" -> MysqlLoadProfile(
-        name = "sales",
-        strategy = MysqlLoadProfileStrategy.Catalog,
-        catalog = Some("mysql_A"),
-        namespace = Some("Dworks")).validate()))
-
-    try {
-      val statements = engine.compile(tenant, "load mysql.`sales.other_db.orders` as orders;")
-      assertEquals(
-        "CREATE OR REPLACE TEMPORARY VIEW orders AS SELECT * FROM sales.other_db.orders",
-        statements.head.sql)
     } finally {
       engine.close()
     }
@@ -844,10 +722,10 @@ final class SparkOneEngineTest {
   }
 
   @Test
-  def kyuubiMysqlCatalogAppendUsesRemoteCatalogWithoutSecrets(): Unit = {
+  def kyuubiJdbcCatalogAppendUsesRemoteCatalogWithoutSecrets(): Unit = {
     val fake = new RecordingJdbcConnection(
       queryColumns = {
-        case "SELECT * FROM analytics.app.target_users LIMIT 0" => Seq("name", "id")
+        case "SELECT * FROM mysql_static.app.target_users LIMIT 0" => Seq("name", "id")
         case "SELECT * FROM source_view LIMIT 0" => Seq("id", "name")
         case _ => Nil
       })
@@ -857,7 +735,7 @@ final class SparkOneEngineTest {
       val result = engine.run(
         tenant,
         """view source_view as select 1 as id, 'alice' as name;
-          |save append source_view as mysql.`analytics.app.target_users`;
+          |save append source_view as jdbc.`mysql_static.app.target_users`;
           |""".stripMargin,
         10)
 
@@ -865,11 +743,11 @@ final class SparkOneEngineTest {
       assertEquals(
         Seq(
           "CREATE OR REPLACE TEMPORARY VIEW source_view AS select 1 as id, 'alice' as name",
-          "SELECT * FROM analytics.app.target_users LIMIT 0",
+          "SELECT * FROM mysql_static.app.target_users LIMIT 0",
           "SELECT * FROM source_view LIMIT 0",
-          "EXPLAIN INSERT INTO TABLE analytics.app.target_users (`name`, `id`) " +
+          "EXPLAIN INSERT INTO TABLE mysql_static.app.target_users (`name`, `id`) " +
             "SELECT `name`, `id` FROM source_view",
-          "INSERT INTO TABLE analytics.app.target_users (`name`, `id`) " +
+          "INSERT INTO TABLE mysql_static.app.target_users (`name`, `id`) " +
             "SELECT `name`, `id` FROM source_view"),
         fake.executedSql)
       assertFalse(fake.executedSql.mkString("\n").contains("jdbc:mysql"))
@@ -1125,7 +1003,7 @@ final class SparkOneEngineTest {
     }
   }
 
-  private def kyuubiEngine(mysqlLoadProfiles: Map[String, MysqlLoadProfile] = Map.empty): KyuubiJdbcEngine = {
+  private def kyuubiEngine(): KyuubiJdbcEngine = {
     new KyuubiJdbcEngine(
       "kyuubi",
       "Kyuubi",
@@ -1134,8 +1012,7 @@ final class SparkOneEngineTest {
         user = None,
         password = None,
         driver = "org.apache.kyuubi.jdbc.KyuubiHiveDriver",
-        properties = Map.empty),
-      mysqlLoadProfiles = mysqlLoadProfiles)
+        properties = Map.empty))
   }
 
   private def kyuubiEngine(connectionFactory: KyuubiJdbcConfig => Connection): KyuubiJdbcEngine = {

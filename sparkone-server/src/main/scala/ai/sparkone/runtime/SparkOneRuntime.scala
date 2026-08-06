@@ -2,18 +2,16 @@ package ai.sparkone.runtime
 
 import ai.sparkone.extension.overwrite.SparkOneHdfsOverwriteExtensions
 import ai.sparkone.identity.TenantContext
-import ai.sparkone.sql.{CatalogWriteSqlRenderer, CompileException, CompiledStatement, LoadStatementMetadata, LoadTargetType, SetStatementMetadata, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteExecutionType, WriteMode, WritePlan, WriteSchemaPolicy, WriteTargetKind}
+import ai.sparkone.kyuubi.odep.authz.{LocalExecutionSubject, SparkOneLocalOdepAuthzExtension}
+import ai.sparkone.sql.{CatalogWriteSqlRenderer, CompileException, CompiledStatement, LoadStatementMetadata, SetStatementMetadata, SetValueType, SparkOneCompiler, SparkSqlValidator, WriteTargetKind}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.security.UserGroupInformation
-import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
-import org.apache.spark.sql.internal.SQLConf.StoreAssignmentPolicy
-import org.apache.spark.sql.types.DataType
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.slf4j.LoggerFactory
 
 import java.io.File
 import java.net.URLClassLoader
-import java.util.Locale
 import scala.collection.mutable
 import scala.util.control.NonFatal
 
@@ -41,7 +39,8 @@ final class SparkOneRuntime(
   }
 
   def run(tenant: TenantContext, script: String, limit: Int): RunResult = runLock.synchronized {
-    withDriverClassLoader {
+    LocalExecutionSubject.withSubject(spark.sparkContext, tenant.username) {
+      withDriverClassLoader {
       val previewLimit = PreviewConfig.current.clampRows(Some(limit))
       val sources = compiler.splitStatements(script)
       val variables = mutable.LinkedHashMap[String, String]()
@@ -136,13 +135,22 @@ final class SparkOneRuntime(
         if (success && results.nonEmpty && results.forall(_.previewTable.nonEmpty)) results.takeRight(1)
         else results.toSeq
       RunResult(success, visibleResults, outcome, stoppedEarly)
+      }
     }
   }
 
   def previewTable(
       table: String,
-      limit: Int = PreviewConfig.current.maxRows): StatementResult = runLock.synchronized {
-    withDriverClassLoader {
+      limit: Int = PreviewConfig.current.maxRows): StatementResult = {
+    previewTable(SparkOneRuntime.RuntimeTenant, table, limit)
+  }
+
+  def previewTable(
+      tenant: TenantContext,
+      table: String,
+      limit: Int): StatementResult = runLock.synchronized {
+    LocalExecutionSubject.withSubject(spark.sparkContext, tenant.username) {
+      withDriverClassLoader {
       val started = System.nanoTime()
       val previewLimit = PreviewConfig.current.clampRows(Some(limit))
       val dataFrame = spark.table(table)
@@ -160,6 +168,7 @@ final class SparkOneRuntime(
         previewTable = Some(table),
         durationMs = elapsedMs(started),
         error = None)
+      }
     }
   }
 
@@ -177,12 +186,7 @@ final class SparkOneRuntime(
       case Some(metadata) =>
         executeLoad(statement, metadata)
       case _ =>
-        statement.writePlan match {
-          case Some(plan) if plan.executionType == WriteExecutionType.MysqlAdapter =>
-            executeMysqlSave(plan)
-          case _ =>
-            spark.sql(statement.sql)
-        }
+        spark.sql(statement.sql)
       }
     }
   }
@@ -202,91 +206,15 @@ final class SparkOneRuntime(
   }
 
   private def executeLoad(statement: CompiledStatement, metadata: LoadStatementMetadata): DataFrame = {
-    metadata.targetType match {
-      case LoadTargetType.Mysql =>
-        executeMysqlLoad(metadata)
-      case _ =>
-        spark.sql(statement.sql)
-        spark.table(metadata.table)
-    }
-  }
-
-  private def executeMysqlLoad(metadata: LoadStatementMetadata): DataFrame = {
-    spark.read
-      .format("jdbc")
-      .options(MysqlJdbcLoadOptions.enrich(metadata.options))
-      .load()
-      .createOrReplaceTempView(metadata.table)
+    spark.sql(statement.sql)
     spark.table(metadata.table)
-  }
-
-  private def executeMysqlSave(plan: WritePlan): DataFrame = {
-    val mode = plan.mode match {
-      case WriteMode.Append => SaveMode.Append
-      case WriteMode.Overwrite =>
-        throw new CompileException("SAVE overwrite is permanently denied for target type mysql")
-    }
-    val source = prepareMysqlAppend(plan)
-    val started = System.nanoTime()
-    logger.info(
-      s"MySQL Save: start, tenant=${plan.tenant.username}, mode=${plan.mode.name}, " +
-        s"source=${plan.sourceTable}, target=${plan.target.identifier}")
-    source
-      .write
-      .format("jdbc")
-      .options(plan.target.connectionOptions)
-      .mode(mode)
-      .save()
-    logger.info(
-      s"MySQL Save: success, tenant=${plan.tenant.username}, mode=${plan.mode.name}, " +
-        s"source=${plan.sourceTable}, target=${plan.target.identifier}, costMs=${elapsedMs(started)}")
-    actionResult("SAVE MYSQL", plan.target.identifier, plan.sourceTable)
-  }
-
-  private def prepareMysqlAppend(plan: WritePlan): DataFrame = {
-    val source = spark.table(plan.sourceTable)
-    val target = loadMysqlTarget(plan)
-    val orderedSourceColumns = WriteSchemaPolicy.sourceColumnsInTargetOrder(
-      source.schema.fieldNames.toSeq,
-      target.schema.fieldNames.toSeq,
-      plan.target.identifier)
-    val sourceFieldsByName = source.schema.fields.map(field => field.name.toLowerCase(Locale.ROOT) -> field).toMap
-
-    target.schema.fields.zip(orderedSourceColumns).foreach { case (targetField, sourceColumn) =>
-      val sourceField = sourceFieldsByName(sourceColumn.toLowerCase(Locale.ROOT))
-      try {
-        val compatible = DataType.canWrite(
-          sourceField.dataType,
-          targetField.dataType,
-          byName = false,
-          (left: String, right: String) => left.equalsIgnoreCase(right),
-          targetField.name,
-          StoreAssignmentPolicy.ANSI,
-          _ => ())
-        if (!compatible) {
-          throw new CompileException(
-            s"SAVE source schema is incompatible with target table: ${plan.target.identifier}")
-        }
-      } catch {
-        case e: CompileException => throw e
-        case NonFatal(e) =>
-          throw new CompileException(
-            s"SAVE source schema is incompatible with target table: ${plan.target.identifier}",
-            e)
-      }
-    }
-
-    val projections = target.schema.fields.zip(orderedSourceColumns).map { case (targetField, sourceColumn) =>
-      source.col(quoteColumn(sourceColumn)).cast(targetField.dataType).as(targetField.name)
-    }
-    source.select(projections: _*)
   }
 
   private def prepareWriteStatement(statement: CompiledStatement): CompiledStatement = {
     statement.writePlan match {
       case Some(plan) =>
         plan.target.kind match {
-          case WriteTargetKind.HiveCatalog | WriteTargetKind.DorisCatalog =>
+          case WriteTargetKind.HiveCatalog | WriteTargetKind.DorisCatalog | WriteTargetKind.JdbcCatalog =>
             val target = try {
               spark.table(plan.target.identifier)
             } catch {
@@ -301,42 +229,11 @@ final class SparkOneRuntime(
             val sql = CatalogWriteSqlRenderer.render(plan, sourceColumns, targetColumns)
             spark.sql(s"EXPLAIN $sql").collect()
             statement.copy(sql = sql)
-          case WriteTargetKind.Mysql =>
-            statement
           case _ =>
             statement
         }
       case None => statement
     }
-  }
-
-  private def loadMysqlTarget(plan: WritePlan): DataFrame = {
-    try {
-      spark.read
-        .format("jdbc")
-        .options(plan.target.connectionOptions)
-        .load()
-    } catch {
-      case NonFatal(e) =>
-        logger.warn(
-          s"MySQL Save: target table existence check failed, " +
-            s"tenant=${plan.tenant.username}, mode=${plan.mode.name}, source=${plan.sourceTable}, " +
-            s"target=${plan.target.identifier}, reason=${errorMessage(e)}",
-          e)
-        throw new CompileException(
-          s"SAVE target table does not exist or cannot be resolved: ${plan.target.identifier}. " +
-            s"Create the target table explicitly before SAVE ${plan.mode.name}.",
-          e)
-    }
-  }
-
-  private def quoteColumn(value: String): String = {
-    s"`${value.replace("`", "``")}`"
-  }
-
-  private def actionResult(action: String, target: String, table: String): DataFrame = {
-    import spark.implicits._
-    Seq((action, target, table)).toDF("action", "target", "table")
   }
 
   private def withDriverClassLoader[T](body: => T): T = {
@@ -386,6 +283,7 @@ object SparkOneRuntime {
   private lazy val logger = LoggerFactory.getLogger(getClass)
   private val HadoopStaticGroupOverrides = "hadoop.user.group.static.mapping.overrides"
   private val RuntimeTenant = TenantContext.development("local-runtime")
+  private val OdepRoutingCatalogClass = "ai.sparkone.kyuubi.odep.catalog.OdepRoutingCatalog"
 
   def local(): SparkOneRuntime = {
     val master = sys.props.getOrElse("spark.master", "local[*]")
@@ -395,7 +293,10 @@ object SparkOneRuntime {
       .master(master)
       .config("spark.ui.enabled", "false")
       .config("spark.sql.warehouse.dir", "target/spark-warehouse")
+      .config("spark.sql.catalog.jdbc", OdepRoutingCatalogClass)
+      .config("spark.sql.catalog.doris", OdepRoutingCatalogClass)
       .withExtensions(new SparkOneHdfsOverwriteExtensions().apply)
+      .withExtensions(new SparkOneLocalOdepAuthzExtension().apply)
 
     configureDriverNetwork(builder, master)
     configureHadoopAndHive(builder)

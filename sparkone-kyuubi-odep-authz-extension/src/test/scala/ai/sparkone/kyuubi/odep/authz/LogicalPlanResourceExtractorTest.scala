@@ -176,10 +176,12 @@ final class LogicalPlanResourceExtractorTest {
   def extractsLogicalAliasFromPartitionedMysqlRelation(): Unit = {
     val schema = StructType(Seq(StructField("id", LongType, nullable = false)))
     val constructor = classOf[SparkOneMysqlRelation].getDeclaredConstructor(
-      classOf[BaseRelation], classOf[String], classOf[String])
+      classOf[BaseRelation], classOf[String], classOf[String], classOf[String], classOf[String])
     constructor.setAccessible(true)
     val mysql = constructor.newInstance(
       new TestScanRelation(spark.sqlContext, schema),
+      "odep",
+      "jdbc",
       "sync_search",
       "drug_ai_drug_decision")
 
@@ -187,6 +189,40 @@ final class LogicalPlanResourceExtractorTest {
       Seq(OdepAuthzResource.table(
         "jdbc", "sync_search", "drug_ai_drug_decision", "read")),
       extractor.extract(LogicalRelation(mysql)))
+  }
+
+  @Test
+  def skipsStaticCatalogAndStaticPartitionedMysqlRelation(): Unit = {
+    assertEquals(
+      Seq.empty,
+      extractor.extract(relation("mysql_static", "app", "orders")))
+    assertEquals(
+      Seq.empty,
+      extractor.extract(relation("doris_static", "analytics", "events")))
+
+    val schema = StructType(Seq(StructField("id", LongType, nullable = false)))
+    val constructor = classOf[SparkOneMysqlRelation].getDeclaredConstructor(
+      classOf[BaseRelation], classOf[String], classOf[String], classOf[String], classOf[String])
+    constructor.setAccessible(true)
+    val mysql = constructor.newInstance(
+      new TestScanRelation(spark.sqlContext, schema),
+      "static",
+      "mysql_static",
+      "app",
+      "orders")
+
+    assertEquals(Seq.empty, extractor.extract(LogicalRelation(mysql)))
+  }
+
+  @Test
+  def rejectsUnmanagedV1Sources(): Unit = {
+    val relation = LogicalRelation(new TestRelation(
+      spark.sqlContext,
+      StructType(Seq(StructField("id", LongType, nullable = false)))))
+
+    assertThrows(
+      classOf[OdepAuthorizationException],
+      () => extractor.extract(relation))
   }
 
   @Test

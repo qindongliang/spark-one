@@ -7,7 +7,9 @@ import org.apache.spark.sql.types.StructType
 
 final class SparkOneMysqlRelation private[mysql] (
     delegate: BaseRelation,
-    val sparkOneAuthzDatabase: String,
+    val sparkOneAuthzMode: String,
+    val sparkOneAuthzCatalog: String,
+    val sparkOneAuthzNamespace: String,
     val sparkOneAuthzTable: String)
   extends BaseRelation with PrunedFilteredScan {
 

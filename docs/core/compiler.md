@@ -10,7 +10,7 @@ load hive.`default.users` as hive_users;
 load hive.`default.users` where "dt = date '2026-06-17'" as hive_users_0617;
 load excel.`imports/users.xlsx` options header="true" as users_excel;
 load jdbc.`search_prod.users` as users_jdbc;
-load mysql.`analytics.users` as users_mysql;
+load jdbc.`mysql_static.analytics.users` as users_mysql;
 load doris.`app.users` as users_doris;
 load doris.`app.orders` where "biz_date = '2026-06-17'" as doris_orders;
 set biz_date = "2026-06-17";
@@ -22,7 +22,7 @@ assert (
 ) where "cnt > 0" message "城市统计存在空结果" on failure stop;
 save overwrite users as parquet.`reports/users_out`;
 save append city_stats as hive.`default.city_stats` partitionBy dt;
-save append city_stats as mysql.`analytics.city_stats`;
+save append city_stats as jdbc.`mysql_static.analytics.city_stats`;
 save append city_stats as doris.`app.city_stats`;
 ```
 
@@ -44,7 +44,7 @@ MANAGED HDFS LOAD
   source: imports/users.xlsx
   options: {header='true'}
 CREATE OR REPLACE TEMPORARY VIEW users_jdbc AS SELECT * FROM jdbc.search_prod.users;
-SELECT 'LOAD MYSQL' AS sparkone_action, 'users AS users_mysql' AS sparkone_target;
+CREATE OR REPLACE TEMPORARY VIEW users_mysql AS SELECT * FROM mysql_static.analytics.users;
 CREATE OR REPLACE TEMPORARY VIEW users_doris AS SELECT * FROM doris.app.users;
 CREATE OR REPLACE TEMPORARY VIEW doris_orders AS SELECT * FROM doris.app.orders WHERE biz_date = '2026-06-17';
 SELECT 'SET' AS sparkone_action, 'biz_date' AS sparkone_target;
@@ -55,7 +55,7 @@ SELECT * FROM (
   select city, count(*) as cnt from users group by city
 ) sparkone_assert_input WHERE NOT COALESCE((cnt > 0), FALSE);
 SELECT 'SAVE CATALOG' AS sparkone_action, 'city_stats TO spark_catalog.default.city_stats' AS sparkone_target;
-SELECT 'SAVE MYSQL' AS sparkone_action, 'city_stats TO city_stats' AS sparkone_target;
+SELECT 'SAVE CATALOG' AS sparkone_action, 'city_stats TO mysql_static.analytics.city_stats' AS sparkone_target;
 SELECT 'SAVE CATALOG' AS sparkone_action, 'city_stats TO doris.app.city_stats' AS sparkone_target;
 ```
 
@@ -93,10 +93,9 @@ select * from city_stats;
 - `load hive` 是 catalog 表读取语义，编译成 `CREATE ... AS SELECT * FROM spark_catalog.db.table`；追加 `where "..."` 时编译成 `SELECT * FROM spark_catalog.db.table WHERE ...`。
 - `save ... as hive` 是 catalog 表写入语义；当前只允许 append。compiler 生成 `WritePlan` 和安全占位 SQL，runtime 取得两端 schema 后生成带显式目标列清单和源列投影的 `INSERT INTO TABLE`。
 - `save ... partitionBy col1, col2` 只用于 catalog 表写入，runtime 最终渲染为 Spark SQL 动态分区 `PARTITION (col1, col2)`。
-- local 引擎的 `load/save mysql.\`connection.table\`` 是薄 runtime adapter：连接信息从 HOCON 读取，编译展示安全占位 SQL，执行时使用 Spark JDBC reader/writer。
-- `load jdbc.\`alias.table\`` 是 ODEP JDBC 路由的只读语法糖；无 OPTIONS 时编译为 `SELECT * FROM jdbc.alias.table`。ODEP MySQL alias 带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时编译为 Engine 内的 `sparkone_mysql` provider 读取；不允许在 SQL 中传 `url/user/password/driver/dbtable/query`。`save jdbc` 当前不支持。
-- Kyuubi 引擎的 `save mysql.\`catalog.database.table\`` 生成 MySQL Catalog `WritePlan`，复用远端 Spark JDBC Catalog；不接受 SQL `OPTIONS`，SQL 中不携带 URL、用户名或密码。
-- `load mysql ... options partitionColumn="id"` 会在执行侧自动查询 `lowerBound/upperBound`；`where` 存在时按过滤后数据取边界，不存在时按原表取边界。`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。
+- `load jdbc.\`alias.table\`` 读取 ODEP JDBC 路由；`load jdbc.\`catalog_static.database.table\`` 读取静态 JDBC Catalog。无 OPTIONS 时都编译为三段式 Catalog SQL。
+- MySQL 路径带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时编译为 Engine 内的 `sparkone_mysql` provider；不允许在 SQL 中传 `url/user/password/driver/dbtable/query`。只写 `partitionColumn` 时会自动查询边界，默认 `numPartitions=10`、`fetchsize=10000`。
+- `save jdbc` 只允许 `catalog_static.database.table`，生成 JDBC Catalog `WritePlan`；不接受 SQL `OPTIONS`，SQL 中不携带 URL、用户名或密码。ODEP 动态 alias 写入明确拒绝。
 - `load doris` 是 Spark Doris Catalog 语法糖：ODEP 模式下 `load doris.\`alias.table\` as t` 编译成 `CREATE ... AS SELECT * FROM doris.alias.table`；当前 Kyuubi 静态 Catalog 使用 `load doris.\`doris_static.db.table\``。
 - `save ... as doris` 是 Spark Doris Catalog 表写入语义；当前只允许 append，和 Hive 共用延迟渲染的显式列写入逻辑。
 - Hive、MySQL、Doris overwrite 由固定能力矩阵永久拒绝，不存在可以放开的 SQL option 或 HOCON 开关；`partitionBy` 不用于 Doris Catalog 写入。

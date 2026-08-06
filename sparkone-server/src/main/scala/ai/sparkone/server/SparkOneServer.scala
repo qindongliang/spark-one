@@ -527,7 +527,7 @@ private[server] object SparkOneHoconConfig {
         string(config, "driver").map(s"$prefix.kyuubi.driver" -> _)).flatten ++
         stringMap(config, "options").map { case (key, value) =>
           s"$prefix.kyuubi.option.$key" -> value
-        } ++ kyuubiMysqlLoadProfileProperties(prefix, config)
+        }
 
     val local =
       if (string(config, "type").exists(_.equalsIgnoreCase("kyuubi"))) Seq.empty
@@ -539,13 +539,24 @@ private[server] object SparkOneHoconConfig {
   private def localEngineProperties(prefix: String, config: Config): Seq[(String, String)] = {
     val propertyPrefix = s"$prefix.local.property"
     localSparkProperties(propertyPrefix, config) ++
+      localOdepProperties(propertyPrefix, config) ++
       localOverwriteProperties(propertyPrefix, config) ++
       localHadoopProperties(propertyPrefix, config) ++
       localHiveProperties(propertyPrefix, config) ++
       localKerberosProperties(propertyPrefix, config) ++
       localJarsProperties(propertyPrefix, config) ++
-      localCatalogProperties(propertyPrefix, config) ++
-      localDataSourceProperties(propertyPrefix, config)
+      localCatalogProperties(propertyPrefix, config)
+  }
+
+  private def localOdepProperties(prefix: String, config: Config): Seq[(String, String)] = {
+    Seq(
+      string(config, "odep.apiUrl").map(s"$prefix.sparkone.odep.api.url" -> _),
+      string(config, "odep.appId").map(s"$prefix.sparkone.odep.app.id" -> _),
+      string(config, "odep.signKey").map(s"$prefix.sparkone.odep.sign.key" -> _),
+      int(config, "odep.connectTimeoutSeconds")
+        .map(value => s"$prefix.sparkone.odep.connect.timeout.seconds" -> value.toString),
+      int(config, "odep.requestTimeoutSeconds")
+        .map(value => s"$prefix.sparkone.odep.request.timeout.seconds" -> value.toString)).flatten
   }
 
   private def localSparkProperties(prefix: String, config: Config): Seq[(String, String)] = {
@@ -594,63 +605,19 @@ private[server] object SparkOneHoconConfig {
       string(config, "jars.repositories").map(s"$prefix.spark.jars.repositories" -> _)).flatten
   }
 
-  private def localDataSourceProperties(prefix: String, config: Config): Seq[(String, String)] = {
-    if (!config.hasPath("datasources.mysql")) Seq.empty[(String, String)]
-    else {
-      config.getConfig("datasources.mysql").root().keySet().asScala.flatMap { name =>
-        val datasource = config.getConfig(s"datasources.mysql.$name")
-        mysqlProperties(prefix, name, datasource)
-      }.toSeq
-    }
-  }
-
-  private def mysqlProperties(propertyPrefix: String, name: String, config: Config): Map[String, String] = {
-    val prefix = s"$propertyPrefix.sparkone.datasource.mysql.$name"
-    (Seq(
-      string(config, "url").map(s"$prefix.url" -> _),
-      string(config, "driver").map(s"$prefix.driver" -> _),
-      string(config, "user").map(s"$prefix.user" -> _),
-      string(config, "password").map(s"$prefix.password" -> _)).flatten ++
-      stringMap(config, "options").map { case (key, value) =>
-        s"$prefix.option.$key" -> value
-      }).toMap
-  }
-
-  private def kyuubiMysqlLoadProfileProperties(prefix: String, config: Config): Seq[(String, String)] = {
-    if (!config.hasPath("mysqlLoadProfiles")) Seq.empty
-    else {
-      config.getConfig("mysqlLoadProfiles").root().keySet().asScala.flatMap { name =>
-        val profile = config.getConfig(s"mysqlLoadProfiles.$name")
-        val profilePrefix = s"$prefix.kyuubi.mysqlLoadProfile.$name"
-        Seq(
-          string(profile, "strategy").map(s"$profilePrefix.strategy" -> _),
-          string(profile, "catalog").map(s"$profilePrefix.catalog" -> _),
-          string(profile, "namespace").orElse(string(profile, "defaultNamespace")).map(s"$profilePrefix.namespace" -> _),
-          string(profile, "provider").map(s"$profilePrefix.provider" -> _),
-          string(profile, "remoteProfile").map(s"$profilePrefix.remoteProfile" -> _),
-          int(profile, "maxNumPartitions").map(value => s"$profilePrefix.maxNumPartitions" -> value.toString),
-          int(profile, "defaultFetchSize").map(value => s"$profilePrefix.defaultFetchSize" -> value.toString),
-          stringList(profile, "allowedTables")
-            .map(values => values.map(_.trim).filter(_.nonEmpty).mkString("\n"))
-            .filter(_.nonEmpty)
-            .map(s"$profilePrefix.allowedTables" -> _)).flatten
-      }.toSeq
-    }
-  }
-
   private def localCatalogProperties(prefix: String, config: Config): Seq[(String, String)] = {
     val doris =
-      if (!config.hasPath("catalogs.doris")) Map.empty[String, String]
-      else dorisCatalogProperties(prefix, config.getConfig("catalogs.doris"))
+      if (!config.hasPath("catalogs.doris_static")) Map.empty[String, String]
+      else dorisCatalogProperties(prefix, config.getConfig("catalogs.doris_static"))
     val mysql =
-      if (!config.hasPath("catalogs.mysql")) Map.empty[String, String]
-      else mysqlCatalogProperties(prefix, config.getConfig("catalogs.mysql"))
+      if (!config.hasPath("catalogs.mysql_static")) Map.empty[String, String]
+      else mysqlCatalogProperties(prefix, config.getConfig("catalogs.mysql_static"))
 
     (doris ++ mysql).toSeq
   }
 
   private def mysqlCatalogProperties(propertyPrefix: String, config: Config): Map[String, String] = {
-    val prefix = s"$propertyPrefix.spark.sql.catalog.mysql"
+    val prefix = s"$propertyPrefix.spark.sql.catalog.mysql_static"
     (Seq(
       string(config, "class").orElse(Some("org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog")).map(prefix -> _),
       string(config, "url").map(s"$prefix.url" -> _),
@@ -664,7 +631,7 @@ private[server] object SparkOneHoconConfig {
   }
 
   private def dorisCatalogProperties(propertyPrefix: String, config: Config): Map[String, String] = {
-    val prefix = s"$propertyPrefix.spark.sql.catalog.doris"
+    val prefix = s"$propertyPrefix.spark.sql.catalog.doris_static"
     (Seq(
       string(config, "class").orElse(Some("org.apache.doris.spark.catalog.DorisTableCatalog")).map(prefix -> _),
       string(config, "fenodes").map(s"$prefix.doris.fenodes" -> _),
@@ -701,10 +668,6 @@ private[server] object SparkOneHoconConfig {
 
   private def boolean(config: Config, path: String): Option[Boolean] = {
     if (config.hasPath(path)) Some(config.getBoolean(path)) else None
-  }
-
-  private def stringList(config: Config, path: String): Option[List[String]] = {
-    if (config.hasPath(path)) Some(config.getStringList(path).asScala.toList) else None
   }
 
   private def stringMap(config: Config, path: String): Map[String, String] = {

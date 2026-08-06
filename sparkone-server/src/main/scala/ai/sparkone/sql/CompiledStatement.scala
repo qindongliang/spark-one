@@ -75,7 +75,6 @@ sealed trait LoadTargetType
 object LoadTargetType {
   case object Provider extends LoadTargetType
   case object ManagedHdfs extends LoadTargetType
-  case object Mysql extends LoadTargetType
 }
 
 sealed trait SetValueType
@@ -90,5 +89,5 @@ sealed trait SaveTargetType
 object SaveTargetType {
   case object Catalog extends SaveTargetType
   case object DorisCatalog extends SaveTargetType
-  case object MysqlCatalog extends SaveTargetType
+  case object JdbcCatalog extends SaveTargetType
 }

@@ -114,7 +114,7 @@ select * from doris.recommend_prod.r_qa_log limit 10;
 load doris.`recommend_prod.r_qa_log` as qa_log;
 ```
 
-路由 Catalog 将 `jdbc.search_prod.orders` 映射到对应 JDBC 连接的 `<physicalNamespace>.orders`，Doris 同理。`load jdbc` 无 OPTIONS 时走 Catalog；ODEP MySQL alias 带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时走 Engine 内 `sparkone_mysql` provider，并复用相同 alias 的连接和真实库。连接和密钥仍只来自 ODEP，SQL 不能覆盖；`save jdbc` 当前仍不开放。
+路由 Catalog 将 `jdbc.search_prod.orders` 映射到对应 JDBC 连接的 `<physicalNamespace>.orders`，Doris 同理。`load jdbc` 无 OPTIONS 时走 Catalog；ODEP MySQL alias 带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时走 Engine 内 `sparkone_mysql` provider，并复用相同 alias 的连接和真实库。连接和密钥仍只来自 ODEP，SQL 不能覆盖；动态 alias 的 `save jdbc` 不开放。
 
 当前 `kyuubi-defaults.conf` 中的静态数据源使用独立 Catalog 名：
 
@@ -122,7 +122,7 @@ load doris.`recommend_prod.r_qa_log` as qa_log;
 show namespaces in mysql_static;
 show tables in mysql_static.Dworks;
 select * from mysql_static.Dworks.cloud_host_info limit 10;
-load mysql.`mysql_static.Dworks.cloud_host_info` as static_mysql_hosts;
+load jdbc.`mysql_static.Dworks.cloud_host_info` as static_mysql_hosts;
 
 show namespaces in doris_static;
 show tables in doris_static.dataagent;
@@ -138,7 +138,7 @@ ODEP 模式下，`spark.sql.catalog.jdbc.*` 和 `spark.sql.catalog.doris.*` 两�
 
 ### ODEP Engine 资源鉴权
 
-`sparkone-kyuubi-odep-authz-extension` 在 Spark analysis 完成后、物理执行开始前提取资源并调用 `POST /api/sparkone/authz/check`。Engine 不直接访问 RMS；ODEP 使用 Kyuubi session 中的真实用户名查询 RMS 资源。当前映射为：
+`sparkone-kyuubi-odep-authz-extension` 对原生绝对 HDFS relation 使用两阶段安全校验。Spark parser 完成纯语法解析后、Analyzer 开始前提取路径并调用一次 `POST /api/sparkone/authz/check`，只有允许后才会进入文件枚举和 schema inference；允许结果以 subject、read 动作和规范化路径绑定到当前 LogicalPlan，Analyzer 完成后只在本地核对最终 relation，路径或 subject 不一致时 fail closed，不再调用 ODEP。其他 Catalog 资源仍在 Analyzer 完成后调用 ODEP。Engine 不直接访问 RMS；Kyuubi 使用 session 签名用户名查询 RMS 资源。Local server 默认装配同一套资源提取和 API 客户端，但使用服务端 `TenantContext.username` 作为 Local subject，不接受 Kyuubi 签名也不构成生产安全边界。当前映射为：
 
 | Spark 资源 | ODEP 请求 |
 | --- | --- |
@@ -147,7 +147,7 @@ ODEP 模式下，`spark.sql.catalog.jdbc.*` 和 `spark.sql.catalog.doris.*` 两�
 | `spark_catalog.<database>.<table>` | `hive + database + table` |
 | 跨 owner 的受控 HDFS load、无 Catalog 的绝对 HDFS 文件关系 | `hdfs + 绝对 path + read` |
 
-查询资源使用 `read`，Catalog 写入目标使用 `write`。当前用户自己的 managed HDFS load/overwrite 依据签名 subject 与 workspace owner 直接判定，不调用 ODEP；跨 owner managed load 和原生绝对 HDFS relation 调用 ODEP `read`；跨 owner overwrite 及所有原生文件路径写入直接拒绝。临时视图展开后检查底层资源；同一 SQL 的资源合并为一次批量请求。ODEP 拒绝、超时、响应不完整、会话用户签名无效以及无法识别的外部数据源都会在 Engine 内 fail closed。
+查询资源使用 `read`，Catalog 写入目标使用 `write`。当前用户自己的 managed HDFS load/overwrite 依据签名 subject 与 workspace owner 直接判定，不调用 ODEP；跨 owner managed load 和原生绝对 HDFS relation 调用 ODEP `read`；跨 owner overwrite 及所有原生文件路径写入直接拒绝。原生路径禁止 glob、百分号编码、authority、路径穿越和重复分隔符。临时视图展开后检查底层资源；同一阶段内的重复资源合并为一次批量请求。允许的原生绝对 HDFS relation 只产生一次 `phase=pre-analysis` 请求；CSV schema inference 展开的子文件以及最终 relation 通过当前计划的授权证明本地校验。证明不跨 SQL、不设 TTL，也不替代 Catalog 的 analysis 鉴权。ODEP 拒绝、超时、响应不完整、会话用户签名无效以及无法识别的外部数据源都会在 Engine 内 fail closed。
 
 构建并部署扩展：
 
@@ -155,7 +155,7 @@ ODEP 模式下，`spark.sql.catalog.jdbc.*` 和 `spark.sql.catalog.doris.*` 两�
 scripts/build.sh sparkone-kyuubi-odep-authz-extension
 ```
 
-将 `sparkone-kyuubi-odep-authz-extension-0.1.0-SNAPSHOT.jar` 加入 `spark.jars`，并将扩展类追加到 `spark.sql.extensions`。该扩展与 ODEP Catalog 插件共用前文的五个 `ODEP_*` 环境变量，但不缓存权限判定结果。
+将 `sparkone-kyuubi-odep-authz-extension-0.1.0-SNAPSHOT.jar` 加入 `spark.jars`，并将扩展类追加到 `spark.sql.extensions`。该扩展与 ODEP Catalog 插件共用前文的五个 `ODEP_*` 环境变量，不做跨 SQL 或 TTL 权限缓存。
 
 可信 subject 使用 Kyuubi 原生 session user 签名。Server 和 Spark Engine 两个开关必须同时打开：
 
@@ -500,10 +500,9 @@ spark.sparkone.overwrite.zk.connectionTimeoutMs=15000
 - `sparkone-hdfs-overwrite-extension` jar 同样属于 Spark engine classpath，并通过 `spark.sql.extensions` 注册；模块名保持兼容，但 extension 同时承载受控 HDFS load 和 overwrite。
 - `sparkone-kyuubi-odep-authz-extension` jar 属于 Spark engine classpath，通过 `spark.sql.extensions` 注册；它在 Engine 内校验 workspace ownership、拒绝原生文件写入，并调用 ODEP 权限接口，不进入 Kyuubi Server classpath，也不直接访问 RMS。
 - 远端 Catalog 统一使用三段式：Hive 为 `hive.<database>.<table>`；ODEP 为 `jdbc.<alias>.<table>`、`doris.<alias>.<table>`；当前静态数据源为 `mysql_static.<database>.<table>`、`doris_static.<database>.<table>`。`hive` 由 SparkOne 编译为内置 `spark_catalog`，不在 Kyuubi 配置伪造同名 Catalog。
-- `load mysql` 在 Kyuubi 模式下优先使用 `mysql.\`catalog.db.table\`` 语义，连接信息来自 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`。
-- 无分片参数时，Kyuubi `load mysql.\`catalog.db.table\`` 编译成远端 catalog SQL。
+- `load jdbc.\`catalog_static.db.table\`` 复用 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`；无分片参数时编译成远端 catalog SQL。
 - 带 `partitionColumn` 或其他受控大表读取参数时，编译成 `USING sparkone_mysql`，由 provider 在 Spark engine 内复用 catalog 连接配置；只写 `partitionColumn` 时会在远端自动查询 `lowerBound/upperBound`，`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。
-- `save append ... as mysql.\`catalog.db.table\`` 复用远端 JDBC Catalog 并走受控 Catalog `WritePlan`；路径必须是三段式，不接受 SQL `OPTIONS`，overwrite 永久拒绝。
+- `save append ... as jdbc.\`catalog_static.db.table\`` 复用远端 JDBC Catalog 并走受控 Catalog `WritePlan`；路径必须是三段式，不接受 SQL `OPTIONS`，overwrite 永久拒绝。
 - MySQL save 的 URL、用户名、密码和 driver 只存在于 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*` 配置，不进入 SparkOne SQL。
 
 更完整的数据源语义见 [../data/datasources.md](../data/datasources.md)。
@@ -523,4 +522,4 @@ spark.sparkone.overwrite.zk.connectionTimeoutMs=15000
 
 - 引擎能力差异：[capability-diff.md](capability-diff.md)
 - 数据源配置：[../data/datasources.md](../data/datasources.md)
-- SQL 编辑器 Kyuubi 测试：[../ui/editor-testing/kyuubi.md](../ui/editor-testing/kyuubi.md#测试-kyuubi-sparkone_mysql-provider)
+- SQL 编辑器 Catalog/远程 Engine 测试：[../ui/editor-testing/kyuubi.md](../ui/editor-testing/kyuubi.md#测试-sparkone_mysql-providerlocalkyuubi)

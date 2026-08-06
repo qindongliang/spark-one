@@ -1,6 +1,6 @@
 # ODEP 库表与 HDFS 鉴权测试
 
-本文用于验证 SparkOne 页面经 Kyuubi 提交 SQL 时，Spark Engine 是否使用当前 RMS 真实用户，
+本文用于验证 SparkOne 页面经 Local 或 Kyuubi 提交 SQL 时，Spark Engine 是否使用当前 RMS 真实用户，
 在物理执行前完成 JDBC、Doris、Hive 库表及 HDFS 路径权限检查。测试分为 ODEP API 独立验证和 SparkOne
 页面端到端验证；接口通过不代表 Engine 链路通过，两部分都必须执行。
 
@@ -23,16 +23,16 @@
 - `save options owner=...` 和跨 owner overwrite 拒绝，RMS HDFS write 权限不能扩大写入范围。
 - ODEP 异常、超时、响应不完整、Kyuubi 用户签名无效和未知 Catalog 均默认拒绝。
 
-本轮只验证 Kyuubi Engine 鉴权。Local engine 不加载该扩展，不能用来判断本功能是否生效。
+建议先用 Local engine 在 IDEA 中断点调试 Catalog resolve、LogicalPlan 资源提取和 ODEP 请求，再用 Kyuubi 完成生产链路验收。Local 使用服务端 `TenantContext.username`，不校验 Kyuubi 签名，也不构成生产认证边界；Kyuubi 仍必须验证 ECDSA session 签名。
 
 ## 鉴权链路
 
 ```text
 SparkOne 页面登录的 RMS 用户名
   -> TenantContext.username
-  -> Kyuubi JDBC session user
-  -> Kyuubi ECDSA session user 签名
-  -> Spark Engine 验签并提取 LogicalPlan 资源
+  -> Local: runtime 设置语句级 Local subject
+  -> Kyuubi: JDBC session user + ECDSA session user 签名
+  -> Spark Engine 解析可信 subject 并提取 LogicalPlan 资源
   -> POST /api/sparkone/authz/check
   -> ODEP 查询该 subject 的 RMS 资源
   -> Spark Engine 在物理执行前允许或拒绝 SQL
@@ -217,7 +217,7 @@ Engine，确保下一次连接拉起新 Engine。只刷新 RMS 授权不需要�
 
 1. 启动 SparkOne，访问 `http://127.0.0.1:7070`。
 2. 输入用户 A 的 RMS 真实用户名登录，不要输入物理 Kerberos 统一账号。
-3. Engine 选择 `Kyuubi`，不要选择 `Local`。
+3. 调试时 Engine 可选择 `Local`；最终验收选择 `Kyuubi`，确认签名链路也生效。
 4. Session 先选择 `Tenant shared`；会话隔离用例再切换到 `Run isolated`。
 5. 执行 `select 1 as id;`，确认 SparkOne、Kyuubi 和 Engine 基础链路正常。
 
@@ -363,7 +363,7 @@ scripts/tests/odep-authz-api.sh authz_empty_user deny \
 
 ### E01 库级白名单允许读取
 
-以用户 A 登录，选择 Kyuubi：
+以用户 A 登录，选择当前待验证的 Local 或 Kyuubi Engine：
 
 ```sql
 select *
@@ -378,7 +378,7 @@ limit 10;
 两条 SQL 都应成功。Engine 日志应分别出现：
 
 ```text
-ODEP authorization allowed, subject=authz_db_user, resourceCount=1
+ODEP authorization allowed, phase=analysis, subject=authz_db_user, resourceCount=1
 ```
 
 这条用例确认只配置 `white:ask00:read` 时，无需再给 `users`、`orders` 设置 table 权限。
@@ -687,7 +687,7 @@ hdfs:/public/odep/user/firefly/t.csv:read
 Engine 日志应包含以下记录。
 
 ```text
-ODEP authorization allowed, subject=qindongliang, resourceCount=1
+ODEP authorization allowed, phase=analysis, subject=qindongliang, resourceCount=1
 ```
 
 这条用例同时证明 `owner` 只改变 workspace 路径归属，不替换当前用户，也不会作为 CSV reader
@@ -709,6 +709,10 @@ ODEP 请求使用当前登录用户和规范化后的绝对路径。
 subject=qindongliang
 hdfs:/public/odep/user/firefly/t.csv:read
 ```
+
+这类原生路径只请求一次：`phase=pre-analysis` 在任何 HDFS 访问前校验原始路径。
+relation 解析完成后，`analysis` 阶段仅使用绑定在当前计划上的授权证明复核最终路径，
+不会再次请求 ODEP。授权证明不跨 SQL、不设 TTL，也不是全局权限缓存。
 
 再单独验证无 authority 的 HDFS URI。
 
@@ -768,12 +772,12 @@ Resource access denied: hdfs:/public/odep/user/firefly/t1.csv:read
 Engine 日志仍保留 RMS reason，便于排障。
 
 ```text
-ODEP authorization denied, subject=qindongliang, resources=hdfs:/public/odep/user/firefly/t1.csv:read:NO_MATCHING_RESOURCE
+ODEP authorization denied, phase=pre-analysis, subject=qindongliang, resources=hdfs:/public/odep/user/firefly/t1.csv:read:NO_MATCHING_RESOURCE
 ```
 
-如果页面得到两行数据，说明权限没有在物理读取前拦截。如果页面得到 `PATH_NOT_FOUND`，说明夹具
-没有准备好。如果页面得到 HDFS `Permission denied`，说明先被 NameNode ACL 拦截，这三种结果都
-不能记为本用例通过。
+RMS 拒绝时，即使路径不存在也必须优先返回资源拒绝，且 Engine 不能产生文件枚举或 CSV schema
+inference job。如果页面得到数据、`PATH_NOT_FOUND` 或 HDFS `Permission denied`，都说明前置鉴权
+没有成为首次外部访问，不能记为本用例通过。
 
 ### 验证路径输入边界
 
@@ -793,15 +797,19 @@ select * from csv.`hdfs://nameservice1/public/odep/user/firefly/t.csv`;
 select * from csv.`file:///tmp/t.csv`;
 
 select * from csv.`s3a://bucket/t.csv`;
+
+select * from csv.`/public/odep/user/*/t.csv`;
+
+select * from csv.`/public/odep/user/%66irefly/t.csv`;
 ```
 
-前两条应包含 `LOAD managed HDFS requires a relative tenant workspace path`。后四条应包含
+前两条应包含 `LOAD managed HDFS requires a relative tenant workspace path`。其余语句应包含
 `only supported file providers with an absolute HDFS path are allowed`。这组用例确认以下边界。
 
 - `load` 只接受受控 workspace 相对路径，跨用户读取必须显式使用 `options owner`。
 - 原生文件 relation 只接受 `/absolute/path`、`hdfs:///absolute/path` 或
   `viewfs:///absolute/path`。
-- 相对 relation、带 authority 的 URI、本地文件和对象存储路径不会进入 RMS 鉴权，直接编译拒绝。
+- 相对 relation、glob、百分号编码、带 authority 的 URI、本地文件和对象存储路径不会进入 RMS 鉴权，直接编译拒绝。
 
 ### 验证所有文件写入边界
 
@@ -913,25 +921,27 @@ HDFS 开启 Trash 时可以按集群策略恢复；关闭 Trash 时目录删除�
 允许场景的 Engine 日志：
 
 ```text
-ODEP authorization allowed, subject=<RMS用户名>, resourceCount=<资源数>
+ODEP authorization allowed, phase=<pre-analysis|analysis>, subject=<RMS用户名>, resourceCount=<资源数>
 ```
 
 拒绝场景的 Engine 日志：
 
 ```text
-ODEP authorization denied, subject=<RMS用户名>, resources=<type:database.table:action:reason>
+ODEP authorization denied, phase=<pre-analysis|analysis>, subject=<RMS用户名>, resources=<type:database.table:action:reason>
 ```
 
 接口异常应有完整异常堆栈：
 
 ```text
-ODEP authorization failed, subject=<RMS用户名>, resourceCount=<资源数>
+ODEP authorization failed, phase=<pre-analysis|analysis>, subject=<RMS用户名>, resourceCount=<资源数>
 ```
 
 同时检查：
 
 - ODEP 接口日志中的 subject、请求次数和时间与页面 Run 对应。
-- 多表 SQL 是一次批量请求，不是每张表单独一次请求。
+- 同一阶段的多资源 SQL 是一次批量请求，不是每个资源单独一次请求。
+- 原生绝对 HDFS relation 只产生一次 `phase=pre-analysis` 请求；CSV schema inference 展开的子文件和最终 relation 在 `analysis` 阶段只做本地证明复核。
+- JDBC、Doris、Hive Catalog 资源和跨 owner managed load 仍产生 `phase=analysis` 请求。
 - 拒绝发生在目标 JDBC/Doris/Hive 执行之前。
 - 日志不输出 `ODEP_KYUUBI_SIGN_KEY`、数据源密码或完整连接参数。
 - 页面只显示可读错误；服务端仍保留失败语句、subject、资源和异常堆栈。
@@ -978,9 +988,9 @@ ODEP 不可达的 fail-closed 验证。任何拒绝用例只在数据源执行�
 - `database` 使用 SQL 可见的逻辑 alias。ODEP 路由到 `physicalNamespace` 后不能改用物理库名鉴权。
 - 当前只识别单层 namespace；多层 namespace 默认拒绝。
 - 当前不对 `SHOW NAMESPACES`、`SHOW TABLES` 等元数据枚举做库表鉴权。
-- `SELECT 1` 等无外部资源查询不会解析 Kyuubi 用户签名，也不会调用 ODEP。
-- 静态 `mysql_static`、`doris_static` Catalog 当前不在允许列表，会默认拒绝。
+- `SELECT 1` 等无外部资源查询不会解析当前 Engine subject，也不会调用 ODEP。
+- 静态 `mysql_static`、`doris_static` Catalog 不调用 ODEP/RMS，开发调试环境依赖静态数据源自身的认证与授权。
 - ODEP 不缓存权限判定；RMS 侧是否即时生效取决于 RMS SDK/资源缓存刷新机制。
 - 权限接口只读取 `getPlatformUserResourceFormat(subject)`，不合并 `app_username`。
 - HDFS RMS 资源只扩大读取范围，不扩大 SparkOne 的文件写入范围；用户不能用 write 白名单绕过 workspace ownership。
-- `load owner` 只改变 workspace 路径归属，Kyuubi 签名 subject 仍是当前 RMS 用户。
+- `load owner` 只改变 workspace 路径归属，鉴权 subject 仍是当前 RMS 用户；Local 来自 TenantContext，Kyuubi 来自签名 session user。

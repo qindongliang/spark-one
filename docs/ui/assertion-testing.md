@@ -9,7 +9,7 @@
 
 ```bash
 mvn -pl sparkone-server -am \
-  -Dtest=SparkOneCompilerTest,StatementPolicyTest,SparkOneRuntimePreviewTest,SparkOneEngineTest \
+  -Dtest=SparkOneCompilerTest,StatementPolicyTest,SparkOneRuntimePreviewTest,SparkOneEngineTest,LocalSparkEngineContractTest,KyuubiSparkEngineContractTest \
   -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 

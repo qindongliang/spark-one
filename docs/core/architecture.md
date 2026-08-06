@@ -17,6 +17,7 @@ SparkOne DSL + native Spark SQL script
 - 当前用户名登录只创建开发态逻辑租户上下文，不是生产认证；生产身份后续由 RMS 提供。
 - Kyuubi 作为远程 SQL gateway 接入；YARN、Kubernetes、Standalone 等终态由 Kyuubi engine 侧承接，不放进 SparkOne。
 - 受控 HDFS load/overwrite 是 Spark SQL 难以安全表达的少数 runtime adapter：薄 compiler 生成内部命令，`sparkone-hdfs-overwrite-extension` 在 Spark driver 内解析 workspace owner 和相对路径；overwrite 的任务状态和文件发布职责不会放进 SparkOne Web 进程。
+- ODEP JDBC/Doris Catalog 与 RMS-backed 鉴权在 Local、Kyuubi 两条 Spark 执行路径共用：Local 默认装配路由 Catalog、MySQL provider 和 Local subject 扩展，Kyuubi 由 Spark Engine 配置装配并使用签名 session subject。ODEP 连接只在首次资源访问时懒解析。
 
 主要代码：
 

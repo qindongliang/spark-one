@@ -7,8 +7,8 @@
 - 文件 `load` 只接受 workspace 相对路径。省略 `owner` 时使用当前登录用户；`options owner="bob"` 时读取指定用户的 workspace。
 - `load csv.\`imports/users.csv\`` 默认在 Spark driver 内解析为 `/public/odep/user/${username}/imports/users.csv`。
 - `load` 的绝对路径、URI、`..` 和内部 `.sparkone-overwrite-*` 目录都会被拒绝。
-- 原生 SQL/`view` 可以直接读取受支持文件 provider 的 `/absolute/path`、`hdfs:///absolute/path` 或 `viewfs:///absolute/path`；Kyuubi Engine 会用解析后的绝对路径调用 ODEP/RMS `hdfs read` 鉴权。相对原生 relation、带 authority 的 HDFS URI、`file://`、S3/OSS 和未知 provider 仍拒绝。
-- 当前用户自己的 managed load 按 workspace ownership 放行；跨 owner load 才调用 ODEP/RMS。Local engine 不加载生产鉴权扩展，只用于开发测试。
+- 原生 SQL/`view` 可以直接读取受支持文件 provider 的 `/absolute/path`、`hdfs:///absolute/path` 或 `viewfs:///absolute/path`；Local 和 Kyuubi Engine 都会先用原始规范化路径调用一次 ODEP/RMS `hdfs read`，允许后才做目录枚举和 schema inference，并在 analysis 后使用当前计划的证明本地复核最终 relation。Local 使用开发态 subject，Kyuubi 使用签名 session user。相对原生 relation、glob、百分号编码、带 authority 的 HDFS URI、`file://`、S3/OSS 和未知 provider 仍拒绝。
+- 当前用户自己的 managed load 按 workspace ownership 放行；跨 owner load 才调用 ODEP/RMS。Local 与 Kyuubi 使用同一授权规则；Local subject 来自开发态 `TenantContext`，只用于断点调试，生产验收仍以 Kyuubi 签名 subject 为准。
 
 CSV：
 
@@ -71,7 +71,7 @@ from parquet.`/public/odep/share/events`
 limit 20;
 ```
 
-这条 SQL 不经过 `load owner`，但仍在 Kyuubi Engine 分析阶段以当前签名用户和绝对路径调用同一个 ODEP 批量鉴权接口。
+这条 SQL 不经过 `load owner`，但仍在 Local 或 Kyuubi Engine 的 parser 与 Analyzer 之间，以当前 subject 和绝对路径调用同一个 ODEP 批量鉴权接口；RMS 允许后才会访问 HDFS。Local 的 subject 来自 `TenantContext`，Kyuubi 的 subject 来自签名 session user。
 
 JSON：
 
@@ -198,4 +198,4 @@ show tables in hive.default;
 select * from hive.default.some_table limit 20;
 ```
 
-预期：Compile 分别显示 `show tables in spark_catalog.default` 和 `select * from spark_catalog.default.some_table limit 20`，Run 通过 Kyuubi/Spark 内置 session catalog 查询 Hive。
+预期：Compile 分别显示 `show tables in spark_catalog.default` 和 `select * from spark_catalog.default.some_table limit 20`，Run 在 Local 或 Kyuubi/Spark 内置 session catalog 中查询 Hive。

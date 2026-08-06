@@ -186,22 +186,8 @@ engines {
       krb5Conf = "/etc/krb5.conf"
     }
 
-    datasources.mysql {
-      analytics {
-        url = "jdbc:mysql://127.0.0.1:3306/app?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
-        driver = "com.mysql.cj.jdbc.Driver"
-        user = "root"
-        password = "change-me"
-
-        options {
-          fetchsize = 1000
-          batchsize = 1000
-        }
-      }
-    }
-
     catalogs {
-      mysql {
+      mysql_static {
         url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
         driver = "com.mysql.cj.jdbc.Driver"
         user = "root"
@@ -212,7 +198,7 @@ engines {
         }
       }
 
-      doris {
+      doris_static {
         fenodes = "fe-1:8030,fe-2:8030"
         queryPort = 9030
         user = "root"
@@ -231,17 +217,20 @@ engines {
 }
 ```
 
-MySQL catalog 单独配置在 `engines.local.catalogs.mysql`，不会从 `engines.local.datasources.mysql.analytics` 隐式生成：
+MySQL 连接只配置在 `engines.local.catalogs.mysql_static`，不再维护 `datasources.mysql`：
 
 ```sql
-show namespaces in mysql;
-show tables in mysql.app;
-select * from mysql.app.some_table limit 10;
+show namespaces in mysql_static;
+show tables in mysql_static.app;
+select * from mysql_static.app.some_table limit 10;
+load jdbc.`mysql_static.app.some_table` as some_table;
 ```
 
-这个 catalog 适合浏览和原生查询；`load/save mysql` 仍走 local 引擎的 `datasources.mysql.*` adapter，用于隐藏连接信息、控制 `dbtable/query` 和执行 save 安全策略。
+HOCON 会把该配置注册成 `mysql_static`，避免占用默认 ODEP 路由的 `jdbc`/`doris` 名称。静态 Catalog 可直接三段式查询，也可通过 `load/save jdbc` 使用；它不走 RMS，但 SQL 不能覆盖连接参数。未知 Catalog 仍 fail closed。
 
-注意 MySQL catalog 的 JDBC URL 需要带 `databaseTerm=SCHEMA`。Spark JDBC Catalog 会把 `show tables in mysql.app` 里的 `app` 作为 JDBC `schemaPattern` 查询元数据；MySQL Connector/J 默认把 database 当作 JDBC catalog，导致 schemaPattern 过滤不到预期库。设置后，MySQL database 会按 schema 暴露，`show namespaces/tables` 的层级才和 Spark catalog 语法一致。
+注意 MySQL catalog 的 JDBC URL 需要带 `databaseTerm=SCHEMA`。Spark JDBC Catalog 会把 `show tables in mysql_static.app` 里的 `app` 作为 JDBC `schemaPattern` 查询元数据；MySQL Connector/J 默认把 database 当作 JDBC catalog，导致 schemaPattern 过滤不到预期库。设置后，MySQL database 会按 schema 暴露，`show namespaces/tables` 的层级才和 Spark catalog 语法一致。
+
+Local 默认注册 ODEP Catalog 和 RMS 鉴权扩展，不需要功能开关。要在 IDEA 中调试 ODEP 数据链路，可配置 `engines.local.odep.apiUrl/appId/signKey` 和可选超时；`ODEP_API_URL`、`ODEP_KYUUBI_APP_ID`、`ODEP_KYUUBI_SIGN_KEY` 及超时环境变量会覆盖 HOCON。普通启动和 `select 1` 不读取这些配置，第一次访问 ODEP Catalog 或需鉴权资源时才校验并调用接口。
 
 也可以不使用 HOCON，直接传程序参数：
 
@@ -282,7 +271,7 @@ preview {
 
 写入权限由代码中的固定能力矩阵决定，不再提供全局 overwrite policy、文件备份、protected paths 或 MySQL/Doris overwrite 开关。Hive、Doris、MySQL 和 external path overwrite 永久拒绝，配置不能放开。
 
-受控 HDFS workspace 使用 `/public/odep/user/${username}`。文件 load/overwrite DSL 只接受相对路径：load 由 Spark driver extension 解析 workspace owner 和路径并注册临时视图；overwrite 只允许当前签名用户自己的 workspace，并额外通过 ZK 排他和同级 staging 发布。跨 owner load 和原生绝对 HDFS relation 读取走 ODEP/RMS `hdfs read` 鉴权。原生文件路径写入、文件 append、本地文件、S3 和 OSS 裸路径读写保持拒绝。Local 的 ZK/workspace 配置见 [../engines/local.md](../engines/local.md)，Kyuubi 的扩展部署见 [../engines/kyuubi.md](../engines/kyuubi.md)。
+受控 HDFS workspace 使用 `/public/odep/user/${username}`。文件 load/overwrite DSL 只接受相对路径：load 由 Spark driver extension 解析 workspace owner 和路径并注册临时视图；overwrite 只允许当前 subject 自己的 workspace，并额外通过 ZK 排他和同级 staging 发布。跨 owner load 和原生绝对 HDFS relation 读取走 ODEP/RMS `hdfs read` 鉴权；原生路径在 Analyzer 访问 HDFS 前只鉴权一次，允许后才解析 relation，analysis 使用当前计划的证明本地复核。Local 使用服务端 TenantContext subject，Kyuubi 使用签名 subject；原生文件路径写入、文件 append、本地文件、S3、OSS、glob 和百分号编码裸路径读写保持拒绝。Local 的 ZK/workspace 配置见 [../engines/local.md](../engines/local.md)，Kyuubi 的扩展部署见 [../engines/kyuubi.md](../engines/kyuubi.md)。
 
 原生 SQL 只允许查询和只读检查命令。`CREATE/DROP/ALTER/INSERT` 等 DDL/DML 在 Compile 阶段永久拒绝，必须通过平台外流程治理表结构，并通过 SparkOne `save` 写入；不存在可以放开的 HOCON 配置。
 

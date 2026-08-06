@@ -38,7 +38,7 @@ Shade jar：
 数据源依赖：
 
 - Spark core 内置的 `csv/json/parquet/orc/text/libsvm` 等 provider 可直接走 Spark SQL。
-- Spark 底层 JDBC 由 `load/save mysql` runtime adapter 和 ODEP `jdbc` 路由使用；`load jdbc` 只接受 `alias.table`，ODEP MySQL 分区读取复用 Engine 内 `sparkone_mysql` provider，不暴露 JDBC 连接参数，`save jdbc` 当前不支持。
+- Spark 底层 JDBC 统一由 Catalog 承载：ODEP 动态路径使用 `jdbc.alias.table`，静态路径使用 `catalog_static.database.table`。`load jdbc` 的 MySQL 分区读取复用 Engine 内 `sparkone_mysql` provider；`save jdbc` 只允许静态三段式 Catalog 目标。
 - Doris 4.x 读写由 Spark Doris Catalog / Connector 提供，Spark 3.3 可通过运行环境引入 `org.apache.doris:spark-doris-connector-spark-3.3:25.2.0`；SparkOne 主包不默认内置该 connector。
 - `excel` 不是 Spark core 内置，不默认打进 SparkOne 主包。
 - provider 别名不要写死在前端或 runtime，统一放在 `DataSourceResolver`。
@@ -49,7 +49,7 @@ Spark engine 扩展依赖：
 
 - `sparkone-hdfs-overwrite-extension_2.12` 承载受控 HDFS load/overwrite，将 Spark SQL、Curator 和 SLF4J 标记为 `provided`，部署到 Kyuubi 时复用 Spark/Hadoop engine classpath，避免重复打包造成版本冲突。
 - `sparkone-kyuubi-odep-authz-extension` 承载 Engine 资源提取、Kyuubi session user 签名校验、HDFS workspace ownership 和 ODEP 批量鉴权；它以 `provided` 方式复用 `sparkone-hdfs-overwrite-extension_2.12` 的路径解析与 managed load plan 标记，因此生产 Engine 必须同时部署两个 JAR。
-- Local server 通过 Maven reactor 依赖并直接注册 HDFS extension；ODEP authz extension 只部署到 Kyuubi Spark Engine，两者都需要在 Kyuubi 侧单独部署 JAR 并配置 `spark.sql.extensions`。
+- Local server 通过 Maven reactor 依赖 HDFS extension、ODEP Catalog plugin、MySQL provider 和 ODEP authz extension，并直接注册 Local 专用扩展与路由 Catalog；这些类已进入 server fat jar。Kyuubi Spark Engine 仍需单独部署相应 JAR 并配置 `spark.sql.extensions`，且继续使用 Kyuubi 签名扩展入口。
 
 配置文件依赖：
 

@@ -211,8 +211,37 @@ private[authz] object OdepAuthzClient {
   private val MaxResponseBytes = 10 * 1024 * 1024
   private val NonceAlphabet =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray
+  private val RuntimePropertyNames = Map(
+    "ODEP_API_URL" -> "sparkone.odep.api.url",
+    "ODEP_KYUUBI_APP_ID" -> "sparkone.odep.app.id",
+    "ODEP_KYUUBI_SIGN_KEY" -> "sparkone.odep.sign.key",
+    "ODEP_CONNECT_TIMEOUT_SECONDS" -> "sparkone.odep.connect.timeout.seconds",
+    "ODEP_REQUEST_TIMEOUT_SECONDS" -> "sparkone.odep.request.timeout.seconds")
 
-  def fromEnvironment(): OdepAuthzClient = fromEnvironment(System.getenv())
+  def fromRuntimeConfiguration(): OdepAuthzClient = {
+    val properties = RuntimePropertyNames.values.flatMap { name =>
+      sys.props.get(name).map(name -> _)
+    }.toMap
+    fromRuntimeConfiguration(sys.env, properties)
+  }
+
+  private[authz] def fromRuntimeConfiguration(
+      environment: Map[String, String],
+      properties: Map[String, String]): OdepAuthzClient = {
+    val propertyConfiguration = RuntimePropertyNames.flatMap { case (environmentName, propertyName) =>
+      properties.get(propertyName)
+        .map(_.trim)
+        .filter(_.nonEmpty)
+        .map(environmentName -> _)
+    }
+    val environmentConfiguration = RuntimePropertyNames.keys.flatMap { name =>
+      environment.get(name)
+        .map(_.trim)
+        .filter(_.nonEmpty)
+        .map(name -> _)
+    }.toMap
+    fromEnvironment(propertyConfiguration ++ environmentConfiguration)
+  }
 
   private[authz] def fromEnvironment(environment: java.util.Map[String, String]): OdepAuthzClient = {
     import scala.collection.JavaConverters._

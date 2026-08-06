@@ -25,7 +25,7 @@ final class SparkOneMysqlDataSource private[mysql] (
 
   override def createRelation(sqlContext: SQLContext, parameters: Map[String, String]): BaseRelation = {
     val normalized = parameters.map { case (key, value) => key.toLowerCase -> value.trim }
-    val catalog = requiredAny(normalized, Seq("catalog", "profile"))
+    val catalog = required(normalized, "catalog")
     val dbtable = required(normalized, "dbtable")
     val spark = sqlContext.sparkSession
     val catalogPrefix = s"spark.sql.catalog.$catalog."
@@ -36,17 +36,27 @@ final class SparkOneMysqlDataSource private[mysql] (
     }
 
     val catalogClass = allConf.getOrElse(s"spark.sql.catalog.$catalog", "")
-    val (baseJdbcOptions, resolvedDbtable, authzResource) =
+    val (baseJdbcOptions, resolvedDbtable, authzMode, authzNamespace, authzTable) =
       normalized.get("alias").filter(_.nonEmpty) match {
       case Some(alias) =>
         val (options, table) = resolveOdepJdbcRoute(catalog, alias, dbtable, catalogClass)
-        (options, table, Some(alias -> dbtable))
+        (options, table, "odep", alias, dbtable)
       case None =>
+        if (!catalog.toLowerCase.endsWith("_static")) {
+          throw new IllegalArgumentException(
+            s"sparkone_mysql static catalog name must end in _static: $catalog")
+        }
         if (!catalogClass.toLowerCase.contains("jdbc")) {
           throw new IllegalArgumentException(
             s"sparkone_mysql requires JDBC catalog '$catalog', but spark.sql.catalog.$catalog is '$catalogClass'")
         }
-        (requireCatalogOptions(catalog, catalogOptions, Seq("url")), dbtable, None)
+        val options = requireCatalogOptions(catalog, catalogOptions, Seq("url"))
+        if (!isMysql(options)) {
+          throw new IllegalArgumentException(
+            s"sparkone_mysql static partition reads only support MySQL JDBC catalogs: $catalog")
+        }
+        val (database, table) = staticTable(dbtable)
+        (options, s"${quoteMysqlIdentifier(database)}.${quoteMysqlIdentifier(table)}", "static", database, table)
     }
     val dbtableWithFilter = normalized.get("whereclausebase64") match {
       case Some(encoded) =>
@@ -64,9 +74,12 @@ final class SparkOneMysqlDataSource private[mysql] (
     val jdbcOptions = enrichLoadOptions(baseJdbcOptions ++ loadOptions + ("dbtable" -> dbtableWithFilter))
     logEffectiveOptions(jdbcOptions)
     val relation = new JdbcRelationProvider().createRelation(sqlContext, jdbcOptions)
-    authzResource.map { case (alias, table) =>
-      new SparkOneMysqlRelation(relation, alias, table)
-    }.getOrElse(relation)
+    new SparkOneMysqlRelation(
+      relation,
+      authzMode,
+      catalog,
+      authzNamespace,
+      authzTable)
   }
 
   private def resolveOdepJdbcRoute(
@@ -101,9 +114,15 @@ final class SparkOneMysqlDataSource private[mysql] (
     }
   }
 
-  private def requiredAny(options: Map[String, String], keys: Seq[String]): String = {
-    keys.flatMap(key => options.get(key).filter(_.nonEmpty)).headOption.getOrElse {
-      throw new IllegalArgumentException(s"sparkone_mysql requires one of options: ${keys.mkString(", ")}")
+  private def staticTable(value: String): (String, String) = {
+    value.split("\\.", -1) match {
+      case Array(database, table) =>
+        validateIdentifier(database, "static database")
+        validateIdentifier(table, "static table")
+        database -> table
+      case _ =>
+        throw new IllegalArgumentException(
+          s"sparkone_mysql static dbtable must be database.table: $value")
     }
   }
 
