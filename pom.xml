@@ -4,20 +4,20 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>ai.sparkone</groupId>
-    <artifactId>spark-one-parent</artifactId>
+    <groupId>ai.queryone</groupId>
+    <artifactId>query-one-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
 
-    <name>SparkOne Parent</name>
-    <description>Aggregator for SparkOne server and Spark engine provider modules.</description>
+    <name>QueryOne Parent</name>
+    <description>Aggregator for QueryOne server and Spark engine provider modules.</description>
 
     <modules>
-        <module>sparkone-server</module>
-        <module>sparkone-mysql-provider</module>
-        <module>sparkone-hdfs-overwrite-extension</module>
-        <module>sparkone-kyuubi-odep-plugin</module>
-        <module>sparkone-kyuubi-odep-authz-extension</module>
+        <module>queryone-server</module>
+        <module>queryone-mysql-provider</module>
+        <module>queryone-hdfs-overwrite-extension</module>
+        <module>queryone-kyuubi-odep-plugin</module>
+        <module>queryone-kyuubi-odep-authz-extension</module>
     </modules>
 
     <properties>

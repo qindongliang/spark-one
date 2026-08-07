@@ -1,6 +1,6 @@
 # MySQL 测试
 
-本页验证统一后的 JDBC Catalog 语义。Local 和 Kyuubi 使用相同 SQL，差别只在 Catalog 配置归属：Local 从 SparkOne HOCON 注入，Kyuubi 从远端 Spark Engine 配置读取。
+本页验证统一后的 JDBC Catalog 语义。Local 和 Kyuubi 使用相同 SQL，差别只在 Catalog 配置归属：Local 从 QueryOne HOCON 注入，Kyuubi 从远端 Spark Engine 配置读取。
 
 ## 前置配置
 
@@ -69,7 +69,7 @@ CREATE OR REPLACE TEMPORARY VIEW mysql_hosts AS
 SELECT * FROM mysql_static.Dworks.cloud_host_info WHERE id > 0
 ```
 
-大表分区读取使用内部 `sparkone_mysql` provider：
+大表分区读取使用内部 `queryone_mysql` provider：
 
 ```sql
 load jdbc.`mysql_static.Dworks.cloud_host_info`
@@ -97,17 +97,17 @@ as mysql_hosts_bounded;
 
 ## SAVE
 
-目标表必须由平台外 DDL 流程预先创建。SparkOne 只开放 append：
+目标表必须由平台外 DDL 流程预先创建。QueryOne 只开放 append：
 
 ```sql
 view mysql_save_source as
 select 1 as id, 'alice' as name;
 
 save append mysql_save_source
-as jdbc.`mysql_static.Dworks.sparkone_user_result`;
+as jdbc.`mysql_static.Dworks.queryone_user_result`;
 
 select *
-from mysql_static.Dworks.sparkone_user_result
+from mysql_static.Dworks.queryone_user_result
 where id = 1;
 ```
 

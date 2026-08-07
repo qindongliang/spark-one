@@ -1,6 +1,6 @@
 # SQL 编辑器基础测试
 
-这个页面是 SparkOne MVP 的双引擎测试台，用来验证 Spark SQL、SparkOne 薄 DSL 转译、HDFS/Hive 配置和数据源读写。Local 适合 IDEA 断点调试，Kyuubi 适合远程 Engine 和生产链路验收。
+这个页面是 QueryOne MVP 的双引擎测试台，用来验证 Spark SQL、QueryOne 薄 DSL 转译、HDFS/Hive 配置和数据源读写。Local 适合 IDEA 断点调试，Kyuubi 适合远程 Engine 和生产链路验收。
 
 数据质量 `assert` 的完整用例单独见 [Assert 测试用例](../assertion-testing.md)。
 
@@ -29,11 +29,11 @@ UI 操作流程和大部分 SQL 用例是两边共用的，但不是把 Local �
 
 - 左侧编辑器：输入一段 SQL 脚本，可以包含多条语句，用分号 `;` 分隔。
 - `Session`：只在 Kyuubi 引擎下显示。`Tenant shared` 表示同一租户共享会话、支持跨 Run 临时视图；`Run isolated` 表示每次 Run 使用独立会话，临时视图不能跨 Run，适合模拟定时任务。
-- `Compile`：只编译，不执行。只有 `server.showCompiledSql = true` 时才显示，适合检查 `load/save` 这类 SparkOne DSL 被转成了什么 Spark SQL。
+- `Compile`：只编译，不执行。只有 `server.showCompiledSql = true` 时才显示，适合检查 `load/save` 这类 QueryOne DSL 被转成了什么 Spark SQL。
 - `Run`：编译后按顺序执行每条 SQL，后面的语句可以使用前面创建的临时视图。
 - `Preview`：在结果区的 Preview tab 里显示；对 `load ... as t`，先 `Run` 注册临时视图并展示 schema，再点该结果里的 `Preview` tab 显式拉取 `t` 的预览数据。
 - 选中执行：如果编辑器里有选中的 SQL，`Compile` 和 `Run` 只处理选中部分；没有选区时处理整篇脚本。
-- `Run` 默认隐藏每条 statement 的编译后 SQL；如果需要调试转译结果，在 `conf/sparkone.conf` 里配置 `server.showCompiledSql = true`。
+- `Run` 默认隐藏每条 statement 的编译后 SQL；如果需要调试转译结果，在 `conf/queryone.conf` 里配置 `server.showCompiledSql = true`。
 - `Rows`：控制每条 statement 最多预览多少行；默认上限是 `preview.maxRows = 10`，页面输入只能小于或等于该 HOCON 上限。
 - 默认结果 tab 由 `preview.defaultTab` 控制，可选 `schema` 或 `preview`；默认是 `schema`。
 - 右侧结果区：展示每条语句的编译后 SQL、耗时、schema 和预览数据；schema 和预览数据通过 tab 切换，失败语句会显示错误信息。
@@ -56,14 +56,14 @@ show namespaces in hive;
 show tables in hive.default;
 ```
 
-`hive` 是 SparkOne 对内置 `spark_catalog` 的逻辑别名。注意 Spark SQL 使用复数
+`hive` 是 QueryOne 对内置 `spark_catalog` 的逻辑别名。注意 Spark SQL 使用复数
 `SHOW DATABASES`，不支持 `show database in hive`；测试手册统一使用等价且更清晰的
 `SHOW NAMESPACES IN hive`。`SHOW CATALOGS` 不枚举全部配置，只列出当前 Session 已实例化
 的 Catalog；完整的 Local/Kyuubi 验证顺序见 [Catalog 与远程 Engine 数据源测试](kyuubi.md#catalog-配置与-show-catalogs-的差异)。
 
 ## 默认结果 Tab
 
-在 `conf/sparkone.conf` 中可以控制运行结果默认展示 schema 还是 preview：
+在 `conf/queryone.conf` 中可以控制运行结果默认展示 schema 还是 preview：
 
 ```hocon
 preview {
@@ -137,7 +137,7 @@ select * from isolated_session_probe;
 
 ## 脚本变量 Set
 
-SparkOne 支持脚本内变量，变量只在同一次 `Run` 内按顺序生效，后续语句用 `${name}` 引用。
+QueryOne 支持脚本内变量，变量只在同一次 `Run` 内按顺序生效，后续语句用 `${name}` 引用。
 
 普通字面量变量：
 
@@ -180,7 +180,7 @@ as orders_delta;
 
 - `Compile` 只展示占位动作，不执行 SQL 变量查询；要看到 `${name}` 的运行时替换效果，请用 `Run`。
 - `Run` 时 `set` 语句只更新变量，不展示内部 schema 和 preview；重点看后续业务查询语句的结果。
-- SparkOne 不支持 MLSQL 的 `set name = \`select ...\` where type = "sql"` 写法；请使用 `set name as select ...`。
+- QueryOne 不支持 MLSQL 的 `set name = \`select ...\` where type = "sql"` 写法；请使用 `set name as select ...`。
 
 ## Spark SQL 原生能力
 
@@ -210,7 +210,7 @@ select * from city_stats order by cnt desc;
 
 ## View As 语法糖
 
-SparkOne 支持 `view name as select ...` 语法糖，用于把查询结果注册成当前 Spark 会话里的临时视图，避免反复书写 `CREATE OR REPLACE TEMPORARY VIEW`：
+QueryOne 支持 `view name as select ...` 语法糖，用于把查询结果注册成当前 Spark 会话里的临时视图，避免反复书写 `CREATE OR REPLACE TEMPORARY VIEW`：
 
 ```sql
 view city_stats as
@@ -232,7 +232,7 @@ group by city;
 
 注意：
 
-- SparkOne 不再支持尾部 `select ... as table` 语法糖，避免跟 Spark 原生列别名、表别名产生歧义。
+- QueryOne 不再支持尾部 `select ... as table` 语法糖，避免跟 Spark 原生列别名、表别名产生歧义。
 - `view myview as select current_date() as dt, current_timestamp() as ts` 会注册成 `myview`，其中 `as dt`、`as ts` 都是字段别名。
 - `select * from users as u` 这种 Spark 原生表别名会保持原样；`u` 只是本条查询内的别名，不会注册成临时视图。
 - 生成的目标统一使用 `CREATE OR REPLACE TEMPORARY VIEW`，表示只在当前 Spark 会话内有效。
@@ -246,4 +246,4 @@ from users as u
 join orders as o on u.id = o.user_id;
 ```
 
-这里 `as u`、`as o` 是 Spark SQL 的表别名，`joined_orders` 才是 SparkOne 临时视图名。
+这里 `as u`、`as o` 是 Spark SQL 的表别名，`joined_orders` 才是 QueryOne 临时视图名。

@@ -32,10 +32,10 @@ rms -> odep-web -> odep-system -> mlsql -> spark
 
 也就是从 RMS 登录跳转到 ODEP Web，再由 ODEP System 访问 MLSQL 提交 Spark 计算任务。
 
-SparkOne 的目标不是复制旧链路，而是把可取的数据平台体验收敛到更轻、更原生适配 Spark SQL 的路线：
+QueryOne 的目标不是复制旧链路，而是把可取的数据平台体验收敛到更轻、更原生适配 Spark SQL 的路线：
 
 ```text
-sparkone -> kyuubi -> spark
+queryone -> kyuubi -> spark
 ```
 
 关键源码参考：

@@ -1,6 +1,6 @@
 # 身份与租户上下文
 
-当前登录页只用于开发测试环境选择逻辑租户，不是生产认证。用户输入用户名后，SparkOne 在服务端创建随机 session，并通过 HttpOnly Cookie 关联后续请求。
+当前登录页只用于开发测试环境选择逻辑租户，不是生产认证。用户输入用户名后，QueryOne 在服务端创建随机 session，并通过 HttpOnly Cookie 关联后续请求。
 
 约束：
 
@@ -10,7 +10,7 @@
   只选择要读取的 workspace，跨 owner 仍以当前 subject 走 ODEP/RMS 鉴权；`save options owner` 拒绝。
 - Local engine 仍是单 SparkSession 开发测试台，不提供生产多租户隔离。Run 和 Preview 会把服务端 `TenantContext.username` 放入语句线程的 Local subject 作用域，供 ODEP 鉴权扩展使用，请求结束后立即恢复。
 - Kyuubi engine 为每个逻辑租户维护独立 JDBC session，JDBC user 使用 `TenantContext.username`；Spark/HDFS 物理访问仍使用 Kyuubi 配置的统一 Kerberos principal/keytab。
-- Kyuubi Engine 权限扩展只信任 operation 传入并通过 ECDSA 校验的 session user；Local 专用扩展只读取 SparkOne runtime 设置的 Local subject。两个入口不互相回退，也不接受请求体、SQL 或 Spark 配置覆盖鉴权 subject。
+- Kyuubi Engine 权限扩展只信任 operation 传入并通过 ECDSA 校验的 session user；Local 专用扩展只读取 QueryOne runtime 设置的 Local subject。两个入口不互相回退，也不接受请求体、SQL 或 Spark 配置覆盖鉴权 subject。
 
 生产环境接入 RMS 时，应由 RMS 登录结果创建同一种 `TenantContext`，替换开发登录入口，不改变编译和执行链路。未经 RMS 认证前，当前用户名登录不能作为安全边界。
 

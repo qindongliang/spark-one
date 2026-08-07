@@ -1,6 +1,6 @@
 # Assert 测试用例
 
-本文用于验证 SparkOne `assert` 在 Local 和 Kyuubi 引擎上的编译、执行、结果展示、
+本文用于验证 QueryOne `assert` 在 Local 和 Kyuubi 引擎上的编译、执行、结果展示、
 失败动作和短路行为。
 
 ## 自动化测试
@@ -8,8 +8,8 @@
 执行：
 
 ```bash
-mvn -pl sparkone-server -am \
-  -Dtest=SparkOneCompilerTest,StatementPolicyTest,SparkOneRuntimePreviewTest,SparkOneEngineTest,LocalSparkEngineContractTest,KyuubiSparkEngineContractTest \
+mvn -pl queryone-server -am \
+  -Dtest=QueryOneCompilerTest,StatementPolicyTest,QueryOneRuntimePreviewTest,QueryOneEngineTest,LocalSparkEngineContractTest,KyuubiSparkEngineContractTest \
   -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
@@ -27,7 +27,7 @@ mvn -pl sparkone-server -am \
 | A08 | 样本上限 | 最多返回请求上限行，多余行使 `truncated=true`。 |
 | A09 | 查询异常 | 结果表不存在等执行错误状态为 `error`，与业务 `failed` 区分。 |
 | A10 | Kyuubi 对等 | 使用同一违规 SQL，并具有相同通过、失败和短路语义。 |
-| A11 | 内联 SELECT 编译 | 生成带 `sparkone_assert_input` 别名的子查询违规扫描。 |
+| A11 | 内联 SELECT 编译 | 生成带 `queryone_assert_input` 别名的子查询违规扫描。 |
 | A12 | 嵌套 SQL | 内部函数、子查询、`WHERE`、字符串和脚本变量保持原始 Spark SQL 语义。 |
 | A13 | 内联检查执行 | Local 上通过时继续，失败时返回样本并短路。 |
 | A14 | 内联 Kyuubi 对等 | Kyuubi 执行与 Local 相同的违规 SQL 和失败语义。 |
@@ -250,7 +250,7 @@ message "分类数据量不足";
 ```
 
 预期：检查失败，违规样本包含分类 `B`；内层查询的括号和 `WHERE` 不会被识别为
-SparkOne DSL 边界。
+QueryOne DSL 边界。
 
 ## T12 检查失败但任务成功
 

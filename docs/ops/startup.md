@@ -1,9 +1,9 @@
 # Startup
 
-SparkOne 当前是本地开发测试服务，入口类：
+QueryOne 当前是本地开发测试服务，入口类：
 
 ```text
-ai.sparkone.server.SparkOneServer
+ai.queryone.server.QueryOneServer
 ```
 
 默认访问地址：
@@ -22,9 +22,9 @@ http://127.0.0.1:7070
 
 用 IDEA 导入仓库根目录的 `pom.xml`。根 POM 是 Maven aggregator，会自动识别：
 
-- `sparkone-server`
-- `sparkone-mysql-provider`
-- `sparkone-hdfs-overwrite-extension`
+- `queryone-server`
+- `queryone-mysql-provider`
+- `queryone-hdfs-overwrite-extension`
 
 ## Maven
 
@@ -32,14 +32,14 @@ http://127.0.0.1:7070
 
 ```bash
 sdk env
-mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
+mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer
 ```
 
 指定端口：
 
 ```bash
-mvn -pl sparkone-server exec:java \
-  -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
+mvn -pl queryone-server exec:java \
+  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
   -Dexec.args="--port 7071"
 ```
 
@@ -48,51 +48,51 @@ mvn -pl sparkone-server exec:java \
 推荐本地开发和 IDEA 都使用 HOCON：
 
 ```bash
-cp conf/sparkone.conf.template conf/sparkone.conf
+cp conf/queryone.conf.template conf/queryone.conf
 ```
 
-默认启动会自动读取 `conf/sparkone.conf`：
+默认启动会自动读取 `conf/queryone.conf`：
 
 ```bash
-mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
+mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer
 ```
 
 也可以显式指定配置文件：
 
 ```bash
-mvn -pl sparkone-server exec:java \
-  -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
-  -Dexec.args="--conf conf/sparkone.conf"
+mvn -pl queryone-server exec:java \
+  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
+  -Dexec.args="--conf conf/queryone.conf"
 ```
 
 临时覆盖端口：
 
 ```bash
-mvn -pl sparkone-server exec:java \
-  -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
-  -Dexec.args="--conf conf/sparkone.conf --port 7071"
+mvn -pl queryone-server exec:java \
+  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
+  -Dexec.args="--conf conf/queryone.conf --port 7071"
 ```
 
 说明：
 
-- `conf/sparkone.conf.template` 是可提交模板。
-- `conf/sparkone.conf` 是本地实际配置，已被 `.gitignore` 忽略。
-- 如果没有传 `--conf`，启动时会自动读取存在的 `conf/sparkone.conf`。
+- `conf/queryone.conf.template` 是可提交模板。
+- `conf/queryone.conf` 是本地实际配置，已被 `.gitignore` 忽略。
+- 如果没有传 `--conf`，启动时会自动读取存在的 `conf/queryone.conf`。
 - 命令行参数优先级高于 HOCON。
 
 ## IDEA
 
 创建 `Application` 运行配置：
 
-- Main class: `ai.sparkone.server.SparkOneServer`
-- Working directory: `/Users/qindongliang/project/ai/spark-one`
-- Use classpath of module: `spark-one`
-- Program arguments: 可留空；如果要显式指定配置文件，可填 `--conf conf/sparkone.conf`
+- Main class: `ai.queryone.server.QueryOneServer`
+- Working directory: `/Users/qindongliang/project/ai/query-one`
+- Use classpath of module: `query-one`
+- Program arguments: 可留空；如果要显式指定配置文件，可填 `--conf conf/queryone.conf`
 
 运行前先复制模板：
 
 ```bash
-cp conf/sparkone.conf.template conf/sparkone.conf
+cp conf/queryone.conf.template conf/queryone.conf
 ```
 
 Java 17 运行 Spark 需要 `.mvn/jvm.config` 中的 module open 参数。若 IDEA 没自动带上，把 `.mvn/jvm.config` 内容复制到 VM options。
@@ -103,15 +103,15 @@ Java 17 运行 Spark 需要 `.mvn/jvm.config` 中的 module open 参数。若 ID
 SIMPLE authentication is not enabled. Available: [TOKEN, KERBEROS]
 ```
 
-通常说明当前进程没有读到 Kerberos/Hadoop/Hive 配置，或 keytab 登录没有生效。先确认 IDEA 的 Working directory 是项目根目录，并且 `conf/sparkone.conf` 存在；或者在 Program arguments 显式填写 `--conf conf/sparkone.conf`。
+通常说明当前进程没有读到 Kerberos/Hadoop/Hive 配置，或 keytab 登录没有生效。先确认 IDEA 的 Working directory 是项目根目录，并且 `conf/queryone.conf` 存在；或者在 Program arguments 显式填写 `--conf conf/queryone.conf`。
 
-如果 Hive 查询时出现 `id: odep: no such user` 这类本机用户组 WARN，说明 Hadoop 在 macOS 上尝试解析 Kerberos 用户对应的本地 Unix 组。`conf/sparkone.conf` 里可用 `engines.local.hadoop.groupStaticOverrides = "odep=odep"` 处理；未显式配置时，SparkOne 会根据 Kerberos principal 自动补一条 short name 映射。
+如果 Hive 查询时出现 `id: odep: no such user` 这类本机用户组 WARN，说明 Hadoop 在 macOS 上尝试解析 Kerberos 用户对应的本地 Unix 组。`conf/queryone.conf` 里可用 `engines.local.hadoop.groupStaticOverrides = "odep=odep"` 处理；未显式配置时，QueryOne 会根据 Kerberos principal 自动补一条 short name 映射。
 
 日志配置：
 
-- 默认使用 `sparkone-server/src/main/resources/log4j2.xml`。
+- 默认使用 `queryone-server/src/main/resources/log4j2.xml`。
 - Console appender 输出到 `SYSTEM_OUT`，IDEA 中普通 INFO/WARN 日志不应再因为 stderr 被整体渲染成红色。
-- 日志级别可通过 `conf/sparkone.conf` 的 `server.logLevel = "warn"` 或启动参数 `--log-level warn` 调整。
+- 日志级别可通过 `conf/queryone.conf` 的 `server.logLevel = "warn"` 或启动参数 `--log-level warn` 调整。
 
 如果 IDEA 启动时报类似错误：
 
@@ -143,7 +143,7 @@ java.lang.IllegalAccessError: class org.apache.spark.storage.StorageUtils$ canno
 
 ## HDFS And Hive
 
-推荐把测试环境参数写入 `conf/sparkone.conf`：
+推荐把测试环境参数写入 `conf/queryone.conf`：
 
 ```hocon
 server {
@@ -235,8 +235,8 @@ Local 默认注册 ODEP Catalog 和 RMS 鉴权扩展，不需要功能开关。�
 也可以不使用 HOCON，直接传程序参数：
 
 ```bash
-mvn -pl sparkone-server exec:java \
-  -Dexec.mainClass=ai.sparkone.server.SparkOneServer \
+mvn -pl queryone-server exec:java \
+  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
   -Dexec.args="--hive-enabled \
     --hadoop-conf-dir /Users/qindongliang/bigdata/hadoop/etc/hadoop \
     --hive-conf /Users/qindongliang/bigdata/hive/conf/hive-site.xml \
@@ -273,7 +273,7 @@ preview {
 
 受控 HDFS workspace 使用 `/public/odep/user/${username}`。文件 load/overwrite DSL 只接受相对路径：load 由 Spark driver extension 解析 workspace owner 和路径并注册临时视图；overwrite 只允许当前 subject 自己的 workspace，并额外通过 ZK 排他和同级 staging 发布。跨 owner load 和原生绝对 HDFS relation 读取走 ODEP/RMS `hdfs read` 鉴权；原生路径在 Analyzer 访问 HDFS 前只鉴权一次，允许后才解析 relation，analysis 使用当前计划的证明本地复核。Local 使用服务端 TenantContext subject，Kyuubi 使用签名 subject；原生文件路径写入、文件 append、本地文件、S3、OSS、glob 和百分号编码裸路径读写保持拒绝。Local 的 ZK/workspace 配置见 [../engines/local.md](../engines/local.md)，Kyuubi 的扩展部署见 [../engines/kyuubi.md](../engines/kyuubi.md)。
 
-原生 SQL 只允许查询和只读检查命令。`CREATE/DROP/ALTER/INSERT` 等 DDL/DML 在 Compile 阶段永久拒绝，必须通过平台外流程治理表结构，并通过 SparkOne `save` 写入；不存在可以放开的 HOCON 配置。
+原生 SQL 只允许查询和只读检查命令。`CREATE/DROP/ALTER/INSERT` 等 DDL/DML 在 Compile 阶段永久拒绝，必须通过平台外流程治理表结构，并通过 QueryOne `save` 写入；不存在可以放开的 HOCON 配置。
 
 完整能力矩阵和测试案例见 [../data/safe-save.md](../data/safe-save.md)。
 

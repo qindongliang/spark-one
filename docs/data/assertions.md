@@ -1,6 +1,6 @@
 # 数据质量 Assert
 
-SparkOne 使用薄 DSL 完成结果检查。稳定、可复用的检查推荐先生成结果表：
+QueryOne 使用薄 DSL 完成结果检查。稳定、可复用的检查推荐先生成结果表：
 
 ```sql
 assert result_table
@@ -21,7 +21,7 @@ on failure stop;
 ```
 
 `on failure` 可以省略，默认值是 `fail`。两种数据来源具有完全相同的检查和失败动作
-语义。`where` 是结果中每一行必须满足的布尔表达式，不是普通筛选条件；SparkOne
+语义。`where` 是结果中每一行必须满足的布尔表达式，不是普通筛选条件；QueryOne
 不引入第二套表达式语言，也不要求结果必须恰好一行。
 
 ## 语义
@@ -40,7 +40,7 @@ WHERE NOT COALESCE((<predicate>), FALSE)
 SELECT *
 FROM (
   <Spark SQL SELECT>
-) sparkone_assert_input
+) queryone_assert_input
 WHERE NOT COALESCE((<predicate>), FALSE)
 ```
 
@@ -251,5 +251,5 @@ flowchart TB
 - 不提供内置指标函数或历史基线存储；这些仍需通过 `view` 或内联 SELECT 使用普通
   Spark SQL 生成。
 
-这样可以把数据质量能力保持为 SQL 工作流中的一个失败门，同时不把 SparkOne
+这样可以把数据质量能力保持为 SQL 工作流中的一个失败门，同时不把 QueryOne
 演进成独立的数据质量运行时。

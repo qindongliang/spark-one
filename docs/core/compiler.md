@@ -1,6 +1,6 @@
 # Compiler
 
-SparkOne compiler 的原则是：只解析 SparkOne 自己的薄 DSL，不解析 Spark SQL。
+QueryOne compiler 的原则是：只解析 QueryOne 自己的薄 DSL，不解析 Spark SQL。
 
 当前 DSL：
 
@@ -47,16 +47,16 @@ CREATE OR REPLACE TEMPORARY VIEW users_jdbc AS SELECT * FROM jdbc.search_prod.us
 CREATE OR REPLACE TEMPORARY VIEW users_mysql AS SELECT * FROM mysql_static.analytics.users;
 CREATE OR REPLACE TEMPORARY VIEW users_doris AS SELECT * FROM doris.app.users;
 CREATE OR REPLACE TEMPORARY VIEW doris_orders AS SELECT * FROM doris.app.orders WHERE biz_date = '2026-06-17';
-SELECT 'SET' AS sparkone_action, 'biz_date' AS sparkone_target;
-SELECT 'SET' AS sparkone_action, 'start_date' AS sparkone_target;
+SELECT 'SET' AS queryone_action, 'biz_date' AS queryone_target;
+SELECT 'SET' AS queryone_action, 'start_date' AS queryone_target;
 CREATE OR REPLACE TEMPORARY VIEW city_stats AS select city, count(*) as cnt from users group by city;
 SELECT * FROM city_stats WHERE NOT COALESCE((cnt > 0), FALSE);
 SELECT * FROM (
   select city, count(*) as cnt from users group by city
-) sparkone_assert_input WHERE NOT COALESCE((cnt > 0), FALSE);
-SELECT 'SAVE CATALOG' AS sparkone_action, 'city_stats TO spark_catalog.default.city_stats' AS sparkone_target;
-SELECT 'SAVE CATALOG' AS sparkone_action, 'city_stats TO mysql_static.analytics.city_stats' AS sparkone_target;
-SELECT 'SAVE CATALOG' AS sparkone_action, 'city_stats TO doris.app.city_stats' AS sparkone_target;
+) queryone_assert_input WHERE NOT COALESCE((cnt > 0), FALSE);
+SELECT 'SAVE CATALOG' AS queryone_action, 'city_stats TO spark_catalog.default.city_stats' AS queryone_target;
+SELECT 'SAVE CATALOG' AS queryone_action, 'city_stats TO mysql_static.analytics.city_stats' AS queryone_target;
+SELECT 'SAVE CATALOG' AS queryone_action, 'city_stats TO doris.app.city_stats' AS queryone_target;
 ```
 
 受控 HDFS load 和 overwrite 都会编译为版本化内部命令。Local 或 Kyuubi 的 Spark extension 在 driver 内根据 workspace owner 和相对路径解析最终路径：load 注册临时视图；overwrite 的 owner 固定为当前逻辑租户，并在通过固定能力矩阵后执行 ZK 排他、staging 写入和 HDFS rename 发布。内部命令不是新的用户 SQL 语法，Compile/Run API 会把 Base64 payload 转成可读的 `MANAGED HDFS LOAD/OVERWRITE` 摘要。
@@ -79,11 +79,11 @@ select * from city_stats;
 - `assert table where "<predicate>" message "<message>"` 检查已有结果表；`assert (<select>) where ...` 是一次性检查的内联语法糖。二者都编译成只读违规行查询：零条违规行通过，有违规行返回有限样本并停止脚本。
 - `on failure fail|stop` 只改变违规行命中后的顶层任务结果，默认是 `fail`。`fail` 停止脚本并使 Run 失败；`stop` 停止脚本但使 Run 成功。违规查询自身的 SQL、连接或权限异常始终使 Run 失败。
 - ANTLR 对内联 `assert` 只识别外层和嵌套括号边界，不解析 SELECT 语义；内层查询和谓词都由 Spark SQL parser 校验。完整语义见[数据质量 Assert](../data/assertions.md)。
-- `set name = "literal"` 是 SparkOne 脚本变量，后续语句可用 `${name}` 引用；变量只在单次脚本运行内有效。
+- `set name = "literal"` 是 QueryOne 脚本变量，后续语句可用 `${name}` 引用；变量只在单次脚本运行内有效。
 - `set name as select ...` 是 SQL 变量语法，会在 runtime 执行查询，取第一行第一列转成字符串后写入变量；纯 compile 接口不会执行 Spark 查询。
-- SparkOne 只支持普通字面量变量和 `set name as select ...` SQL 变量；不复刻 MLSQL 的 `where type="sql"`、`type="shell"`、`type="conf"`、`defaultParam`、`scope`、`mode` 等运行时能力。
+- QueryOne 只支持普通字面量变量和 `set name as select ...` SQL 变量；不复刻 MLSQL 的 `where type="sql"`、`type="shell"`、`type="conf"`、`defaultParam`、`scope`、`mode` 等运行时能力。
 - 每条编译结果携带 `StatementIntent`。原生 SQL 只允许查询和 `SHOW/DESCRIBE/EXPLAIN/USE` 等只读命令；原生 DDL、DML、`SET/RESET` 和未识别 command 默认拒绝。
-- SparkOne `load/view` 内部生成的临时视图依靠受控 intent 执行；用户直接提交原生 `CREATE VIEW` 不会被放行。
+- QueryOne `load/view` 内部生成的临时视图依靠受控 intent 执行；用户直接提交原生 `CREATE VIEW` 不会被放行。
 - 已识别文件 provider 的 `load` 只接受 workspace 相对路径，可用 `options owner="..."` 选择其他用户 workspace；原生 SQL 或 `view` 只允许受支持 provider 使用无 authority 的绝对 HDFS/viewfs 路径。
 - `SparkSqlValidator` 使用 `org.apache.spark.sql.execution.SparkSqlParser` 校验生成 SQL。
 - 不要使用 `CatalystSqlParser` 作为最终校验器；它会拒绝部分 Spark SQL execution 层语法。
@@ -94,12 +94,12 @@ select * from city_stats;
 - `save ... as hive` 是 catalog 表写入语义；当前只允许 append。compiler 生成 `WritePlan` 和安全占位 SQL，runtime 取得两端 schema 后生成带显式目标列清单和源列投影的 `INSERT INTO TABLE`。
 - `save ... partitionBy col1, col2` 只用于 catalog 表写入，runtime 最终渲染为 Spark SQL 动态分区 `PARTITION (col1, col2)`。
 - `load jdbc.\`alias.table\`` 读取 ODEP JDBC 路由；`load jdbc.\`catalog_static.database.table\`` 读取静态 JDBC Catalog。无 OPTIONS 时都编译为三段式 Catalog SQL。
-- MySQL 路径带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时编译为 Engine 内的 `sparkone_mysql` provider；不允许在 SQL 中传 `url/user/password/driver/dbtable/query`。只写 `partitionColumn` 时会自动查询边界，默认 `numPartitions=10`、`fetchsize=10000`。
+- MySQL 路径带 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时编译为 Engine 内的 `queryone_mysql` provider；不允许在 SQL 中传 `url/user/password/driver/dbtable/query`。只写 `partitionColumn` 时会自动查询边界，默认 `numPartitions=10`、`fetchsize=10000`。
 - `save jdbc` 只允许 `catalog_static.database.table`，生成 JDBC Catalog `WritePlan`；不接受 SQL `OPTIONS`，SQL 中不携带 URL、用户名或密码。ODEP 动态 alias 写入明确拒绝。
 - `load doris` 是 Spark Doris Catalog 语法糖：ODEP 模式下 `load doris.\`alias.table\` as t` 编译成 `CREATE ... AS SELECT * FROM doris.alias.table`；当前 Kyuubi 静态 Catalog 使用 `load doris.\`doris_static.db.table\``。
 - `save ... as doris` 是 Spark Doris Catalog 表写入语义；当前只允许 append，和 Hive 共用延迟渲染的显式列写入逻辑。
 - Hive、MySQL、Doris overwrite 由固定能力矩阵永久拒绝，不存在可以放开的 SQL option 或 HOCON 开关；`partitionBy` 不用于 Doris Catalog 写入。
-- `save append` 写 Hive、MySQL、Doris 时要求目标表已存在；SparkOne 不自动建表，目标表和结构变更必须由平台外的 Hive/Doris/MySQL 管理入口完成。
+- `save append` 写 Hive、MySQL、Doris 时要求目标表已存在；QueryOne 不自动建表，目标表和结构变更必须由平台外的 Hive/Doris/MySQL 管理入口完成。
 - Hive、Doris、MySQL append 在执行前要求源和目标列名集合完全一致，并在写入前校验类型兼容；写入统一按目标列顺序投影，不按列位置映射，也不为缺失 nullable 列自动补 `NULL`。
 - compiler 对每条 `save` 先生成携带逻辑租户、目标分类和执行类型的 `WritePlan`。Catalog 最终 SQL 延迟到 runtime 取得 schema 后渲染，Compile 接口只展示无副作用的安全占位 SQL。
 - 已识别文件 provider 只有相对路径可进入受控 HDFS load/overwrite；所有文件 append 永久拒绝。`load` 的绝对路径和 URI 在编译期拒绝，但原生只读 relation 可使用无 authority 的绝对 HDFS/viewfs 路径；本地文件、S3、OSS 读写以及所有原生文件路径写入永久拒绝。受控 overwrite 缺少 ZK 或 Spark extension 配置时 fail closed。
@@ -109,7 +109,7 @@ select * from city_stats;
 
 ANTLR 文件：
 
-- `sparkone-server/src/main/antlr4/ai/sparkone/sql/parser/SparkOneDsl.g4`
+- `queryone-server/src/main/antlr4/ai/queryone/sql/parser/QueryOneDsl.g4`
 
 ANTLR 注意事项：
 

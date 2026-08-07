@@ -1,6 +1,6 @@
-# SparkOne SQL
+# QueryOne SQL
 
-SparkOne SQL is a SQL-first MVP inspired by MLSQL. It keeps the custom DSL
+QueryOne SQL is a SQL-first MVP inspired by MLSQL. It keeps the custom DSL
 small and delegates Spark SQL syntax to Spark itself.
 
 ## Modules
@@ -8,15 +8,15 @@ small and delegates Spark SQL syntax to Spark itself.
 Import the repository root `pom.xml` in IDEA. The root project is a Maven
 aggregator and exposes five modules:
 
-- `sparkone-server`: SparkOne Web/API/compiler/runtime.
-- `sparkone-mysql-provider`: Spark datasource provider jar for Kyuubi/Spark engine.
-- `sparkone-hdfs-overwrite-extension`: Spark driver extension for managed HDFS workspace reads and overwrite.
-- `sparkone-kyuubi-odep-plugin`: Spark Engine routing catalog with lazy ODEP datasource resolution.
-- `sparkone-kyuubi-odep-authz-extension`: Spark Engine table/path authorization through ODEP.
+- `queryone-server`: QueryOne Web/API/compiler/runtime.
+- `queryone-mysql-provider`: Spark datasource provider jar for Kyuubi/Spark engine.
+- `queryone-hdfs-overwrite-extension`: Spark driver extension for managed HDFS workspace reads and overwrite.
+- `queryone-kyuubi-odep-plugin`: Spark Engine routing catalog with lazy ODEP datasource resolution.
+- `queryone-kyuubi-odep-authz-extension`: Spark Engine table/path authorization through ODEP.
 
 ## Compiler Strategy
 
-SparkOne only parses its own thin commands with ANTLR:
+QueryOne only parses its own thin commands with ANTLR:
 
 - `load <format>.\`<path>\` as <view>`
 - `save overwrite <view> as <format>.\`<path>\``
@@ -60,8 +60,8 @@ options in `.mvn/jvm.config`. More startup methods are documented in
 ```bash
 sdk env
 mvn test
-mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer
-mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.conf"
+mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer
+mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer -Dexec.args="--conf conf/queryone.conf"
 ```
 
 Open:
@@ -75,8 +75,8 @@ SQL 编辑器测试方法见 [`docs/ui/editor-testing.md`](docs/ui/editor-testin
 Use another port:
 
 ```bash
-mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args=7071
-mvn -pl sparkone-server exec:java -Dexec.mainClass=ai.sparkone.server.SparkOneServer -Dexec.args="--conf conf/sparkone.conf --port 7071"
+mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer -Dexec.args=7071
+mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer -Dexec.args="--conf conf/queryone.conf --port 7071"
 ```
 
 Compile only:

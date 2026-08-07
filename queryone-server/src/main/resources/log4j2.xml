@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} %-5level [%t] %logger{36} - %msg%n"/>
+        </Console>
+    </Appenders>
+
+    <Loggers>
+        <Logger name="org.eclipse.jetty" level="warn"/>
+        <Logger name="io.javalin" level="info"/>
+        <Logger name="org.apache.hadoop.util.NativeCodeLoader" level="warn"/>
+
+        <Root level="${sys:queryone.logLevel:-info}">
+            <AppenderRef ref="Console"/>
+        </Root>
+    </Loggers>
+</Configuration>

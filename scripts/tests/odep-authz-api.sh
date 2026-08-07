@@ -8,7 +8,7 @@ ODEP_REQUEST_TIMEOUT_SECONDS="${ODEP_REQUEST_TIMEOUT_SECONDS:-60}"
 
 usage() {
   cat <<'EOF'
-测试 ODEP SparkOne 批量资源权限接口。
+测试 ODEP QueryOne 批量资源权限接口。
 
 用法:
   scripts/tests/odep-authz-api.sh <subject> <allow|deny> '<requests-json>'
@@ -186,7 +186,7 @@ if ! http_status="$(
     --data-urlencode "sign=$signature" \
     --data-urlencode "subject=$subject" \
     --data-urlencode "requests=$requests_json" \
-    "$ODEP_API_URL/api/sparkone/authz/check"
+    "$ODEP_API_URL/api/queryone/authz/check"
 )"; then
   echo "请求 ODEP 批量资源权限接口失败: $ODEP_API_URL" >&2
   exit 1

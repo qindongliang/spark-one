@@ -1,6 +1,6 @@
 # 提交与 PR 规范
 
-SparkOne 默认使用中文提交信息，优先沿用当前仓库风格：
+QueryOne 默认使用中文提交信息，优先沿用当前仓库风格：
 
 - `功能：...`
 - `修复：...`
@@ -31,7 +31,7 @@ SparkOne 默认使用中文提交信息，优先沿用当前仓库风格：
 - commit 正文不要写 `已执行 mvn test`、`已在 IDEA 启动验证` 这类验证执行项。
 - 验证信息保留在 PR 描述或最终回复中，不放入 commit message。
 
-SparkOne 常用分类：
+QueryOne 常用分类：
 
 - `DSL 与编译器：` 用于 `load/save/view` 语法、ANTLR grammar、SQL 转译。
 - `运行时：` 用于 SparkSession、写入安全、HDFS/Hive、Kerberos、执行保护。
@@ -45,7 +45,7 @@ SparkOne 常用分类：
 功能：统一 load/save 参数语法为 options
 
 DSL 与编译器：
-- 将 SparkOne DSL 的参数子句统一为 options，移除 where 兼容分支。
+- 将 QueryOne DSL 的参数子句统一为 options，移除 where 兼容分支。
 - 增加旧式 load/save where 用法的编译期拦截，避免被误透传为原生 SQL。
 
 前端交互：

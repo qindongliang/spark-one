@@ -1,8 +1,8 @@
 # Data Sources
 
-SparkOne 的数据源策略是：compiler 负责把 SQL 友好的 `load/save` 薄 DSL 编译成 Spark SQL 或极薄 runtime adapter，connector jar 由 Spark/Kyuubi 运行环境提供。Doris 这类支持 Spark Catalog 的系统优先走 Catalog，便于 SparkOne 逐步退化成“DSL 编译器 + SQL 提交器”。
+QueryOne 的数据源策略是：compiler 负责把 SQL 友好的 `load/save` 薄 DSL 编译成 Spark SQL 或极薄 runtime adapter，connector jar 由 Spark/Kyuubi 运行环境提供。Doris 这类支持 Spark Catalog 的系统优先走 Catalog，便于 QueryOne 逐步退化成“DSL 编译器 + SQL 提交器”。
 
-默认主包不内置第三方 provider。这样可以避免 Excel、Mongo、ES、Kafka 等 connector 和 SparkOne 主应用强耦合，也减少 shade 冲突。
+默认主包不内置第三方 provider。这样可以避免 Excel、Mongo、ES、Kafka 等 connector 和 QueryOne 主应用强耦合，也减少 shade 冲突。
 
 内置 Spark provider：
 
@@ -27,7 +27,7 @@ Catalog 表统一使用 Spark 原生三段式。Local/Kyuubi 静态 Catalog 使�
 - `save append t as hive.\`db.table\`` 先生成 `WritePlan`，执行时按目标列顺序生成 `INSERT INTO TABLE spark_catalog.db.table (目标列...) SELECT 源列... FROM t`；要求目标表已存在且列名集合一致。
 - `save overwrite t as hive.\`db.table\`` 由固定能力矩阵永久拒绝，不存在可放开的配置。
 - `partitionBy` 仅用于 catalog 表写入：`save append t as hive.\`db.table\` partitionBy dt` 编译成动态分区插入。
-- SparkOne 不复刻 MLSQL 的 `storage="hive"` / 数据湖替换逻辑，也不开放原生建表/改表语句；目标表由平台外 catalog 治理入口创建和维护。
+- QueryOne 不复刻 MLSQL 的 `storage="hive"` / 数据湖替换逻辑，也不开放原生建表/改表语句；目标表由平台外 catalog 治理入口创建和维护。
 - 静态 JDBC Catalog 使用以 `_static` 结尾的顶层名，例如 `mysql_static.database.table`。Local 从 `engines.local.catalogs.mysql_static` 注册；Kyuubi 从远端 Spark Engine 配置注册。
 - 静态表可直接 `select * from mysql_static.app.users`，也可用 `load jdbc.\`mysql_static.app.users\` as users` 创建临时视图。静态 Catalog 不走 RMS，但必须来自管理员可信配置。
 - ODEP 动态 JDBC 仍使用 `jdbc.alias.table` 或 `load jdbc.\`alias.table\``，由 alias 定位连接与真实库，并走 RMS 鉴权。
@@ -54,7 +54,7 @@ engines {
     catalogs.mysql_static {
       url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA"
       user = "reader"
-      password = ${?SPARKONE_MYSQL_CATALOG_PASSWORD}
+      password = ${?QUERYONE_MYSQL_CATALOG_PASSWORD}
 
       options {
         fetchsize = 1000
@@ -68,14 +68,14 @@ engines {
 
 ### ODEP JDBC/Doris 路由 Catalog
 
-ODEP 模式由 `sparkone-kyuubi-odep-plugin` 提供两个稳定的顶层 Catalog；Local server 默认内置并注册，Kyuubi 由 Engine 侧部署：
+ODEP 模式由 `queryone-kyuubi-odep-plugin` 提供两个稳定的顶层 Catalog；Local server 默认内置并注册，Kyuubi 由 Engine 侧部署：
 
 ```text
 jdbc.<alias>.<table>
 doris.<alias>.<table>
 ```
 
-alias 是 ODEP 注册名，必须符合 `[A-Za-z_][A-Za-z0-9_]*`；`physicalNamespace` 是底层真实数据库。Engine 首次枚举某个 type 时通过 `POST /api/datasource/index` 获取 alias，首次访问具体 alias 时通过 SparkOne/Kyuubi 专用的 `POST /api/datasource/resolve` 获取连接配置；连接配置只存在于 ODEP 和 Spark Engine 内存，不进入 SparkOne SQL、Kyuubi session overlay 或 `spark-submit --conf`。`/resolve` 使用 ODEP 当前环境已有的 `common-url.rms.api` 和 `pk.name` 获取并解密占位符，MLSQL 旧客户端使用的 `/detail` 保持原行为不变：
+alias 是 ODEP 注册名，必须符合 `[A-Za-z_][A-Za-z0-9_]*`；`physicalNamespace` 是底层真实数据库。Engine 首次枚举某个 type 时通过 `POST /api/datasource/index` 获取 alias，首次访问具体 alias 时通过 QueryOne/Kyuubi 专用的 `POST /api/datasource/resolve` 获取连接配置；连接配置只存在于 ODEP 和 Spark Engine 内存，不进入 QueryOne SQL、Kyuubi session overlay 或 `spark-submit --conf`。`/resolve` 使用 ODEP 当前环境已有的 `common-url.rms.api` 和 `pk.name` 获取并解密占位符，MLSQL 旧客户端使用的 `/detail` 保持原行为不变：
 
 ```sql
 show namespaces in jdbc;
@@ -94,13 +94,13 @@ select * from doris.recommend_prod.r_qa_log limit 10;
 load doris.`recommend_prod.r_qa_log` as qa_log;
 ```
 
-`load jdbc` 接受两种路径：ODEP 动态路由为 `alias.table`，静态 Catalog 为 `catalog_static.database.table`。无 `OPTIONS` 时直接读取对应 Catalog；MySQL 路径可以使用受控的 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize`，Spark Engine 内的 `sparkone_mysql` provider 会复用 ODEP resolver 或静态 Catalog 配置。只写 `partitionColumn` 时自动查询过滤后数据的边界，默认 `numPartitions=10`、`fetchsize=10000`。SQL 仍禁止传 `url/user/password/driver/dbtable/query`。`save jdbc` 只接受静态三段式目标，动态 alias 写入明确拒绝。缺少 `physicalNamespace` 的 ODEP JDBC/Doris 数据源不会由 `/index` 发布。
+`load jdbc` 接受两种路径：ODEP 动态路由为 `alias.table`，静态 Catalog 为 `catalog_static.database.table`。无 `OPTIONS` 时直接读取对应 Catalog；MySQL 路径可以使用受控的 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize`，Spark Engine 内的 `queryone_mysql` provider 会复用 ODEP resolver 或静态 Catalog 配置。只写 `partitionColumn` 时自动查询过滤后数据的边界，默认 `numPartitions=10`、`fetchsize=10000`。SQL 仍禁止传 `url/user/password/driver/dbtable/query`。`save jdbc` 只接受静态三段式目标，动态 alias 写入明确拒绝。缺少 `physicalNamespace` 的 ODEP JDBC/Doris 数据源不会由 `/index` 发布。
 
 Local 不需要 ODEP 功能开关，默认配置 `spark.sql.catalog.jdbc`、`spark.sql.catalog.doris` 两个路由类；Kyuubi 侧需要显式部署和配置。不要在这两个前缀下混入静态连接参数。当前静态 Catalog 统一命名为 `mysql_static`、`doris_static`，与 ODEP 的 `jdbc`、`doris` 完全分离。索引和已解析 alias 在 Engine JVM 生命周期内缓存；ODEP 信息变化后重启 Local SparkSession 或停止旧 Kyuubi Engine 即可生效。
 
 ### 静态 JDBC Catalog 与分区读取
 
-Local 和 Kyuubi 使用同一套静态 JDBC 语义。当前静态 MySQL Catalog 名为 `mysql_static`；SparkOne SQL 使用 `jdbc.\`mysql_static.db.table\``，不在 SQL 或编译结果中保存 MySQL 密钥：
+Local 和 Kyuubi 使用同一套静态 JDBC 语义。当前静态 MySQL Catalog 名为 `mysql_static`；QueryOne SQL 使用 `jdbc.\`mysql_static.db.table\``，不在 SQL 或编译结果中保存 MySQL 密钥：
 
 ```properties
 spark.sql.catalog.mysql_static=org.apache.spark.sql.execution.datasources.v2.jdbc.JDBCTableCatalog
@@ -130,7 +130,7 @@ save append source_view
 as jdbc.`mysql_static.Dworks.target_table`;
 ```
 
-`save jdbc` 不使用 `sparkone_mysql` provider，也不接受 SQL `OPTIONS`。执行前读取源/目标 schema，按目标列顺序生成显式 column list `INSERT` 并执行 `EXPLAIN`；Kyuubi 最终写 statement 连接中断时不会自动重试。
+`save jdbc` 不使用 `queryone_mysql` provider，也不接受 SQL `OPTIONS`。执行前读取源/目标 schema，按目标列顺序生成显式 column list `INSERT` 并执行 `EXPLAIN`；Kyuubi 最终写 statement 连接中断时不会自动重试。
 
 无 `partitionColumn/lowerBound/upperBound/numPartitions/fetchsize` 时，`load jdbc.\`mysql_static.Dworks.orders\`` 编译成 catalog SQL：
 
@@ -139,11 +139,11 @@ CREATE OR REPLACE TEMPORARY VIEW orders AS
 SELECT * FROM mysql_static.Dworks.orders WHERE biz_date = '2026-07-07'
 ```
 
-带大表读取参数时，编译成 `sparkone_mysql` provider SQL：
+带大表读取参数时，编译成 `queryone_mysql` provider SQL：
 
 ```sql
 CREATE OR REPLACE TEMPORARY VIEW orders_big
-USING sparkone_mysql
+USING queryone_mysql
 OPTIONS (
   catalog 'mysql_static',
   dbtable 'Dworks.big_orders',
@@ -159,25 +159,25 @@ OPTIONS (
 - 带 `where` 时，对过滤后的子查询执行 `MIN(partitionColumn), MAX(partitionColumn)`。
 - 不带 `where` 时，对原表执行 `MIN(partitionColumn), MAX(partitionColumn)`。
 - `numPartitions` 默认 `10`，`fetchsize` 默认 `10000`；SQL 里仍可显式覆盖。
-- 如果过滤后没有数据，SparkOne 会降级为单分区 JDBC 读取，不再传 `partitionColumn/lowerBound/upperBound/numPartitions`。
-- local engine 会在 SparkOne 服务端日志记录 bounds 查询 SQL 和最终 JDBC 读取参数；Kyuubi engine 会由远端 `sparkone_mysql` provider 记录 `sparkone_mysql diagnostic: bounds query sql=...` 和 `sparkone_mysql diagnostic: effective jdbc options...`。日志不包含 `url/user/password`。如果 Kyuubi operation log 仍只显示 `CREATE TEMPORARY VIEW ...`，请确认 Kyuubi/Spark engine 已部署重新打包后的 `sparkone-mysql-provider` jar，并查看 Spark engine driver 日志。
+- 如果过滤后没有数据，QueryOne 会降级为单分区 JDBC 读取，不再传 `partitionColumn/lowerBound/upperBound/numPartitions`。
+- local engine 会在 QueryOne 服务端日志记录 bounds 查询 SQL 和最终 JDBC 读取参数；Kyuubi engine 会由远端 `queryone_mysql` provider 记录 `queryone_mysql diagnostic: bounds query sql=...` 和 `queryone_mysql diagnostic: effective jdbc options...`。日志不包含 `url/user/password`。如果 Kyuubi operation log 仍只显示 `CREATE TEMPORARY VIEW ...`，请确认 Kyuubi/Spark engine 已部署重新打包后的 `queryone-mysql-provider` jar，并查看 Spark engine driver 日志。
 
-`sparkone_mysql` provider jar 由 `sparkone-mysql-provider` 模块生成，应部署到 Kyuubi/Spark engine classpath，例如：
+`queryone_mysql` provider jar 由 `queryone-mysql-provider` 模块生成，应部署到 Kyuubi/Spark engine classpath，例如：
 
 ```properties
-spark.jars=/path/to/sparkone-kyuubi-odep-plugin-0.1.0-SNAPSHOT.jar,\
-  /path/to/sparkone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar
+spark.jars=/path/to/queryone-kyuubi-odep-plugin-0.1.0-SNAPSHOT.jar,\
+  /path/to/queryone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar
 ```
 
-provider 对静态 Catalog 读取 `spark.sql.catalog.mysql_static.*`；对 ODEP JDBC alias 则复用插件 resolver 按需获取详情。SparkOne 不读取 `kyuubi-defaults.conf`，也不会把 `url/user/password` 编进 SQL。
+provider 对静态 Catalog 读取 `spark.sql.catalog.mysql_static.*`；对 ODEP JDBC alias 则复用插件 resolver 按需获取详情。QueryOne 不读取 `kyuubi-defaults.conf`，也不会把 `url/user/password` 编进 SQL。
 
-### sparkone_mysql 测试
+### queryone_mysql 测试
 
 测试前确认三件事：
 
-- Kyuubi/Spark engine 已能加载 `sparkone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar`。推荐放在 Kyuubi engine 的 `spark.jars` 或等价 classpath 配置中，不放在 SparkOne server 主包里。
+- Kyuubi/Spark engine 已能加载 `queryone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar`。推荐放在 Kyuubi engine 的 `spark.jars` 或等价 classpath 配置中，不放在 QueryOne server 主包里。
 - Kyuubi/Spark engine 已注册静态 MySQL JDBC Catalog `spark.sql.catalog.mysql_static.*`；其中 `url/user/password/driver` 都在 Kyuubi/Spark engine 侧。
-- SparkOne 的 Kyuubi engine 已启用，并连接同一个 Kyuubi Server。
+- QueryOne 的 Kyuubi engine 已启用，并连接同一个 Kyuubi Server。
 
 最小验证 SQL：
 
@@ -189,11 +189,11 @@ as orders_big;
 select count(*) from orders_big;
 ```
 
-如果 `load` 能成功，Kyuubi operation log 中应能看到 SparkOne 编译出的 provider SQL：
+如果 `load` 能成功，Kyuubi operation log 中应能看到 QueryOne 编译出的 provider SQL：
 
 ```sql
 CREATE OR REPLACE TEMPORARY VIEW orders_big
-USING sparkone_mysql
+USING queryone_mysql
 OPTIONS (
   catalog 'mysql_static',
   dbtable 'Dworks.cloud_host_info',
@@ -203,7 +203,7 @@ OPTIONS (
 )
 ```
 
-这一步只是注册远端 Spark 临时视图，不代表已经全量读取 MySQL。真正触发读取的是后续 action，例如 `select count(*) from orders_big`、`select * from orders_big limit 10`，或者 SparkOne 页面 Preview tab 发起的 `/api/preview`。
+这一步只是注册远端 Spark 临时视图，不代表已经全量读取 MySQL。真正触发读取的是后续 action，例如 `select count(*) from orders_big`、`select * from orders_big limit 10`，或者 QueryOne 页面 Preview tab 发起的 `/api/preview`。
 
 如果看到 Kyuubi log 里紧跟着出现：
 
@@ -211,7 +211,7 @@ OPTIONS (
 SELECT * FROM `orders_big` LIMIT 101
 ```
 
-这通常是 SparkOne 的结果预览，不是 `load` 语句自身又执行了一次业务查询。触发条件有两个：页面结果默认 tab 配成 `preview`，或者用户点击了结果区的 Preview tab。`101` 是页面请求 limit 加 1，用来判断结果是否被截断；上限由 `preview.maxRows` 控制。
+这通常是 QueryOne 的结果预览，不是 `load` 语句自身又执行了一次业务查询。触发条件有两个：页面结果默认 tab 配成 `preview`，或者用户点击了结果区的 Preview tab。`101` 是页面请求 limit 加 1，用来判断结果是否被截断；上限由 `preview.maxRows` 控制。
 
 判断大表分区参数是否生效，优先用 Spark engine 的 Spark UI 和 Spark SQL explain，而不是只看 Kyuubi Server Web UI：
 
@@ -231,12 +231,12 @@ Spark UI 中执行 `select count(*) from orders_big` 后，应在 Jobs/Stages �
 更多排查入口：
 
 - Spark UI 默认是 Spark engine 的 UI。local/client 模式常见为 `http://127.0.0.1:4040`；YARN/Kubernetes/cluster 模式应看 Spark application tracking URL。
-- Kyuubi Server Web UI 只展示 Kyuubi Server 侧信息。源码或本地包没有带 Web UI 时会显示 `The Web UI is currently unavailable`；这不影响 Spark engine 的 Spark UI，也不影响 `sparkone_mysql` 测试。
+- Kyuubi Server Web UI 只展示 Kyuubi Server 侧信息。源码或本地包没有带 Web UI 时会显示 `The Web UI is currently unavailable`；这不影响 Spark engine 的 Spark UI，也不影响 `queryone_mysql` 测试。
 - Kyuubi REST 端口默认 `10099`，用于 Kyuubi REST API，不等同于 Spark UI。
 
 常见注意事项：
 
-- 推荐只写 `partitionColumn`，让 SparkOne 自动查询 `lowerBound/upperBound`，并使用默认 `numPartitions=10`、`fetchsize=10000`。如果手工写边界，`lowerBound/upperBound` 必须成对出现。
+- 推荐只写 `partitionColumn`，让 QueryOne 自动查询 `lowerBound/upperBound`，并使用默认 `numPartitions=10`、`fetchsize=10000`。如果手工写边界，`lowerBound/upperBound` 必须成对出现。
 - `lowerBound` 和 `upperBound` 只用于计算分区步长，不是业务过滤条件。需要过滤数据时用 `load jdbc ... where "..."` 或后续 SQL 的 `where`。
 - `numPartitions` 近似等于并发 JDBC 读取任务数，也意味着对 MySQL 的并发压力会上升。先从较小值验证，再结合 MySQL 连接数、慢查询、IO 和 Spark task 耗时调大。
 - `partitionColumn` 应选择 numeric/date/timestamp 类型，最好是有索引且分布相对均匀的列。自增主键适合起步验证，但如果主键范围空洞很大，task 耗时可能明显不均衡。
@@ -244,7 +244,7 @@ Spark UI 中执行 `select count(*) from orders_big` 后，应在 Jobs/Stages �
 - 分区 LOAD 会读取完整的过滤结果，不支持源端全局 `LIMIT`。后续对临时视图执行 `LIMIT` 只限制 Spark 输出；需要 MySQL 端下推 `LIMIT` 时直接查询 `jdbc.alias.table` 或 `mysql_static.db.table`，不要同时使用 `partitionColumn`。
 - 不要在 SQL options 中传 `url/user/password/driver/dbtable/query`。这些连接目标和密钥必须留在可信 Spark Catalog 配置或 ODEP resolver 中。
 
-Doris 按 Spark Catalog 配置。SparkOne local 运行时会把下面的 HOCON 转成 `spark.sql.catalog.doris_static.*`；`doris` 前缀由默认 ODEP 路由 Catalog 独占，静态 Doris 必须使用独立的 `doris_static` 前缀：
+Doris 按 Spark Catalog 配置。QueryOne local 运行时会把下面的 HOCON 转成 `spark.sql.catalog.doris_static.*`；`doris` 前缀由默认 ODEP 路由 Catalog 独占，静态 Doris 必须使用独立的 `doris_static` 前缀：
 
 ```hocon
 engines {
@@ -255,7 +255,7 @@ engines {
       fenodes = "fe-1:8030,fe-2:8030"
       queryPort = 9030
       user = "reader"
-      password = ${?SPARKONE_DORIS_PASSWORD}
+      password = ${?QUERYONE_DORIS_PASSWORD}
 
       options {
         doris.request.retries = 3
@@ -276,7 +276,7 @@ include "catalogs/doris.conf"
 include "datasources/hive.conf"
 ```
 - `load jdbc` 无 OPTIONS 时读取 ODEP 路由或静态 Catalog；两种 MySQL 路径都可使用受控 JDBC 分区参数。`save jdbc` 只允许 `catalog_static.database.table`，静态读写不走 RMS，动态 ODEP 读取继续走 RMS。
-- SparkOne DSL 不支持在 SQL 里写 Doris `fenodes/user/password`；这些连接目标和密钥统一放在 HOCON 或 Kyuubi/Spark engine 配置。
+- QueryOne DSL 不支持在 SQL 里写 Doris `fenodes/user/password`；这些连接目标和密钥统一放在 HOCON 或 Kyuubi/Spark engine 配置。
 
 文件类 save：
 
@@ -300,7 +300,7 @@ include "datasources/hive.conf"
 
 - `excel` 编译成 `USING excel`，provider jar 需要通过运行环境提供。
 - 本地 MVP 可用 `engines.local.jars.packages = "dev.mauch:spark-excel_2.12:3.3.4_0.31.2"`。
-- Doris 4.x / Spark 3.3 读写需要 Spark Doris Connector，例如 `org.apache.doris:spark-doris-connector-spark-3.3:25.2.0`。SparkOne 不把该 connector 默认打进主包，由 local 引擎的 `engines.local.jars.packages`、`engines.local.jars.jars` 或运行环境 classpath 提供。
+- Doris 4.x / Spark 3.3 读写需要 Spark Doris Connector，例如 `org.apache.doris:spark-doris-connector-spark-3.3:25.2.0`。QueryOne 不把该 connector 默认打进主包，由 local 引擎的 `engines.local.jars.packages`、`engines.local.jars.jars` 或运行环境 classpath 提供。
 - 未来接 Kyuubi 时，在 Kyuubi/Spark engine 配置 `spark.jars.packages` 或 engine classpath。
 
 新增数据源时：
@@ -308,4 +308,4 @@ include "datasources/hive.conf"
 - 能用 Spark SQL provider 表达的，只在 `DataSourceResolver` 增加别名。
 - 需要特殊 catalog 语义的，优先编译成 Spark 多级 catalog SQL，例如当前 `doris`。
 - 需要隐藏密钥或运行时 API 的，增加薄 runtime adapter，例如当前 `mysql`。
-- 不把 connector 依赖默认加进 `sparkone-server/pom.xml`，除非它成为 SparkOne server 自身运行所必需的核心依赖。
+- 不把 connector 依赖默认加进 `queryone-server/pom.xml`，除非它成为 QueryOne server 自身运行所必需的核心依赖。

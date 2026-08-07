@@ -1,6 +1,6 @@
-# SparkOne / Kyuubi 资源缩容与停止语义
+# QueryOne / Kyuubi 资源缩容与停止语义
 
-本文按当前 SparkOne 测试环境说明各组件的生命周期：Spark 3.3.4 运行在 YARN，NodeManager 已启用匹配版本的 `spark_shuffle`，Kyuubi profile 使用 `USER` share level。这里的“缩容”包含两类完全不同的动作：
+本文按当前 QueryOne 测试环境说明各组件的生命周期：Spark 3.3.4 运行在 YARN，NodeManager 已启用匹配版本的 `spark_shuffle`，Kyuubi profile 使用 `USER` share level。这里的“缩容”包含两类完全不同的动作：
 
 - Spark dynamic allocation 增减同一个 Application 内的 executor。
 - Kyuubi engine 空闲回收会结束整个 Spark engine 和 YARN Application。
@@ -15,20 +15,20 @@ Kyuubi Server 和 ZooKeeper 不参与 executor 数量计算；ZooKeeper 负责�
 | Spark SQL engine | 整个 Spark engine | 没有活动 session，且超过 engine idle timeout | SparkContext 停止，YARN Application 结束 |
 | Kyuubi Server | 整个 gateway 进程 | 人工/进程管理器停止，或服务发现 ZK 长时间 `LOST` | 不再提供 JDBC/REST 服务 |
 | Kyuubi 服务发现 ZK | 注册与协调服务 | 内嵌 ZK 随 Server 退出；外置 ZK 由独立集群管理 | 影响 Server/engine 注册、发现和故障处理 |
-| SparkOne overwrite ZK | 单目标写入锁 | 外置 ZK 不可连接或 session 丢失 | 影响受控 HDFS overwrite，不直接回收 executor 或 engine |
+| QueryOne overwrite ZK | 单目标写入锁 | 外置 ZK 不可连接或 session 丢失 | 影响受控 HDFS overwrite，不直接回收 executor 或 engine |
 
 ## Kyuubi 生命周期参数总表
 
-以下默认值以当前参考源码 Kyuubi 1.9.4 为准，“当前值”指本文档定义的 `kyuubi-defaults.conf` 和 SparkOne 三套 profile；没有显式覆写的参数继承 Kyuubi 默认值。`kyuubi-defaults.conf` 控制 Kyuubi Server 自身并提供 engine 公共启动配置，profile overlay 会并入所选连接的 engine 启动配置和 backend session 配置；它不会重配 Kyuubi Server 已初始化的 SessionManager，也不会改变已经运行的 engine。
+以下默认值以当前参考源码 Kyuubi 1.9.4 为准，“当前值”指本文档定义的 `kyuubi-defaults.conf` 和 QueryOne 三套 profile；没有显式覆写的参数继承 Kyuubi 默认值。`kyuubi-defaults.conf` 控制 Kyuubi Server 自身并提供 engine 公共启动配置，profile overlay 会并入所选连接的 engine 启动配置和 backend session 配置；它不会重配 Kyuubi Server 已初始化的 SessionManager，也不会改变已经运行的 engine。
 
 ### Session 与 Operation
 
-| 参数 | Kyuubi 默认值 | SparkOne 当前值 | 生命周期作用 |
+| 参数 | Kyuubi 默认值 | QueryOne 当前值 | 生命周期作用 |
 | --- | --- | --- | --- |
 | `kyuubi.session.idle.timeout` | `PT6H` | Server frontend `PT6H`；Local backend `PT6H`；两个 YARN backend `PT30M` | Session 同时满足“超过最后访问时间”和“没有 operation”的空闲时间后，才具备关闭条件 |
 | `kyuubi.session.check.interval` | `PT5M` | 继承默认值 | SessionManager 每 5 分钟检查 session timeout，并在同一轮检查中清理过期 operation |
 | `kyuubi.session.close.on.disconnect` | `true` | 继承默认值 | 客户端连接断开时立即关闭其 Kyuubi session；设为 `false` 时 session 可以在连接断开后继续存活到 idle timeout |
-| `kyuubi.batch.session.idle.timeout` | 回退到 `kyuubi.session.idle.timeout`，即默认 `PT6H` | 继承默认值，当前 SparkOne 不使用 batch API | 只控制 Kyuubi batch session，不控制 JDBC session |
+| `kyuubi.batch.session.idle.timeout` | 回退到 `kyuubi.session.idle.timeout`，即默认 `PT6H` | 继承默认值，当前 QueryOne 不使用 batch API | 只控制 Kyuubi batch session，不控制 JDBC session |
 | `kyuubi.operation.idle.timeout` | `PT3H` | 继承默认值 | 已进入终态且长时间未被访问的 operation handle 才会被清理；运行中的 operation 不受该参数关闭 |
 | `kyuubi.operation.query.timeout` | 未设置 | 未设置 | 可限制单条查询运行时间；查询超时不等于 session 或 engine 立即退出 |
 | `kyuubi.operation.interrupt.on.cancel` | `true` | 继承默认值 | query timeout 或客户端 cancel 后是否中断 Spark task；只影响任务结束速度 |
@@ -40,18 +40,18 @@ Kyuubi JDBC 链路包含两层 session：
 | Frontend session | Kyuubi Server | Server 启动时读取的 `kyuubi-defaults.conf` | `PT6H` |
 | Backend session | Spark SQL engine | engine 启动配置和选中的 profile | Local `PT6H`；YARN `PT30M` |
 
-profile 中的 `kyuubi.session.idle.timeout=PT30M` 控制 YARN engine 内的 backend session，不会把 Kyuubi Server frontend session 改成 30 分钟。backend session 超时后，engine 可以继续进入 30 分钟 idle 回收，而 SparkOne 缓存的 frontend JDBC connection 可能仍存在但已经失效。下一次只读操作会按当前实现重连一次并创建新 session；写操作不会自动重试，临时视图和其他 session 状态也不会恢复。
+profile 中的 `kyuubi.session.idle.timeout=PT30M` 控制 YARN engine 内的 backend session，不会把 Kyuubi Server frontend session 改成 30 分钟。backend session 超时后，engine 可以继续进入 30 分钟 idle 回收，而 QueryOne 缓存的 frontend JDBC connection 可能仍存在但已经失效。下一次只读操作会按当前实现重连一次并创建新 session；写操作不会自动重试，临时视图和其他 session 状态也不会恢复。
 
 任一层的 session timeout 都不是从 SQL 执行结束后精确计时。检查条件同时使用 session 的最后访问时间和“无 operation”时间，因此正常关闭 `Statement`/`ResultSet` 很重要。未关闭的已完成 operation 最长可能先等待 `kyuubi.operation.idle.timeout` 被清理，然后才重新开始 session 的无 operation 空闲计时。
 
 ### 主动关闭与被动回收
 
-SparkOne 的两种 Session 模式不是只在“是否复用 connection”上不同，关闭路径也不同：
+QueryOne 的两种 Session 模式不是只在“是否复用 connection”上不同，关闭路径也不同：
 
 | Session 模式 | 关闭方式 | `kyuubi.operation.idle.timeout` | `kyuubi.session.idle.timeout` | `kyuubi.session.engine.idle.timeout` |
 | --- | --- | --- | --- | --- |
 | `run_isolated` | Run 的 `finally` 主动执行 `Connection.close()` | 正常关闭路径不等待 | 正常关闭路径不等待 | 最后一个 backend session 关闭后开始等待 |
-| `tenant_shared` | SparkOne 保留 connection，由 Kyuubi checker 被动回收 | frontend/backend 中有遗留终态 operation 时可能先等待 | operation 全部清理后再等待 | engine 中最后一个 backend session 关闭后开始等待 |
+| `tenant_shared` | QueryOne 保留 connection，由 Kyuubi checker 被动回收 | frontend/backend 中有遗留终态 operation 时可能先等待 | operation 全部清理后再等待 | engine 中最后一个 backend session 关闭后开始等待 |
 
 `Connection.close()` 会向 Kyuubi Server 发送 `CloseSession`。Kyuubi 随即关闭该 frontend session 中的 operation 和对应的 engine backend session，所以 `run_isolated` 正常结束时，`kyuubi.operation.idle.timeout` 和 `kyuubi.session.idle.timeout` 不参与这次 Session 关闭。只有主动关闭 RPC 失败，或者异常断连没有被及时识别时，Session 才可能退回依赖断连检测或 timeout 的被动回收路径。
 
@@ -85,7 +85,7 @@ Session 实际关闭时间
 
 ### Engine 范围与回收
 
-| 参数 | Kyuubi 默认值 | SparkOne 当前值 | 生命周期作用 |
+| 参数 | Kyuubi 默认值 | QueryOne 当前值 | 生命周期作用 |
 | --- | --- | --- | --- |
 | `kyuubi.engine.share.level` | `USER` | `USER` | 决定哪些 session 共享一个 engine；共享范围越大，最后一个 session 释放的时间通常越晚 |
 | `kyuubi.engine.share.level.subdomain` | 未设置 | `local`、`yarn-client`、`yarn-cluster` | 在 `USER` 范围内继续拆分 engine 池，使三套 profile 各自拥有独立 engine 生命周期 |
@@ -108,7 +108,7 @@ Engine / YARN Application 实际退出时间
 
 ### Engine 启动、连接与探活
 
-| 参数 | Kyuubi 默认值 | SparkOne 当前值 | 生命周期作用 |
+| 参数 | Kyuubi 默认值 | QueryOne 当前值 | 生命周期作用 |
 | --- | --- | --- | --- |
 | `kyuubi.session.engine.initialize.timeout` | `PT3M` | 继承默认值 | 等待 engine 启动并注册的整体上限；超时后 Server 会清理启动进程，并尝试终止已提交的 YARN Application |
 | `kyuubi.server.limit.engine.startup` | 未设置 | 未设置 | 限制单个 Kyuubi Server 并发启动 engine 的数量；等待启动许可同样受 `initialize.timeout` 限制 |
@@ -129,7 +129,7 @@ Engine / YARN Application 实际退出时间
 
 以下配置不产生自动 TTL，但决定人工停止和启动失败清理是否能真正结束 YARN Application：
 
-| 参数 | Kyuubi 默认值 | SparkOne 当前值 | 生命周期作用 |
+| 参数 | Kyuubi 默认值 | QueryOne 当前值 | 生命周期作用 |
 | --- | --- | --- | --- |
 | `kyuubi.engine.ui.stop.enabled` | `true` | 继承默认值 | 是否允许从 Spark engine Web UI 停止整个 engine |
 | `kyuubi.yarn.user.strategy` | `NONE` | 继承默认值 | Kyuubi 构造 YARN client 查询/终止 Application 时使用 Server 用户、管理员用户或 Application owner |
@@ -139,7 +139,7 @@ Engine / YARN Application 实际退出时间
 
 ### 异常摘除
 
-| 参数 | Kyuubi 默认值 | SparkOne 当前值 | 生命周期作用 |
+| 参数 | Kyuubi 默认值 | QueryOne 当前值 | 生命周期作用 |
 | --- | --- | --- | --- |
 | `kyuubi.engine.deregister.exception.classes` | 空集合 | 继承默认值 | 指定需要计数并触发 engine 摘除的异常类；为空时不按异常类摘除 |
 | `kyuubi.engine.deregister.exception.messages` | 空集合 | 继承默认值 | 指定需要计数的异常消息或堆栈模式；为空时不按消息摘除 |
@@ -150,10 +150,10 @@ Engine / YARN Application 实际退出时间
 
 ### ZooKeeper 与 Graceful Stop
 
-| 参数 | Kyuubi 默认值 | SparkOne 当前值 | 生命周期作用 |
+| 参数 | Kyuubi 默认值 | QueryOne 当前值 | 生命周期作用 |
 | --- | --- | --- | --- |
 | `kyuubi.ha.addresses` | 空 | `192.168.200.69:2181` | 空值使 Kyuubi Server 启动内嵌 ZK；当前使用外置 ZK |
-| `kyuubi.ha.namespace` | `kyuubi` | `sparkone-kyuubi` | 隔离 ServerSpace 和 EngineSpace；Server、engine 和 JDBC service discovery 必须使用同一 namespace |
+| `kyuubi.ha.namespace` | `kyuubi` | `queryone-kyuubi` | 隔离 ServerSpace 和 EngineSpace；Server、engine 和 JDBC service discovery 必须使用同一 namespace |
 | `kyuubi.ha.zookeeper.session.timeout` | `60000ms` | 继承默认值 | ZK session 在持续断连后失效的基础窗口；进入 `LOST` 后 ephemeral 注册失效 |
 | `kyuubi.ha.zookeeper.connection.timeout` | `15000ms` | 继承默认值 | 新建到 ZK ensemble 连接的超时，不是已连接 session 的失效时间 |
 | `kyuubi.ha.zookeeper.connection.retry.policy` | `EXPONENTIAL_BACKOFF` | 继承默认值 | `LOST` 后额外重连宽限期所使用的重试策略 |
@@ -169,7 +169,7 @@ ZK 故障的退出时间不是单独一个 timeout：先经过 ZK session timeou
 
 Kyuubi 1.9.4 的 Server graceful stop 没有“总排空超时”配置。它从服务发现中摘除后，每 10 秒检查一次活动 session；只要 session 一直不释放，Server 就会一直等待。以下两个参数只在 Server/engine 已经进入 stop 后限制 operation 执行线程池的关闭等待，并不能限制前面的 session 排空：
 
-| 参数 | Kyuubi 默认值 | SparkOne 当前值 | 生命周期作用 |
+| 参数 | Kyuubi 默认值 | QueryOne 当前值 | 生命周期作用 |
 | --- | --- | --- | --- |
 | `kyuubi.backend.server.exec.pool.shutdown.timeout` | `PT10S` | 继承默认值 | Server operation 线程池进入 shutdown 后的等待时间 |
 | `kyuubi.backend.engine.exec.pool.shutdown.timeout` | 回退到 Server 值，即 `PT10S` | 继承默认值 | Engine operation 线程池进入 shutdown 后的等待时间 |
@@ -194,7 +194,7 @@ Kyuubi 1.9.4 的 Server graceful stop 没有“总排空超时”配置。它从
 
 ### 仅清理附属资源
 
-| 参数 | Kyuubi 默认值 | SparkOne 当前值 | 生命周期作用 |
+| 参数 | Kyuubi 默认值 | QueryOne 当前值 | 生命周期作用 |
 | --- | --- | --- | --- |
 | `kyuubi.session.conf.file.reload.interval` | `PT10M` | `PT1M` | profile 文件缓存刷新周期，只影响之后创建的 session/engine |
 | `kyuubi.session.engine.log.timeout` | `PT24H` | 继承默认值 | 清理 Server 侧保存的 engine `spark-submit` 启动日志，不结束 engine |
@@ -256,7 +256,7 @@ kyuubi.session.engine.check.interval   PT1M
 
 ```text
 Run 完成
-  -> SparkOne 在 finally 主动执行 Connection.close()
+  -> QueryOne 在 finally 主动执行 Connection.close()
   -> Kyuubi 立即关闭 frontend session 及其 operation
   -> Kyuubi 立即关闭对应的 engine backend session
   -> 若这是 engine 中最后一个 session
@@ -273,7 +273,7 @@ YARN engine/backend 链路：
 
 ```text
 最后一次 SQL 完成
-  -> SparkOne 保留 JDBC connection
+  -> QueryOne 保留 JDBC connection
   -> 若 backend 有未关闭的终态查询 operation
   -> engine checker 等待 operation idle timeout 后清理 operation
   -> backend session 开始累计无 operation 空闲时间
@@ -288,7 +288,7 @@ Kyuubi Server frontend 链路：
 
 ```text
 最后一次 frontend 访问
-  -> SparkOne 保留 JDBC connection
+  -> QueryOne 保留 JDBC connection
   -> 若有 LaunchEngine/其他终态 frontend operation
   -> Server checker 等待 operation idle timeout 后清理 operation
   -> frontend session 开始累计无 operation 空闲时间
@@ -302,17 +302,17 @@ YARN deploy mode 只改变 driver 所在位置：
 - `client`：driver/engine 进程位于 Kyuubi gateway 主机；停止 engine 后会关闭 SparkContext，YARN Application 随之结束。
 - `cluster`：driver/engine 位于 YARN ApplicationMaster container；停止 engine 会直接结束整个 YARN Application。
 
-下一次 SparkOne 连接同一 profile 时，Kyuubi 会重新创建 engine 和 YARN Application。这是 Application 冷启动，不是恢复已销毁的 engine。
+下一次 QueryOne 连接同一 profile 时，Kyuubi 会重新创建 engine 和 YARN Application。这是 Application 冷启动，不是恢复已销毁的 engine。
 
-## SparkOne 与 Kyuubi Server 停止
+## QueryOne 与 Kyuubi Server 停止
 
-SparkOne 进程停止时，它持有的 JDBC connection 会断开。默认 `kyuubi.session.close.on.disconnect=true`，对应 Kyuubi session 关闭；最后一个 session 释放后，engine 进入 30 分钟 idle 倒计时。Kyuubi Server、ZooKeeper 和其他租户的 engine 不会因为 SparkOne 单进程停止而自动退出。
+QueryOne 进程停止时，它持有的 JDBC connection 会断开。默认 `kyuubi.session.close.on.disconnect=true`，对应 Kyuubi session 关闭；最后一个 session 释放后，engine 进入 30 分钟 idle 倒计时。Kyuubi Server、ZooKeeper 和其他租户的 engine 不会因为 QueryOne 单进程停止而自动退出。
 
 Kyuubi Server 是长驻 gateway，没有“没有 SQL 就自动缩成 0”的机制。`kyuubi.session.engine.idle.timeout` 只回收 query engine，不回收 Kyuubi Server。Server 进程应由 systemd、容器编排或其他服务管理器负责启动、停止和重启。
 
 停止 Kyuubi Server 时：
 
-- SparkOne 到该 Server 的 JDBC connection 会断开；写语句若正在执行，客户端应按“结果状态未知”处理。
+- QueryOne 到该 Server 的 JDBC connection 会断开；写语句若正在执行，客户端应按“结果状态未知”处理。
 - graceful stop 会先从服务发现中摘除 Server，停止接收新连接，并等待现有 session 结束。
 - graceful stop 等待的是 Server frontend session。当前全局 idle timeout 仍为默认 `PT6H`，检查周期为 `PT5M`；如果客户端保持连接或 session 一直有 operation，Server 没有内置总超时可以强制结束排空。
 - Spark engine 是独立进程或 YARN Application，不保证随 Server 进程立即退出；它还会受到 session timeout、engine idle timeout 和 ZooKeeper 连接状态控制。
@@ -323,8 +323,8 @@ Kyuubi Server 是长驻 gateway，没有“没有 SQL 就自动缩成 0”的机
 
 | 用途 | 配置 | 当前形态 |
 | --- | --- | --- |
-| Kyuubi Server/engine 服务发现 | `kyuubi.ha.addresses` | `192.168.200.69:2181`，namespace 为 `sparkone-kyuubi` |
-| SparkOne 受控 HDFS overwrite 锁 | `spark.sparkone.overwrite.zk.connect` | `192.168.200.69:2181`，root 为 `/sparkone/overwrite` |
+| Kyuubi Server/engine 服务发现 | `kyuubi.ha.addresses` | `192.168.200.69:2181`，namespace 为 `queryone-kyuubi` |
+| QueryOne 受控 HDFS overwrite 锁 | `spark.queryone.overwrite.zk.connect` | `192.168.200.69:2181`，root 为 `/queryone/overwrite` |
 
 两个用途虽然复用同一个外置 ensemble，仍然使用不同 namespace/root 和不同客户端；单个 ZooKeeper 故障会同时影响 Kyuubi 服务发现和 overwrite 排他锁。
 
@@ -339,7 +339,7 @@ Kyuubi Server 是长驻 gateway，没有“没有 SQL 就自动缩成 0”的机
 ```text
 Kyuubi Server JVM 停止
   -> 内嵌 ZK 停止
-  -> SparkOne JDBC connection 断开
+  -> QueryOne JDBC connection 断开
   -> engine 的 ZK client 进入 SUSPENDED / LOST
   -> 在重试宽限期内仍未 RECONNECTED
   -> engine 触发 graceful stop
@@ -356,10 +356,10 @@ Kyuubi Server JVM 停止
 
 ```properties
 kyuubi.ha.addresses=192.168.200.69:2181
-kyuubi.ha.namespace=sparkone-kyuubi
+kyuubi.ha.namespace=queryone-kyuubi
 ```
 
-该地址目前是单节点外置 ZooKeeper，使 Server 和 engine 注册信息独立于某个 Kyuubi Server，但不提供 ZooKeeper quorum 高可用。生产环境应改为至少三个 ZooKeeper 节点的 ensemble。是否具备 gateway 高可用，还取决于 Kyuubi Server 实例数量和 SparkOne 的 JDBC 入口：
+该地址目前是单节点外置 ZooKeeper，使 Server 和 engine 注册信息独立于某个 Kyuubi Server，但不提供 ZooKeeper quorum 高可用。生产环境应改为至少三个 ZooKeeper 节点的 ensemble。是否具备 gateway 高可用，还取决于 Kyuubi Server 实例数量和 QueryOne 的 JDBC 入口：
 
 | 维度 | 单 Kyuubi Server | 多 Kyuubi Server |
 | --- | --- | --- |
@@ -372,11 +372,11 @@ kyuubi.ha.namespace=sparkone-kyuubi
 
 ### 外置 ZK + 单 Kyuubi Server
 
-只有一个 Kyuubi Server 时，外置 ZK 解决的是注册信息与 Server 进程解耦，不解决 gateway 单点故障。SparkOne 到唯一 Server 的连接仍是单点：
+只有一个 Kyuubi Server 时，外置 ZK 解决的是注册信息与 Server 进程解耦，不解决 gateway 单点故障。QueryOne 到唯一 Server 的连接仍是单点：
 
 ```text
 唯一 Kyuubi Server 停止
-  -> SparkOne JDBC connection 全部断开
+  -> QueryOne JDBC connection 全部断开
   -> 外置 ZK 继续运行
   -> Spark engine 的注册节点继续存在
   -> 没有 Kyuubi Server 可以代理新请求
@@ -391,7 +391,7 @@ Server 停止不会让 engine 的 ZK client 进入 `LOST`，因为外置 ZK 仍�
 
 外置 ZK 正常但唯一 Kyuubi Server 停止时：
 
-- 直接执行中的 SQL 可能仍在 engine 内运行，但 SparkOne 已无法取得可靠结果；写语句按“状态未知”处理。
+- 直接执行中的 SQL 可能仍在 engine 内运行，但 QueryOne 已无法取得可靠结果；写语句按“状态未知”处理。
 - graceful stop 会等待已有 session 结束；直接杀进程会立即中断客户端连接。
 - Server 恢复前不能提交新任务，即使 YARN 上的 engine 仍是 `RUNNING`。
 - Server 恢复较慢时，engine 可能先达到 idle timeout 并退出，后续连接将冷启动新的 YARN Application。
@@ -414,12 +414,12 @@ Server 停止不会让 engine 的 ZK client 进入 `LOST`，因为外置 ZK 仍�
 
 这里没有 JDBC session 迁移。连接一旦建立，就固定在接收它的 Kyuubi Server；该 Server 突然故障时，客户端需要重新连接其他 Server，并创建新的 engine session。`tenant_shared` 的临时视图和 session 状态不会自动复制到新 session，写语句连接中断仍按“状态未知”处理。
 
-多 Server 真正生效还要求 SparkOne 不绑定单一地址：
+多 Server 真正生效还要求 QueryOne 不绑定单一地址：
 
 - 使用 Kyuubi JDBC 的 ZooKeeper service discovery，让新 connection 从 ServerSpace 选择存活 Server；或
 - 在多个 Kyuubi Server 前提供健康检查和负载均衡入口。
 
-当前 SparkOne 使用 `jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=sparkone-kyuubi?...`。新 connection 会从 ServerSpace 选择存活的 Kyuubi Server；已有 JDBC session 仍固定在最初选中的 Server，不会因节点停止而迁移。
+当前 QueryOne 使用 `jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=queryone-kyuubi?...`。新 connection 会从 ServerSpace 选择存活的 Kyuubi Server；已有 JDBC session 仍固定在最初选中的 Server，不会因节点停止而迁移。
 
 同一个 engine 是否退出取决于所有 Kyuubi Server 打开的 engine session 总数：
 
@@ -439,9 +439,9 @@ Server 停止不会让 engine 的 ZK client 进入 `LOST`，因为外置 ZK 仍�
 
 外置 ZK 整体停机属于控制面故障，不是资源缩容手段。不要通过停止 ZooKeeper 来回收 engine；需要回收 engine 时使用 idle timeout、Kyuubi Engine UI/`kyuubi-ctl` 的 graceful delete，或 YARN 运维手段。
 
-## SparkOne Overwrite 外置 ZooKeeper 停止
+## QueryOne Overwrite 外置 ZooKeeper 停止
 
-`spark.sparkone.overwrite.zk.connect` 只服务受控 HDFS overwrite：
+`spark.queryone.overwrite.zk.connect` 只服务受控 HDFS overwrite：
 
 - 新 overwrite 在取得锁之前连接不上 ZK，会在写 staging 前失败，避免无锁启动写入。
 - 普通查询、Catalog 读写、受控 HDFS load、executor dynamic allocation 和 engine idle timeout 不依赖这个锁 ZK。
@@ -449,7 +449,7 @@ Server 停止不会让 engine 的 ZK client 进入 `LOST`，因为外置 ZK 仍�
 
 因此 overwrite ZK 丢失 quorum 时，应暂停新的受控 HDFS overwrite，等待 ZK 恢复，并检查目标、staging 和 backup 状态后再恢复写入。不要仅凭客户端报错自动重试写语句。
 
-如果同一个外置 ensemble 同时配置给 `kyuubi.ha.addresses` 和 `spark.sparkone.overwrite.zk.connect`，ensemble 故障会同时触发 Kyuubi 服务发现故障和 overwrite 锁故障，两组影响都要处理。
+如果同一个外置 ensemble 同时配置给 `kyuubi.ha.addresses` 和 `spark.queryone.overwrite.zk.connect`，ensemble 故障会同时触发 Kyuubi 服务发现故障和 overwrite 锁故障，两组影响都要处理。
 
 ## 场景速查
 
@@ -458,7 +458,7 @@ Server 停止不会让 engine 的 ZK client 进入 `LOST`，因为外置 ZK 仍�
 | 无 SQL，所有服务健康 | 约 60 秒后可缩到 0 | session 和 engine timeout 后退出 | 继续长驻 |
 | `run_isolated` 完成 | 按 dynamic allocation 缩容 | 最后 session 关闭后约 30 至 31 分钟退出 | 继续长驻 |
 | `tenant_shared` 完全空闲 | 按 dynamic allocation 缩容 | 通常约 60 至 66 分钟退出 | 继续长驻 |
-| SparkOne 停止 | 对应 Application 继续按策略缩容 | session 释放后进入 engine idle | 不受影响 |
+| QueryOne 停止 | 对应 Application 继续按策略缩容 | session 释放后进入 engine idle | 不受影响 |
 | Kyuubi Server + 内嵌 ZK 停止 | 短期可能继续存在 | ZK `LOST`/session idle 后退出 | 已停止 |
 | 唯一 Kyuubi Server 停止，外置 ZK 正常 | 继续按策略缩容 | 暂时无 Server 代理；session 释放后空闲退出 | gateway 完全不可用 |
 | 多 Server 中一个停止，外置 ZK 正常 | 继续按策略缩容 | 可由其他 Server 发现；按全部 session 判断是否空闲 | 其他 Server 继续服务 |

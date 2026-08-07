@@ -1,10 +1,10 @@
-# SparkOne 文档索引
+# QueryOne 文档索引
 
 文档按职责分层，而不是按历史新增顺序平铺。阅读时优先从核心边界和引擎选择开始，再进入具体数据源、前端或运维手册。
 
 ## Core
 
-- [架构与边界](core/architecture.md)：SparkOne、Kyuubi、Spark 的职责边界。
+- [架构与边界](core/architecture.md)：QueryOne、Kyuubi、Spark 的职责边界。
 - [身份与租户上下文](core/identity.md)：开发登录、TenantContext 和 Kyuubi JDBC session 隔离。
 - [编译器与 ANTLR](core/compiler.md)：薄 DSL 编译策略和 Spark SQL parser 边界。
 - [依赖与环境](core/dependencies.md)：Maven、Spark、ANTLR、provider 依赖原则。

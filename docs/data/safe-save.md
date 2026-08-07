@@ -1,6 +1,6 @@
 # Write Safety
 
-SparkOne 的写入安全策略由内部 `WritePlan` 和固定能力矩阵统一决定。配置只能进一步收紧能力，不能放开矩阵中永久拒绝的写入类型。
+QueryOne 的写入安全策略由内部 `WritePlan` 和固定能力矩阵统一决定。配置只能进一步收紧能力，不能放开矩阵中永久拒绝的写入类型。
 
 ## 固定能力矩阵
 
@@ -17,7 +17,7 @@ SparkOne 的写入安全策略由内部 `WritePlan` 和固定能力矩阵统一�
 
 ## WritePlan
 
-SparkOne compiler 不再从 `save` 直接拼接最终 SQL，而是先生成 `WritePlan`：
+QueryOne compiler 不再从 `save` 直接拼接最终 SQL，而是先生成 `WritePlan`：
 
 ```text
 tenant
@@ -36,7 +36,7 @@ executionType
 SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema preflight -> CatalogWriteSqlRenderer
 ```
 
-`tenant` 来自服务端登录 session。页面用户名登录只是开发测试阶段的逻辑租户选择；Kyuubi/Spark 仍使用启动配置中的固定 keytab 服务账号执行，租户身份只用于 SparkOne 权限决策和 workspace 计算。
+`tenant` 来自服务端登录 session。页面用户名登录只是开发测试阶段的逻辑租户选择；Kyuubi/Spark 仍使用启动配置中的固定 keytab 服务账号执行，租户身份只用于 QueryOne 权限决策和 workspace 计算。
 
 ## 当前实现状态
 
@@ -55,7 +55,7 @@ SAVE AST -> WritePlanner -> WriteCapabilityMatrix -> engine/runtime schema prefl
 - Kyuubi 在 Catalog append 前依次检查目标 schema、源 schema，并对最终显式列 `INSERT` 执行 `EXPLAIN`；任何一步失败都不会提交写语句。
 - Catalog append 使用 Spark 3.3.4 已支持的 column list 语法，不做 Spark 版本分支。
 - Kyuubi `save` 写语句遇到连接异常时不会自动重试。错误会明确提示写入状态未知，需要人工核查目标后再决定是否重提。
-- 受控 HDFS overwrite 编译为 SparkOne 内部命令，由独立 Spark extension 在 Spark driver 内完成 ZK 排他、staging 写入、发布、回滚和清理。
+- 受控 HDFS overwrite 编译为 QueryOne 内部命令，由独立 Spark extension 在 Spark driver 内完成 ZK 排他、staging 写入、发布、回滚和清理。
 - 受控 HDFS load 使用同一 extension 解析租户和相对路径并注册临时视图，不使用 ZK 或 staging。
 - 文件 append 以及本地/S3/OSS 写入仍属于固定策略拒绝，不提供 SQL option 或 HOCON 放行开关。
 
@@ -65,7 +65,7 @@ Hive、Doris、JDBC Catalog append 的受控执行顺序为：
 确认目标存在 -> 比较源/目标列名集合 -> 按目标顺序生成显式列 SQL -> 分析类型兼容 -> INSERT
 ```
 
-Kyuubi 的前三步都是只读预检，可以在连接失效时重连一次；最后的 `INSERT` 永不自动重试。Local MySQL 最终 JDBC write 同样不做 SparkOne 层自动重放。
+Kyuubi 的前三步都是只读预检，可以在连接失效时重连一次；最后的 `INSERT` 永不自动重试。Local MySQL 最终 JDBC write 同样不做 QueryOne 层自动重放。
 
 ## 受控 HDFS workspace
 
@@ -88,7 +88,7 @@ Spark extension 会把它解析到：
 /public/odep/user/${username}/reports/daily
 ```
 
-相对路径必须逐段校验。空路径、绝对路径、URI scheme、authority、query、fragment、百分号编码、反斜杠、空段、`.`、`..` 和内部 `.sparkone-overwrite-*` 目录都不能进入受控 workspace。下面这些路径都会被拒绝：
+相对路径必须逐段校验。空路径、绝对路径、URI scheme、authority、query、fragment、百分号编码、反斜杠、空段、`.`、`..` 和内部 `.queryone-overwrite-*` 目录都不能进入受控 workspace。下面这些路径都会被拒绝：
 
 ```text
 /public/odep/user/alice/reports
@@ -103,7 +103,7 @@ reports/../daily
 
 当前用户自己的文件通常通过 `load <format>.\`relative/path\` as view` 注册临时视图；这种 managed load 由 Engine 按 workspace ownership 直接放行。跨 owner load 走 RMS read 鉴权。原生 SQL 或 `view` 允许受支持 provider 使用 `/absolute/path`、`hdfs:///absolute/path` 或 `viewfs:///absolute/path`；Engine 在 Analyzer 访问文件系统前先按原始规范化路径走一次 RMS read 鉴权，允许后才解析 relation，并使用绑定当前计划的证明在 analysis 后本地复核最终路径。相对原生 relation、带 authority 的 URI、本地文件、对象存储、glob 和百分号编码路径拒绝。受控 load 只解析路径并注册视图，不使用 ZK 锁、staging 或 backup。
 
-所有原生文件路径写入都在 Engine 中拒绝，不调用 RMS；受控 overwrite 只允许签名 subject 与内部命令 tenant 相同，`save options owner=...` 也在编译阶段拒绝。RMS 的 HDFS write 资源不用于扩大 SparkOne 文件写入范围。
+所有原生文件路径写入都在 Engine 中拒绝，不调用 RMS；受控 overwrite 只允许签名 subject 与内部命令 tenant 相同，`save options owner=...` 也在编译阶段拒绝。RMS 的 HDFS write 资源不用于扩大 QueryOne 文件写入范围。
 
 ## HDFS overwrite 执行链路
 
@@ -111,10 +111,10 @@ reports/../daily
 
 ```text
 final   = /public/odep/user/alice/reports/daily
-work    = /public/odep/user/alice/reports/.sparkone-overwrite-<targetHash>
+work    = /public/odep/user/alice/reports/.queryone-overwrite-<targetHash>
 staging = <work>/staging
 backup  = <work>/backup
-lock    = /sparkone/overwrite/alice/reports~daily--<qualifiedFinalPathSha256>
+lock    = /queryone/overwrite/alice/reports~daily--<qualifiedFinalPathSha256>
 value   = operationId=<uuid> + qualified target
 ```
 
@@ -140,13 +140,13 @@ ZK 地址、ZK root、workspace root 和 HDFS 认证均由平台配置注入，�
 
 ## 文件 append 产品边界
 
-SparkOne MVP 不提供 Parquet、ORC、CSV、JSON、Text、Excel 等裸文件或目录 append。增量写入优先落到 Hive、Doris、MySQL 等受治理表；Delta、Iceberg、Hudi 或 Structured Streaming 等需求应按事务表或流式 sink 单独设计，不能复用通用裸路径 append。
+QueryOne MVP 不提供 Parquet、ORC、CSV、JSON、Text、Excel 等裸文件或目录 append。增量写入优先落到 Hive、Doris、MySQL 等受治理表；Delta、Iceberg、Hudi 或 Structured Streaming 等需求应按事务表或流式 sink 单独设计，不能复用通用裸路径 append。
 
 只有出现明确生产案例后才重新评估文件 append，且至少需要同时明确：目标格式与分区约束、schema 合同、并发写策略、失败重跑幂等语义和存储系统 committer。即使重新评估，也应优先限定为 Parquet/ORC 分区或事务湖表，不开放 CSV、Excel、本地文件以及任意 S3/OSS 裸路径 append。
 
 ## 原生 SQL 旁路
 
-原生 SQL 只允许 `SELECT/WITH` 查询，以及 `SHOW/DESCRIBE/EXPLAIN/USE` 等只读检查命令。用户必须通过 SparkOne `load/view/set/save` 进入受控执行意图；其他命令在 Compile 和 Run 前统一拒绝。
+原生 SQL 只允许 `SELECT/WITH` 查询，以及 `SHOW/DESCRIBE/EXPLAIN/USE` 等只读检查命令。用户必须通过 QueryOne `load/view/set/save` 进入受控执行意图；其他命令在 Compile 和 Run 前统一拒绝。
 
 永久拒绝范围包括：
 
@@ -160,9 +160,9 @@ SparkOne MVP 不提供 Parquet、ORC、CSV、JSON、Text、Excel 等裸文件或
 - 分区变更、`ANALYZE TABLE`、`REPAIR TABLE`
 - 原生 `SET/RESET` 和其他未明确允许的 Spark command
 
-判断基于 Spark `SparkSqlParser` 的 LogicalPlan 和 compiler 生成的 `StatementIntent`，不依赖 SQL 字符串前缀。SparkOne `load/view` 内部生成的临时视图命令只有携带对应 intent 时才能执行，用户直接提交原生 `CREATE VIEW` 仍会被拒绝。
+判断基于 Spark `SparkSqlParser` 的 LogicalPlan 和 compiler 生成的 `StatementIntent`，不依赖 SQL 字符串前缀。QueryOne `load/view` 内部生成的临时视图命令只有携带对应 intent 时才能执行，用户直接提交原生 `CREATE VIEW` 仍会被拒绝。
 
-Hive、Doris、JDBC Catalog 目标表必须由平台外的 catalog/数据库治理入口预建。SparkOne 不提供建表、删表或改表结构入口。
+Hive、Doris、JDBC Catalog 目标表必须由平台外的 catalog/数据库治理入口预建。QueryOne 不提供建表、删表或改表结构入口。
 
 ## 本阶段验证
 

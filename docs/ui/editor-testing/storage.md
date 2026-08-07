@@ -2,7 +2,7 @@
 
 ## HDFS 和 Hive 测试
 
-如果使用 `conf/sparkone.conf` 配置了 Hadoop/Hive/Kerberos，Hive 表仍按 catalog 标识读取；个人 HDFS 文件默认放到 `/public/odep/user/${username}` workspace，并在页面使用相对路径。读取其他用户 workspace 可以使用 `load ... options owner="..."`，读取任意已授权 HDFS 目录可以使用原生绝对路径 relation。Local 和 Kyuubi 共用 ODEP/RMS 资源规则：Local 使用开发态 `TenantContext` subject，Kyuubi 使用签名 session user；Local 配置来自 SparkOne HOCON，Kyuubi 配置来自远端 Spark Engine。
+如果使用 `conf/queryone.conf` 配置了 Hadoop/Hive/Kerberos，Hive 表仍按 catalog 标识读取；个人 HDFS 文件默认放到 `/public/odep/user/${username}` workspace，并在页面使用相对路径。读取其他用户 workspace 可以使用 `load ... options owner="..."`，读取任意已授权 HDFS 目录可以使用原生绝对路径 relation。Local 和 Kyuubi 共用 ODEP/RMS 资源规则：Local 使用开发态 `TenantContext` subject，Kyuubi 使用签名 session user；Local 配置来自 QueryOne HOCON，Kyuubi 配置来自远端 Spark Engine。
 
 HDFS CSV：
 
@@ -29,7 +29,7 @@ select * from t limit 20;
 
 ## Excel 测试
 
-`excel` 当前只是 provider 别名，主包不内置 Excel connector。要测试 Excel，启动时必须提供对应 provider jar 或 Maven package，例如在 `conf/sparkone.conf` 中配置：
+`excel` 当前只是 provider 别名，主包不内置 Excel connector。要测试 Excel，启动时必须提供对应 provider jar 或 Maven package，例如在 `conf/queryone.conf` 中配置：
 
 ```hocon
 engines {
@@ -75,7 +75,7 @@ select count(*) as row_count from users_excel;
 
 如果 provider 没加载，`Compile` 可能成功，但 `Run` 会失败，因为真正解析 provider 的是 Spark runtime。
 
-如果启动 SparkContext 时出现 `Failed to connect to /192.168...` 且日志里有 `Added JAR ... at spark://.../jars/...`，通常是本地调试时 Spark driver 广播地址和实际绑定地址不一致。`conf/sparkone.conf` 的 `engines.local.spark` 建议保留：
+如果启动 SparkContext 时出现 `Failed to connect to /192.168...` 且日志里有 `Added JAR ... at spark://.../jars/...`，通常是本地调试时 Spark driver 广播地址和实际绑定地址不一致。`conf/queryone.conf` 的 `engines.local.spark` 建议保留：
 
 ```hocon
 engines {

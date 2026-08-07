@@ -1,7 +1,7 @@
 # Catalog 与远程 Engine 数据源测试
 
-ODEP 路由 Catalog 和 `sparkone_mysql` 分区读取属于 Local/Kyuubi 共用的页面能力：同一组 SQL
-应先在 Local 调试，再在 Kyuubi 的 `Tenant shared` 模式验收。Local 默认从 SparkOne HOCON
+ODEP 路由 Catalog 和 `queryone_mysql` 分区读取属于 Local/Kyuubi 共用的页面能力：同一组 SQL
+应先在 Local 调试，再在 Kyuubi 的 `Tenant shared` 模式验收。Local 默认从 QueryOne HOCON
 注册路由和 provider，使用 `TenantContext.username` 作为 Local subject；Kyuubi 从远端 Spark
 Engine 配置加载 Catalog、provider JAR 和连接信息，使用签名 session user。本文后半部分的
 ECDSA、远端 Engine 配置、连接恢复和 Session 隔离仍是 Kyuubi 专属。
@@ -18,7 +18,7 @@ ECDSA、远端 Engine 配置、连接恢复和 Session 隔离仍是 Kyuubi 专�
 | 静态 MySQL | `mysql_static.<database>.<table>` | 仅 `SHOW NAMESPACES/TABLES`；表访问应拒绝 |
 | 静态 Doris | `doris_static.<database>.<table>` | 仅 `SHOW NAMESPACES/TABLES`；表访问应拒绝 |
 
-其中 ODEP 的第二段是注册别名，由路由 Catalog 映射到 `physicalNamespace`；静态数据源的第二段就是真实数据库名。`hive` 会由 SparkOne 改写为 Spark 内置的 `spark_catalog`。
+其中 ODEP 的第二段是注册别名，由路由 Catalog 映射到 `physicalNamespace`；静态数据源的第二段就是真实数据库名。`hive` 会由 QueryOne 改写为 Spark 内置的 `spark_catalog`。
 
 静态 `mysql_static` / `doris_static` 只用于确认外部 connector 的元数据配置。当前 RMS 资源模型不识别这两个 Catalog，表数据访问必须 fail closed；不要把静态 Catalog 的表查询成功当成 Local/Kyuubi 公共能力。需要验证 ODEP 数据时，使用 `jdbc.<alias>.<table>` 或 `doris.<alias>.<table>`。
 
@@ -67,13 +67,13 @@ connector JAR。Local 用于断点查看 alias resolve、LogicalPlan 资源提�
 前置检查：
 
 - ODEP `/index` 中待测试的 JDBC/Doris 数据源已有非空 `physicalNamespace`。
-- `sparkone-kyuubi-odep-plugin` JAR 位于 Spark Engine 的 `spark.jars`；Kyuubi Server classpath 不需要该 JAR。
-- `sparkone-mysql-provider` JAR 位于 Spark Engine 的 `spark.jars`，用于 ODEP MySQL alias 的分区读取。
+- `queryone-kyuubi-odep-plugin` JAR 位于 Spark Engine 的 `spark.jars`；Kyuubi Server classpath 不需要该 JAR。
+- `queryone-mysql-provider` JAR 位于 Spark Engine 的 `spark.jars`，用于 ODEP MySQL alias 的分区读取。
 - JDBC driver、Doris connector 已放入 Spark Engine classpath。
 - Local Server 能读取 `engines.local.odep` 或同名环境变量；Kyuubi Engine driver 能读取 `ODEP_API_URL`、`ODEP_KYUUBI_APP_ID`、`ODEP_KYUUBI_SIGN_KEY`。
 - `kyuubi-defaults.conf` 配置了 `spark.sql.catalog.jdbc`、`spark.sql.catalog.doris` 路由类，且这两个前缀下没有静态连接参数。
 
-首次修改 Kyuubi 的 `kyuubi-defaults.conf` 或升级远端 JAR 后，按正常部署流程重启 Kyuubi Server 并停止旧 Engine。Local 只需重启 SparkOne 服务以重建 SparkSession；此后只修改 ODEP 注册信息时两边都应重建/停止持有旧索引的 Engine。然后分别在 SparkOne 页面选择 Local 和 Kyuubi，依次执行：
+首次修改 Kyuubi 的 `kyuubi-defaults.conf` 或升级远端 JAR 后，按正常部署流程重启 Kyuubi Server 并停止旧 Engine。Local 只需重启 QueryOne 服务以重建 SparkSession；此后只修改 ODEP 注册信息时两边都应重建/停止持有旧索引的 Engine。然后分别在 QueryOne 页面选择 Local 和 Kyuubi，依次执行：
 
 ```sql
 show namespaces in jdbc;
@@ -104,7 +104,7 @@ load doris.`recommend_prod.r_qa_log` as qa_log;
 select * from qa_log limit 10;
 ```
 
-`show namespaces` 首次调用 ODEP `POST /api/datasource/index`，返回 alias 而不返回真实数据库；首次访问某个 alias 的表时才调用 SparkOne/Kyuubi 专用的 `POST /api/datasource/resolve`，路由 Catalog 在 Engine 内将 alias 转成 `physicalNamespace`。`/resolve` 使用 ODEP 当前环境的 `common-url.rms.api` 和 `pk.name` 解析 PK 占位符，MLSQL 旧链路的 `/detail` 不受影响。两级结果都会缓存到当前 Engine 退出。如果目标 Catalog 已经出现在 `show catalogs` 中，但 `show namespaces` 报静态配置冲突，删除同名前缀的旧 Catalog 参数后重建 Engine。
+`show namespaces` 首次调用 ODEP `POST /api/datasource/index`，返回 alias 而不返回真实数据库；首次访问某个 alias 的表时才调用 QueryOne/Kyuubi 专用的 `POST /api/datasource/resolve`，路由 Catalog 在 Engine 内将 alias 转成 `physicalNamespace`。`/resolve` 使用 ODEP 当前环境的 `common-url.rms.api` 和 `pk.name` 解析 PK 占位符，MLSQL 旧链路的 `/detail` 不受影响。两级结果都会缓存到当前 Engine 退出。如果目标 Catalog 已经出现在 `show catalogs` 中，但 `show namespaces` 报静态配置冲突，删除同名前缀的旧 Catalog 参数后重建 Engine。
 
 ### 静态数据源
 
@@ -131,18 +131,18 @@ select * from doris_static.dataagent.r_qa_log limit 10;
 最后一条查询应在分析阶段被拒绝，并包含 `Unsupported catalog for authorization: doris_static`。
 表数据访问请改用 `doris.<alias>.<table>`。
 
-## 测试 `sparkone_mysql` Provider（Local/Kyuubi）
+## 测试 `queryone_mysql` Provider（Local/Kyuubi）
 
 这组用例验证 ODEP JDBC alias 的并行读取，Local 和 Kyuubi 应执行同一份 SQL。Local 使用
-SparkOne fat jar 内置的路由 Catalog、provider 和 HOCON/`ODEP_*` 配置；Kyuubi 使用远端 Spark
+QueryOne fat jar 内置的路由 Catalog、provider 和 HOCON/`ODEP_*` 配置；Kyuubi 使用远端 Spark
 Engine 的对应 JAR、JDBC driver 和 ODEP 配置。静态 `mysql_static` 只用于元数据检查，不能
 作为这组表数据读取的入口。
 
 前置检查：
 
 - ODEP `/index` 中待测试的 JDBC alias 已有非空 `physicalNamespace`，且对应数据源是 MySQL。
-- Local 服务已加载 `sparkone_mysql` provider；Kyuubi/Spark engine 还需显式部署
-  `sparkone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar` 和 MySQL JDBC driver。
+- Local 服务已加载 `queryone_mysql` provider；Kyuubi/Spark engine 还需显式部署
+  `queryone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar` 和 MySQL JDBC driver。
 - Local 能读取 `engines.local.odep` 或同名环境变量；Kyuubi Engine 能读取 `ODEP_API_URL`、`ODEP_KYUUBI_APP_ID`、`ODEP_KYUUBI_SIGN_KEY`。
 
 在编辑器里分别选择 Local 和 Kyuubi，执行：
@@ -160,7 +160,7 @@ select count(*) from orders_big;
 
 ```sql
 CREATE OR REPLACE TEMPORARY VIEW orders_big
-USING sparkone_mysql
+USING queryone_mysql
 OPTIONS (
   catalog 'jdbc',
   alias 'sync_search',
@@ -196,11 +196,11 @@ Scan JDBCRelation(<physical_namespace>.drug_ai_drug_decision) [numPartitions=10]
 SELECT * FROM `orders_big` LIMIT 101
 ```
 
-这是 SparkOne 页面预览，不是 `load` 自己全量查询。原因通常是 `preview.defaultTab = "preview"`，或者点击了结果区的 Preview tab。`101` 表示请求 100 行再多取 1 行判断是否截断；实际上限受 `preview.maxRows` 和页面 `Rows` 控制。
+这是 QueryOne 页面预览，不是 `load` 自己全量查询。原因通常是 `preview.defaultTab = "preview"`，或者点击了结果区的 Preview tab。`101` 表示请求 100 行再多取 1 行判断是否截断；实际上限受 `preview.maxRows` 和页面 `Rows` 控制。
 
 注意：
 
-- `load jdbc.\`alias.table\`` 无大表参数时编译成 ODEP 路由 Catalog SQL；带 `partitionColumn` 或其他大表读取参数时编译成 `USING sparkone_mysql`。Local 和 Kyuubi 的编译形态相同。
+- `load jdbc.\`alias.table\`` 无大表参数时编译成 ODEP 路由 Catalog SQL；带 `partitionColumn` 或其他大表读取参数时编译成 `USING queryone_mysql`。Local 和 Kyuubi 的编译形态相同。
 - SQL options 禁止传 `url/user/password/driver/dbtable/query`；Local 的连接信息来自 ODEP resolve，Kyuubi 的连接信息来自远端 Spark Engine/ODEP。
 - `lowerBound/upperBound` 只决定 Spark JDBC 分区步长，不做业务过滤。业务过滤写 `where "..."`，例如 `where "biz_date = '2026-07-07'"`。
 - `numPartitions` 会增加对 MySQL 的并发连接和 IO 压力。验证通过后再按 MySQL 监控、Spark task 耗时和源表索引情况调大。
@@ -218,8 +218,8 @@ select * from values
 as stage3b_mysql_source(id, name);
 
 save append stage3b_mysql_source
-as jdbc.`mysql_static.Dworks.sparkone_3b_target`;
+as jdbc.`mysql_static.Dworks.queryone_3b_target`;
 ```
 
-预期写入成功，随后可用 `select * from mysql_static.Dworks.sparkone_3b_target` 验证。ODEP
+预期写入成功，随后可用 `select * from mysql_static.Dworks.queryone_3b_target` 验证。ODEP
 MySQL alias 仍只开放读取和分区读取，`save jdbc.\`alias.table\`` 会在 Compile 阶段拒绝。

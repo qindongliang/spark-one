@@ -12,7 +12,7 @@
 
 `Run` 成功但没有表格结果：
 
-- 原生 DDL/DML 会在 Compile 阶段拒绝；SparkOne 页面只允许查询、只读检查命令以及受控 `load/view/set/save`。
+- 原生 DDL/DML 会在 Compile 阶段拒绝；QueryOne 页面只允许查询、只读检查命令以及受控 `load/view/set/save`。
 
 `Compile` 成功但 `Run` 失败：
 
@@ -41,4 +41,4 @@ select 1;
 select 2;
 ```
 
-注释会被 SparkOne DSL parser 忽略，不会作为独立语句执行。
+注释会被 QueryOne DSL parser 忽略，不会作为独立语句执行。

@@ -1,0 +1,192 @@
+# 将本文件复制为 conf/queryone.conf，供本地 IDEA 或 CLI 启动使用。
+
+server {
+  host = "127.0.0.1"
+  port = 7070
+  logLevel = "info"
+  # Run 默认隐藏转译后的 SQL；调试时可设为 true，在页面展示每条语句的转译结果。
+  showCompiledSql = false
+}
+
+preview {
+  # 每条 statement 默认最多预览 10 行；页面 Rows 只能调小或等于该值，不能放大。
+  maxRows = 10
+  # 结果默认展示 tab：schema 或 preview。
+  # schema 适合看字段结构；preview 适合直接看查询结果。
+  defaultTab = "schema"
+}
+
+engines {
+  # local 用于 IDEA / 本地开发调试；Kyuubi 用于远程 SQL gateway。
+  default = "local"
+
+  local {
+    type = "local"
+    enabled = true
+    label = "Local"
+
+    # Local 默认内置并注册 ODEP jdbc/doris 路由 Catalog、queryone_mysql provider 和
+    # RMS 鉴权扩展，不需要功能开关。只有第一次访问 ODEP 资源时才读取配置并调用接口。
+    # 同名 ODEP_* 环境变量会覆盖这里的值；Kyuubi Spark Engine 仍使用环境变量。
+    # Local subject 来自当前服务端 TenantContext，仅用于 IDEA 调试，不构成生产安全边界。
+
+    odep {
+      apiUrl = "http://127.0.0.1:8080"
+      appId = "queryone"
+      signKey = "change-me"
+      connectTimeoutSeconds = 5
+      requestTimeoutSeconds = 60
+    }
+
+    spark {
+      master = "local[*]"
+      # local 模式会自动使用 127.0.0.1。
+      # 如果使用 YARN/client 模式，driverHost 应配置为 executor 可访问的地址。
+      # driverHost = "127.0.0.1"
+      # driverBindAddress = "127.0.0.1"
+
+      kerberos {
+        principal = "odep@HADOOP.COM"
+        keytab = "/Users/qindongliang/bigdata/odep.keytab"
+      }
+    }
+
+    hadoop {
+      confDir = "/Users/qindongliang/bigdata/hadoop/etc/hadoop"
+      groupStaticOverrides = "odep=odep"
+      # confFiles = "/path/to/core-site.xml,/path/to/hdfs-site.xml"
+    }
+
+    hive {
+      enabled = true
+      confFile = "/Users/qindongliang/bigdata/hive/conf/hive-site.xml"
+      # confDir = "/Users/qindongliang/bigdata/hive/conf"
+    }
+
+    kerberos {
+      krb5Conf = "/etc/krb5.conf"
+    }
+
+    overwrite {
+      # workspaceRoot 同时用于受控 HDFS load/overwrite；只有 overwrite 需要 ZooKeeper 排他。
+      zkConnect = "192.168.200.69:2181"
+      zkRoot = "/queryone/overwrite"
+      workspaceRoot = "/public/odep/user"
+      zkSessionTimeoutMs = 60000
+      zkConnectionTimeoutMs = 15000
+    }
+
+    catalogs {
+      mysql_static {
+        # 静态 Spark JDBC Catalog 固定注册为 catalog 名 mysql_static，避免与 ODEP 路由冲突。
+        # SQL 主路径：show namespaces in mysql_static; show tables in mysql_static.app;
+        # select * from mysql_static.app.table;
+        # Spark JDBC Catalog 会把 mysql_static.app 中的 app 作为 JDBC schemaPattern 传给 DatabaseMetaData。
+        # MySQL Connector/J 默认把 database 视为 catalog；这里必须设置 databaseTerm=SCHEMA，
+        # 才能让 show tables in mysql_static.app 按 MySQL database 正确过滤。
+        # 直接查询：select * from mysql_static.app.table;
+        # DSL：load jdbc.`mysql_static.app.table` as t;
+        # 写入：save append t as jdbc.`mysql_static.app.target_table`;
+        url = "jdbc:mysql://127.0.0.1:3306/?databaseTerm=SCHEMA&useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+        driver = "com.mysql.cj.jdbc.Driver"
+        user = "root"
+        password = "change-me"
+
+        options {
+          fetchsize = 1000
+        }
+      }
+
+      doris_static {
+        # 静态 Spark Doris Catalog 固定注册为 catalog 名 doris_static。
+        # `doris` 保留给默认启用的 ODEP 路由 Catalog。
+        # SQL 主路径：show namespaces in doris_static; select * from doris_static.db.table;
+        fenodes = "127.0.0.1:8030"
+        queryPort = 9030
+        user = "root"
+        password = "change-me"
+
+        # 这里放 Spark Doris Catalog 参数，例如 doris.request.retries、doris.read.mode 等。
+        options {
+          doris.request.retries = 3
+        }
+      }
+    }
+
+    jars {
+      # 等价于 spark-submit --packages / spark.jars.packages。
+      # packages = "dev.mauch:spark-excel_2.12:3.3.4_0.31.2"
+      # MySQL 连接器也可以用 packages 引入，例如：
+      # packages = "com.mysql:mysql-connector-j:8.4.0"
+      # Doris 4.x / Spark 3.3 可引入：
+      # packages = "org.apache.doris:spark-doris-connector-spark-3.3:25.2.0"
+      # 等价于 spark-submit --jars / spark.jars，用于依赖类 JAR。
+      # jars = "/path/to/provider.jar,/path/to/another-provider.jar"
+      # 等价于 spark-submit --files / spark.files，用于普通文件，不用于依赖类 JAR。
+      # files = "/path/to/app.conf,/path/to/dict.txt"
+      # packages 解析时使用的额外 Maven 仓库。
+      # repositories = "https://repo1.maven.org/maven2"
+    }
+  }
+
+  # 三个 Kyuubi 入口通过同一个 ZooKeeper ServerSpace 发现 gateway，只通过受信任 profile 选择运行环境。
+  # Spark master、deploy mode、资源、Catalog、keytab、扩展和依赖 JAR 均由 Kyuubi 侧管理。
+  kyuubi_local {
+    type = "kyuubi"
+    enabled = false
+    label = "Kyuubi Local"
+    url = "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=queryone-kyuubi?kyuubi.session.conf.profile=local"
+
+    # QueryOne 始终使用当前页面登录用户名建立 Kyuubi JDBC session，作为 Engine 鉴权 subject。
+    # Spark/HDFS 物理执行身份仍由 Kyuubi engine 的统一 Kerberos principal 决定。
+    # Kyuubi Server 开启客户端认证时，可配置统一 password 和认证 options；user 不覆盖登录用户名。
+    # password = "change-me"
+    # driver = "org.apache.kyuubi.jdbc.KyuubiHiveDriver"
+
+    # 这里放 Kyuubi JDBC 客户端认证属性，不用于决定 Spark engine 执行用户：
+    # options {
+    #   kyuubiClientPrincipal = "queryone@HADOOP.COM"
+    #   kyuubiClientKeytab = "/path/to/queryone.keytab"
+    #   kyuubiServerPrincipal = "kyuubi/host@HADOOP.COM"
+    # }
+
+    # ODEP 路由 Catalog 由 Kyuubi advisor 注入，QueryOne 只提交三段式标识：
+    #   load jdbc.`search_prod.orders` as orders;
+    #   select * from jdbc.search_prod.orders;
+    #   load doris.`recommend_prod.r_qa_log` as qa_log;
+    #   select * from doris.recommend_prod.r_qa_log;
+    # `jdbc`/`doris` 的连接参数和 physicalNamespace 不配置在 QueryOne HOCON。
+    #
+    # 静态 JDBC Catalog 统一使用以 _static 结尾的三段式名称，例如：
+    #   select * from mysql_static.Dworks.orders;
+    #   load jdbc.`mysql_static.Dworks.orders` as orders;
+    #   load jdbc.`mysql_static.Dworks.big_orders` options partitionColumn="id" ... as big_orders;
+    #   save append source_view as jdbc.`mysql_static.Dworks.target_table`;
+    #
+    # MySQL url/user/password 必须放在 Kyuubi/Spark engine 侧，例如 spark.sql.catalog.mysql_static.*。
+    # 静态 save jdbc 必须使用 catalog_static.database.table 三段式路径，且不接受 SQL OPTIONS。
+    # 带 partitionColumn/lowerBound/upperBound/numPartitions/fetchsize 的大表 load 会编译为
+    # USING queryone_mysql，Kyuubi/Spark engine 侧需要把 queryone-mysql-provider jar 放进 classpath。
+    #
+    # 受控 HDFS load/overwrite 由 Kyuubi 拉起的 Spark engine 执行。扩展 jar 和以下 Spark 配置
+    # 必须放到 Kyuubi/Spark engine 侧，不通过本 HOCON 或 LOAD/SAVE OPTIONS 下发：
+    # spark.sql.extensions=ai.queryone.extension.overwrite.QueryOneHdfsOverwriteExtensions
+    # spark.queryone.overwrite.zk.connect=192.168.200.69:2181
+    # spark.queryone.overwrite.zk.root=/queryone/overwrite
+    # spark.queryone.overwrite.workspaceRoot=/public/odep/user
+  }
+
+  kyuubi_yarn_client {
+    type = "kyuubi"
+    enabled = false
+    label = "YARN Client"
+    url = "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=queryone-kyuubi?kyuubi.session.conf.profile=yarn-client"
+  }
+
+  kyuubi_yarn_cluster {
+    type = "kyuubi"
+    enabled = false
+    label = "YARN Cluster"
+    url = "jdbc:kyuubi://192.168.200.69:2181/default;serviceDiscoveryMode=zooKeeper;zooKeeperNamespace=queryone-kyuubi?kyuubi.session.conf.profile=yarn-cluster"
+  }
+}

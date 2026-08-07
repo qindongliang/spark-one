@@ -1,12 +1,12 @@
 # Load 文件与 Hive 测试
 
-`load` 是 SparkOne 提供的薄 DSL，目的是让加载数据更接近 MLSQL 写法。推荐先点 `Compile` 看转译结果。
+`load` 是 QueryOne 提供的薄 DSL，目的是让加载数据更接近 MLSQL 写法。推荐先点 `Compile` 看转译结果。
 
 路径说明：
 
 - 文件 `load` 只接受 workspace 相对路径。省略 `owner` 时使用当前登录用户；`options owner="bob"` 时读取指定用户的 workspace。
 - `load csv.\`imports/users.csv\`` 默认在 Spark driver 内解析为 `/public/odep/user/${username}/imports/users.csv`。
-- `load` 的绝对路径、URI、`..` 和内部 `.sparkone-overwrite-*` 目录都会被拒绝。
+- `load` 的绝对路径、URI、`..` 和内部 `.queryone-overwrite-*` 目录都会被拒绝。
 - 原生 SQL/`view` 可以直接读取受支持文件 provider 的 `/absolute/path`、`hdfs:///absolute/path` 或 `viewfs:///absolute/path`；Local 和 Kyuubi Engine 都会先用原始规范化路径调用一次 ODEP/RMS `hdfs read`，允许后才做目录枚举和 schema inference，并在 analysis 后使用当前计划的证明本地复核最终 relation。Local 使用开发态 subject，Kyuubi 使用签名 session user。相对原生 relation、glob、百分号编码、带 authority 的 HDFS URI、`file://`、S3/OSS 和未知 provider 仍拒绝。
 - 当前用户自己的 managed load 按 workspace ownership 放行；跨 owner load 才调用 ODEP/RMS。Local 与 Kyuubi 使用同一授权规则；Local subject 来自开发态 `TenantContext`，只用于断点调试，生产验收仍以 Kyuubi 签名 subject 为准。
 
@@ -61,7 +61,7 @@ as bob_events;
 select * from bob_events limit 20;
 ```
 
-上例解析为 `/public/odep/user/bob/shared/events`。`bob` 只是 workspace owner，鉴权 subject 仍是当前页面登录的 RMS 用户；必须给当前用户配置该绝对目录的 HDFS read 权限。`owner` 是 SparkOne 控制参数，不会传给 DataFrameReader。
+上例解析为 `/public/odep/user/bob/shared/events`。`bob` 只是 workspace owner，鉴权 subject 仍是当前页面登录的 RMS 用户；必须给当前用户配置该绝对目录的 HDFS read 权限。`owner` 是 QueryOne 控制参数，不会传给 DataFrameReader。
 
 读取 workspace 之外的已授权绝对目录：
 

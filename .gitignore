@@ -4,7 +4,7 @@ target/
 .DS_Store
 *.class
 *.log
-conf/sparkone.conf
+conf/queryone.conf
 conf/*.local.conf
 
 # Local reference repositories. Keep them available on disk, but do not vendor them.

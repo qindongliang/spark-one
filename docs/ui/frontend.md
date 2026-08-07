@@ -4,13 +4,13 @@
 
 文件：
 
-- `sparkone-server/src/main/resources/public/index.html`
-- `sparkone-server/src/main/resources/public/style.css`
-- `sparkone-server/src/main/resources/public/app.js`
+- `queryone-server/src/main/resources/public/index.html`
+- `queryone-server/src/main/resources/public/style.css`
+- `queryone-server/src/main/resources/public/app.js`
 
 服务端挂载：
 
-- `SparkOneServer` 使用 `config.addStaticFiles("/public", Location.CLASSPATH)`。
+- `QueryOneServer` 使用 `config.addStaticFiles("/public", Location.CLASSPATH)`。
 - `/` 通过 `addSinglePageRoot` 返回 `index.html`。
 
 当前页面能力：
@@ -19,7 +19,7 @@
 - 执行引擎选择：`Local` 用于本地开发调试，`Kyuubi` 用于远程 SQL gateway。
 - 页面采用上方编辑器、下方结果区布局。
 - SQL 语法高亮和行号，基于 CodeMirror 5 WebJar。
-- 编辑器使用 `text/x-sparkone-sql`，基于 CodeMirror Spark SQL mode 追加 `view/load/save/assert/message/on/failure/fail/stop/options/partitionBy/mysql/doris` 关键词。
+- 编辑器使用 `text/x-queryone-sql`，基于 CodeMirror Spark SQL mode 追加 `view/load/save/assert/message/on/failure/fail/stop/options/partitionBy/mysql/doris` 关键词。
 - `Compile` 调 `/api/compile`，只有 `server.showCompiledSql = true` 时显示。
 - `Run` 调 `/api/run`，请求中带上当前选择的 `engine`。
 - 有选区时 `Compile` / `Run` 只提交选中的 SQL；没有选区时提交整篇脚本。
