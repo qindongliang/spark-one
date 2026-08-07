@@ -170,7 +170,7 @@ engines {
     #
     # 受控 HDFS load/overwrite 由 Kyuubi 拉起的 Spark engine 执行。扩展 jar 和以下 Spark 配置
     # 必须放到 Kyuubi/Spark engine 侧，不通过本 HOCON 或 LOAD/SAVE OPTIONS 下发：
-    # spark.sql.extensions=ai.queryone.extension.overwrite.QueryOneHdfsOverwriteExtensions
+    # spark.sql.extensions=queryone.extension.hdfs.QueryOneHdfsWorkspaceExtensions
     # spark.queryone.overwrite.zk.connect=192.168.200.69:2181
     # spark.queryone.overwrite.zk.root=/queryone/overwrite
     # spark.queryone.overwrite.workspaceRoot=/public/odep/user

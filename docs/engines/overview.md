@@ -13,7 +13,7 @@ Javalin HTTP service
 
 入口：
 
-- `ai.queryone.server.QueryOneServer`
+- `queryone.server.QueryOneServer`
 - 应用启动方法见 [../ops/startup.md](../ops/startup.md)。
 
 ## Engine 分类

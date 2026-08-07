@@ -10,9 +10,9 @@ aggregator and exposes five modules:
 
 - `queryone-server`: QueryOne Web/API/compiler/runtime.
 - `queryone-mysql-provider`: Spark datasource provider jar for Kyuubi/Spark engine.
-- `queryone-hdfs-overwrite-extension`: Spark driver extension for managed HDFS workspace reads and overwrite.
-- `queryone-kyuubi-odep-plugin`: Spark Engine routing catalog with lazy ODEP datasource resolution.
-- `queryone-kyuubi-odep-authz-extension`: Spark Engine table/path authorization through ODEP.
+- `queryone-hdfs-workspace-extension`: Spark driver extension for managed HDFS workspace reads and overwrite.
+- `queryone-odep-catalog`: Spark Engine routing catalog with lazy ODEP datasource resolution.
+- `queryone-odep-authz-extension`: Spark Engine table/path authorization through ODEP.
 
 ## Compiler Strategy
 
@@ -60,8 +60,8 @@ options in `.mvn/jvm.config`. More startup methods are documented in
 ```bash
 sdk env
 mvn test
-mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer
-mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer -Dexec.args="--conf conf/queryone.conf"
+mvn -pl queryone-server exec:java -Dexec.mainClass=queryone.server.QueryOneServer
+mvn -pl queryone-server exec:java -Dexec.mainClass=queryone.server.QueryOneServer -Dexec.args="--conf conf/queryone.conf"
 ```
 
 Open:
@@ -75,8 +75,8 @@ SQL 编辑器测试方法见 [`docs/ui/editor-testing.md`](docs/ui/editor-testin
 Use another port:
 
 ```bash
-mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer -Dexec.args=7071
-mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer -Dexec.args="--conf conf/queryone.conf --port 7071"
+mvn -pl queryone-server exec:java -Dexec.mainClass=queryone.server.QueryOneServer -Dexec.args=7071
+mvn -pl queryone-server exec:java -Dexec.mainClass=queryone.server.QueryOneServer -Dexec.args="--conf conf/queryone.conf --port 7071"
 ```
 
 Compile only:

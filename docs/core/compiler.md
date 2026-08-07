@@ -109,7 +109,7 @@ select * from city_stats;
 
 ANTLR 文件：
 
-- `queryone-server/src/main/antlr4/ai/queryone/sql/parser/QueryOneDsl.g4`
+- `queryone-server/src/main/antlr4/queryone/sql/parser/QueryOneDsl.g4`
 
 ANTLR 注意事项：
 

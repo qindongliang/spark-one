@@ -3,7 +3,7 @@
 QueryOne 当前是本地开发测试服务，入口类：
 
 ```text
-ai.queryone.server.QueryOneServer
+queryone.server.QueryOneServer
 ```
 
 默认访问地址：
@@ -24,7 +24,7 @@ http://127.0.0.1:7070
 
 - `queryone-server`
 - `queryone-mysql-provider`
-- `queryone-hdfs-overwrite-extension`
+- `queryone-hdfs-workspace-extension`
 
 ## Maven
 
@@ -32,14 +32,14 @@ http://127.0.0.1:7070
 
 ```bash
 sdk env
-mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer
+mvn -pl queryone-server exec:java -Dexec.mainClass=queryone.server.QueryOneServer
 ```
 
 指定端口：
 
 ```bash
 mvn -pl queryone-server exec:java \
-  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
+  -Dexec.mainClass=queryone.server.QueryOneServer \
   -Dexec.args="--port 7071"
 ```
 
@@ -54,14 +54,14 @@ cp conf/queryone.conf.template conf/queryone.conf
 默认启动会自动读取 `conf/queryone.conf`：
 
 ```bash
-mvn -pl queryone-server exec:java -Dexec.mainClass=ai.queryone.server.QueryOneServer
+mvn -pl queryone-server exec:java -Dexec.mainClass=queryone.server.QueryOneServer
 ```
 
 也可以显式指定配置文件：
 
 ```bash
 mvn -pl queryone-server exec:java \
-  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
+  -Dexec.mainClass=queryone.server.QueryOneServer \
   -Dexec.args="--conf conf/queryone.conf"
 ```
 
@@ -69,7 +69,7 @@ mvn -pl queryone-server exec:java \
 
 ```bash
 mvn -pl queryone-server exec:java \
-  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
+  -Dexec.mainClass=queryone.server.QueryOneServer \
   -Dexec.args="--conf conf/queryone.conf --port 7071"
 ```
 
@@ -84,7 +84,7 @@ mvn -pl queryone-server exec:java \
 
 创建 `Application` 运行配置：
 
-- Main class: `ai.queryone.server.QueryOneServer`
+- Main class: `queryone.server.QueryOneServer`
 - Working directory: `/Users/qindongliang/project/ai/query-one`
 - Use classpath of module: `query-one`
 - Program arguments: 可留空；如果要显式指定配置文件，可填 `--conf conf/queryone.conf`
@@ -236,7 +236,7 @@ Local 默认注册 ODEP Catalog 和 RMS 鉴权扩展，不需要功能开关。�
 
 ```bash
 mvn -pl queryone-server exec:java \
-  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
+  -Dexec.mainClass=queryone.server.QueryOneServer \
   -Dexec.args="--hive-enabled \
     --hadoop-conf-dir /Users/qindongliang/bigdata/hadoop/etc/hadoop \
     --hive-conf /Users/qindongliang/bigdata/hive/conf/hive-site.xml \

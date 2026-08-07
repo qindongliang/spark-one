@@ -116,7 +116,7 @@ Kyuubi Spark Engine 不读取 QueryOne Server HOCON，继续通过上述环境�
 
 Local subject 来自开发登录 session，不等价于 RMS 登录认证，因此这条链路只用于在 IDEA 中断点调试 ODEP Catalog、授权请求和 Spark LogicalPlan，不能作为生产安全边界。
 
-Local runtime 会直接注册 `QueryOneHdfsOverwriteExtensions` 和 `QueryOneLocalOdepAuthzExtension`。`overwrite.workspaceRoot` 同时用于受控 HDFS load 和 overwrite；load 不依赖 ZooKeeper。没有配置 `zkConnect` 时，受控 HDFS overwrite 会 fail closed，受控 load 和其他只读能力不受影响。
+Local runtime 会直接注册 `QueryOneHdfsWorkspaceExtensions` 和 `QueryOneLocalOdepAuthzExtension`。`overwrite.workspaceRoot` 同时用于受控 HDFS load 和 overwrite；load 不依赖 ZooKeeper。没有配置 `zkConnect` 时，受控 HDFS overwrite 会 fail closed，受控 load 和其他只读能力不受影响。
 
 Local engine 是单进程测试台，仍使用一个 SparkSession 和全局执行锁，只接受 `sessionMode=tenant_shared`，不承诺多租户并发隔离。`run_isolated` 是生产 Kyuubi 路径的能力，Local 收到该模式会明确拒绝，避免给定时任务提供错误的隔离语义。
 

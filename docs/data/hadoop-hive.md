@@ -36,7 +36,7 @@ export KRB5CCNAME=/tmp/krb5cc_$(id -u)
 kinit -kt /Users/qindongliang/bigdata/odep.keytab odep@HADOOP.COM
 
 mvn -pl queryone-server exec:java \
-  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
+  -Dexec.mainClass=queryone.server.QueryOneServer \
   -Dexec.args="--conf conf/queryone.conf"
 ```
 
@@ -73,7 +73,7 @@ engines {
 
 ```bash
 mvn -pl queryone-server exec:java \
-  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
+  -Dexec.mainClass=queryone.server.QueryOneServer \
   -Dexec.args="--conf conf/queryone.conf"
 ```
 
@@ -81,7 +81,7 @@ mvn -pl queryone-server exec:java \
 
 ```bash
 mvn -pl queryone-server exec:java \
-  -Dexec.mainClass=ai.queryone.server.QueryOneServer \
+  -Dexec.mainClass=queryone.server.QueryOneServer \
   -Dexec.args="--hive-enabled \
     --hadoop-conf-dir /Users/qindongliang/bigdata/hadoop/etc/hadoop \
     --hive-conf /Users/qindongliang/bigdata/hive/conf/hive-site.xml \

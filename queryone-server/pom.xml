@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>ai.queryone</groupId>
+        <groupId>queryone</groupId>
         <artifactId>query-one-parent</artifactId>
         <version>0.1.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
@@ -19,23 +19,23 @@
 
     <dependencies>
         <dependency>
-            <groupId>ai.queryone</groupId>
-            <artifactId>queryone-hdfs-overwrite-extension_2.12</artifactId>
+            <groupId>queryone</groupId>
+            <artifactId>queryone-hdfs-workspace-extension_2.12</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.queryone</groupId>
-            <artifactId>queryone-kyuubi-odep-plugin</artifactId>
+            <groupId>queryone</groupId>
+            <artifactId>queryone-odep-catalog</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.queryone</groupId>
+            <groupId>queryone</groupId>
             <artifactId>queryone-mysql-provider_2.12</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.queryone</groupId>
-            <artifactId>queryone-kyuubi-odep-authz-extension</artifactId>
+            <groupId>queryone</groupId>
+            <artifactId>queryone-odep-authz-extension</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
@@ -189,7 +189,7 @@
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>ai.queryone.server.QueryOneServer</mainClass>
+                                    <mainClass>queryone.server.QueryOneServer</mainClass>
                                 </transformer>
                             </transformers>
                         </configuration>

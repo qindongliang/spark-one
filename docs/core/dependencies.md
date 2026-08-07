@@ -47,9 +47,9 @@ Shade jar：
 
 Spark engine 扩展依赖：
 
-- `queryone-hdfs-overwrite-extension_2.12` 承载受控 HDFS load/overwrite，将 Spark SQL、Curator 和 SLF4J 标记为 `provided`，部署到 Kyuubi 时复用 Spark/Hadoop engine classpath，避免重复打包造成版本冲突。
-- `queryone-kyuubi-odep-authz-extension` 承载 Engine 资源提取、Kyuubi session user 签名校验、HDFS workspace ownership 和 ODEP 批量鉴权；它以 `provided` 方式复用 `queryone-hdfs-overwrite-extension_2.12` 的路径解析与 managed load plan 标记，因此生产 Engine 必须同时部署两个 JAR。
-- Local server 通过 Maven reactor 依赖 HDFS extension、ODEP Catalog plugin、MySQL provider 和 ODEP authz extension，并直接注册 Local 专用扩展与路由 Catalog；这些类已进入 server fat jar。Kyuubi Spark Engine 仍需单独部署相应 JAR 并配置 `spark.sql.extensions`，且继续使用 Kyuubi 签名扩展入口。
+- `queryone-hdfs-workspace-extension_2.12` 承载受控 HDFS load/overwrite，将 Spark SQL、Curator 和 SLF4J 标记为 `provided`，部署到 Kyuubi 时复用 Spark/Hadoop engine classpath，避免重复打包造成版本冲突。
+- `queryone-odep-authz-extension` 承载 Engine 资源提取、Kyuubi session user 签名校验、HDFS workspace ownership 和 ODEP 批量鉴权；它以 `provided` 方式复用 `queryone-hdfs-workspace-extension_2.12` 的路径解析与 managed load plan 标记，因此生产 Engine 必须同时部署两个 JAR。
+- Local server 通过 Maven reactor 依赖 HDFS extension、ODEP Catalog 模块、MySQL provider 和 ODEP authz extension，并直接注册 Local 专用扩展与路由 Catalog；这些类已进入 server fat jar。Kyuubi Spark Engine 仍需单独部署相应 JAR 并配置 `spark.sql.extensions`，且继续使用 Kyuubi 签名扩展入口。
 
 配置文件依赖：
 

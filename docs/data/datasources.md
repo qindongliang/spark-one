@@ -68,7 +68,7 @@ engines {
 
 ### ODEP JDBC/Doris 路由 Catalog
 
-ODEP 模式由 `queryone-kyuubi-odep-plugin` 提供两个稳定的顶层 Catalog；Local server 默认内置并注册，Kyuubi 由 Engine 侧部署：
+ODEP 模式由 `queryone-odep-catalog` 提供两个稳定的顶层 Catalog；Local server 默认内置并注册，Kyuubi 由 Engine 侧部署：
 
 ```text
 jdbc.<alias>.<table>
@@ -165,11 +165,11 @@ OPTIONS (
 `queryone_mysql` provider jar 由 `queryone-mysql-provider` 模块生成，应部署到 Kyuubi/Spark engine classpath，例如：
 
 ```properties
-spark.jars=/path/to/queryone-kyuubi-odep-plugin-0.1.0-SNAPSHOT.jar,\
+spark.jars=/path/to/queryone-odep-catalog-0.1.0-SNAPSHOT.jar,\
   /path/to/queryone-mysql-provider_2.12-0.1.0-SNAPSHOT.jar
 ```
 
-provider 对静态 Catalog 读取 `spark.sql.catalog.mysql_static.*`；对 ODEP JDBC alias 则复用插件 resolver 按需获取详情。QueryOne 不读取 `kyuubi-defaults.conf`，也不会把 `url/user/password` 编进 SQL。
+provider 对静态 Catalog 读取 `spark.sql.catalog.mysql_static.*`；对 ODEP JDBC alias 则复用 Catalog resolver 按需获取详情。QueryOne 不读取 `kyuubi-defaults.conf`，也不会把 `url/user/password` 编进 SQL。
 
 ### queryone_mysql 测试
 

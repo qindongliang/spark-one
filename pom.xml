@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>ai.queryone</groupId>
+    <groupId>queryone</groupId>
     <artifactId>query-one-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
@@ -15,9 +15,9 @@
     <modules>
         <module>queryone-server</module>
         <module>queryone-mysql-provider</module>
-        <module>queryone-hdfs-overwrite-extension</module>
-        <module>queryone-kyuubi-odep-plugin</module>
-        <module>queryone-kyuubi-odep-authz-extension</module>
+        <module>queryone-hdfs-workspace-extension</module>
+        <module>queryone-odep-catalog</module>
+        <module>queryone-odep-authz-extension</module>
     </modules>
 
     <properties>

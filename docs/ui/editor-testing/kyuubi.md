@@ -60,14 +60,14 @@ select * from hive_table limit 10;
 ### ODEP 数据源
 
 这组用例在 Local 和 Kyuubi 上执行同一份 SQL。Local 需要配置 `engines.local.odep` 或
-`ODEP_*` 环境变量并使用默认的 `jdbc` / `doris` 路由 Catalog；Kyuubi 需要在 Spark Engine 侧部署对应插件、扩展和
+`ODEP_*` 环境变量并使用默认的 `jdbc` / `doris` 路由 Catalog；Kyuubi 需要在 Spark Engine 侧部署对应 Catalog 模块、扩展和
 connector JAR。Local 用于断点查看 alias resolve、LogicalPlan 资源提取和 RMS 请求，Kyuubi
 用于验收远程 Engine 的签名 subject、物理 classpath 和真实网络链路。
 
 前置检查：
 
 - ODEP `/index` 中待测试的 JDBC/Doris 数据源已有非空 `physicalNamespace`。
-- `queryone-kyuubi-odep-plugin` JAR 位于 Spark Engine 的 `spark.jars`；Kyuubi Server classpath 不需要该 JAR。
+- `queryone-odep-catalog` JAR 位于 Spark Engine 的 `spark.jars`；Kyuubi Server classpath 不需要该 JAR。
 - `queryone-mysql-provider` JAR 位于 Spark Engine 的 `spark.jars`，用于 ODEP MySQL alias 的分区读取。
 - JDBC driver、Doris connector 已放入 Spark Engine classpath。
 - Local Server 能读取 `engines.local.odep` 或同名环境变量；Kyuubi Engine driver 能读取 `ODEP_API_URL`、`ODEP_KYUUBI_APP_ID`、`ODEP_KYUUBI_SIGN_KEY`。

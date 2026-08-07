@@ -16,17 +16,17 @@ QueryOne DSL + native Spark SQL script
 - Web 服务默认仍是本地测试台，方便快速 compile/run。
 - 当前用户名登录只创建开发态逻辑租户上下文，不是生产认证；生产身份后续由 RMS 提供。
 - Kyuubi 作为远程 SQL gateway 接入；YARN、Kubernetes、Standalone 等终态由 Kyuubi engine 侧承接，不放进 QueryOne。
-- 受控 HDFS load/overwrite 是 Spark SQL 难以安全表达的少数 runtime adapter：薄 compiler 生成内部命令，`queryone-hdfs-overwrite-extension` 在 Spark driver 内解析 workspace owner 和相对路径；overwrite 的任务状态和文件发布职责不会放进 QueryOne Web 进程。
+- 受控 HDFS load/overwrite 是 Spark SQL 难以安全表达的少数 runtime adapter：薄 compiler 生成内部命令，`queryone-hdfs-workspace-extension` 在 Spark driver 内解析 workspace owner 和相对路径；overwrite 的任务状态和文件发布职责不会放进 QueryOne Web 进程。
 - ODEP JDBC/Doris Catalog 与 RMS-backed 鉴权在 Local、Kyuubi 两条 Spark 执行路径共用：Local 默认装配路由 Catalog、MySQL provider 和 Local subject 扩展，Kyuubi 由 Spark Engine 配置装配并使用签名 session subject。ODEP 连接只在首次资源访问时懒解析。
 
 主要代码：
 
-- `queryone-server/src/main/scala/ai/queryone/sql/QueryOneCompiler.scala`
-- `queryone-server/src/main/scala/ai/queryone/sql/SparkSqlValidator.scala`
-- `queryone-server/src/main/scala/ai/queryone/runtime/QueryOneRuntime.scala`
-- `queryone-server/src/main/scala/ai/queryone/runtime/QueryOneEngine.scala`
-- `queryone-server/src/main/scala/ai/queryone/server/QueryOneServer.scala`
-- `queryone-hdfs-overwrite-extension/src/main/scala/ai/queryone/extension/overwrite`
+- `queryone-server/src/main/scala/queryone/sql/QueryOneCompiler.scala`
+- `queryone-server/src/main/scala/queryone/sql/SparkSqlValidator.scala`
+- `queryone-server/src/main/scala/queryone/runtime/QueryOneRuntime.scala`
+- `queryone-server/src/main/scala/queryone/runtime/QueryOneEngine.scala`
+- `queryone-server/src/main/scala/queryone/server/QueryOneServer.scala`
+- `queryone-hdfs-workspace-extension/src/main/scala/queryone/extension/hdfs`
 
 推荐继续演进的方向：
 

@@ -48,14 +48,14 @@ profile 在最后合并，因此同名键由 profile 覆盖 JDBC 和公共基线
 
 ### ODEP 数据源按需加载
 
-`queryone-kyuubi-odep-plugin` 是 Spark Engine 侧的路由 Catalog，不是 Kyuubi Server `SessionConfAdvisor`。Engine 启动时只接收固定的 `jdbc`、`doris` Catalog 类名，不携带任何数据源 URL、用户名或密码。Catalog 实例初始化也不访问 ODEP：首次 `SHOW NAMESPACES IN jdbc|doris` 时调用 `POST /api/datasource/index`，以 form 参数传 `type` 获取非敏感 alias 索引；首次访问某个 alias 的表时，再调用 QueryOne/Kyuubi 专用的 `POST /api/datasource/resolve`，以 form 参数传 `type + alias` 获取该数据源连接配置。`/resolve` 在 ODEP 内复用当前环境的 `common-url.rms.api` 和 `pk.name` 解析 PK 占位符；MLSQL 旧客户端使用的 `/detail` 保持不变。
+`queryone-odep-catalog` 是 Spark Engine 侧的路由 Catalog，不是 Kyuubi Server `SessionConfAdvisor`。Engine 启动时只接收固定的 `jdbc`、`doris` Catalog 类名，不携带任何数据源 URL、用户名或密码。Catalog 实例初始化也不访问 ODEP：首次 `SHOW NAMESPACES IN jdbc|doris` 时调用 `POST /api/datasource/index`，以 form 参数传 `type` 获取非敏感 alias 索引；首次访问某个 alias 的表时，再调用 QueryOne/Kyuubi 专用的 `POST /api/datasource/resolve`，以 form 参数传 `type + alias` 获取该数据源连接配置。`/resolve` 在 ODEP 内复用当前环境的 `common-url.rms.api` 和 `pk.name` 解析 PK 占位符；MLSQL 旧客户端使用的 `/detail` 保持不变。
 
 索引按 type、解析配置按 `type + alias` 缓存在当前 Spark Engine JVM，不设置 TTL，也不 reload。ODEP 注册信息变化后只需停止旧 Engine，让后续连接创建新 Engine；不需要为了刷新数据源重启 Kyuubi Server。connection 级 Engine 会随新连接自然生效，共享 Engine 需要人工停止。
 
-构建插件：
+构建 Catalog 模块：
 
 ```bash
-scripts/build.sh queryone-kyuubi-odep-plugin
+scripts/build.sh queryone-odep-catalog
 ```
 
 ODEP API 部署后，可以列出指定类型的数据源，或者在不打印解析配置值的情况下验证指定 alias：
@@ -65,7 +65,7 @@ scripts/tests/odep-datasource-api.sh jdbc
 scripts/tests/odep-datasource-api.sh jdbc search_prod
 ```
 
-把 `queryone-kyuubi-odep-plugin/target/queryone-kyuubi-odep-plugin-0.1.0-SNAPSHOT.jar` 加入 `spark.jars`，供 Spark Engine 加载路由 Catalog。Kyuubi Server classpath 不需要这个 JAR。插件依赖的 Spark、Jackson 和 SLF4J 由 Engine 提供，不需要打入插件 JAR。
+把 `queryone-odep-catalog/target/queryone-odep-catalog-0.1.0-SNAPSHOT.jar` 加入 `spark.jars`，供 Spark Engine 加载路由 Catalog。Kyuubi Server classpath 不需要这个 JAR。该模块依赖的 Spark、Jackson 和 SLF4J 由 Engine 提供，不需要打入模块 JAR。
 
 Spark Engine driver 进程必须能读取：
 
@@ -77,7 +77,7 @@ export ODEP_CONNECT_TIMEOUT_SECONDS=5
 export ODEP_REQUEST_TIMEOUT_SECONDS=60
 ```
 
-`ODEP_API_URL` 是 ODEP API 根地址。`ODEP_API_URL`、`ODEP_KYUUBI_APP_ID`、`ODEP_KYUUBI_SIGN_KEY` 中任意一个缺失时，首次实例化 `jdbc` 或 `doris` Catalog 失败；索引、解析请求失败或响应非法时，当前 SQL 失败，但 Kyuubi Server 和 Engine 进程仍保持运行。插件不记录连接 options、URL、用户或密码。
+`ODEP_API_URL` 是 ODEP API 根地址。`ODEP_API_URL`、`ODEP_KYUUBI_APP_ID`、`ODEP_KYUUBI_SIGN_KEY` 中任意一个缺失时，首次实例化 `jdbc` 或 `doris` Catalog 失败；索引、解析请求失败或响应非法时，当前 SQL 失败，但 Kyuubi Server 和 Engine 进程仍保持运行。该模块不记录连接 options、URL、用户或密码。
 
 local 和 YARN client 模式的 Engine driver 通常继承 Kyuubi Server 启动环境，因此可以在 Server 启动环境配置这些变量。YARN cluster 等远端 driver 必须由集群 secret 机制或受控启动环境注入；不要把 sign key 放进 `spark.*` 配置，否则会重新出现在 `spark-submit --conf`、Spark UI 或 event log 中。
 
@@ -86,8 +86,8 @@ local 和 YARN client 模式的 Engine driver 通常继承 Kyuubi Server 启动�
 ```properties
 kyuubi.session.conf.advisor org.apache.kyuubi.session.FileSessionConfAdvisor
 kyuubi.session.conf.restrict.list spark.*,kyuubi.engine.share.level,kyuubi.engine.share.level.subdomain
-spark.sql.catalog.jdbc ai.queryone.kyuubi.odep.catalog.OdepRoutingCatalog
-spark.sql.catalog.doris ai.queryone.kyuubi.odep.catalog.OdepRoutingCatalog
+spark.sql.catalog.jdbc queryone.kyuubi.odep.catalog.OdepRoutingCatalog
+spark.sql.catalog.doris queryone.kyuubi.odep.catalog.OdepRoutingCatalog
 kyuubi.server.redaction.regex (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
 spark.redaction.regex (?i)secret|password|passwd|token|access[._-]?key|spark[.]sql[.]catalog[.].*[.](url|user|doris[.]fenodes)
 ```
@@ -132,13 +132,13 @@ load doris.`doris_static.dataagent.r_qa_log` as static_qa_log;
 
 ODEP 模式下，`spark.sql.catalog.jdbc.*` 和 `spark.sql.catalog.doris.*` 两个完整前缀由 ODEP 路由 Catalog 独占，不能再配置同名静态连接参数。路由 Catalog 初始化时发现同名前缀残留的 `url`、`doris.fenodes` 等静态参数会直接报冲突。静态 `mysql_static`、`doris_static` 与 ODEP 的 `jdbc`、`doris` 不重名，可以同时存在。
 
-插件只负责 Catalog 配置和 alias 路由；JDBC driver、Doris connector 等运行依赖仍必须安装在 Spark engine classpath。
+该模块只负责 Catalog 配置和 alias 路由；JDBC driver、Doris connector 等运行依赖仍必须安装在 Spark engine classpath。
 
 该方案只使用 Spark Catalog 扩展点，不修改 Kyuubi 源码，也不需要维护自定义 Kyuubi 构建。部署后可执行一次 `SHOW NAMESPACES` 和测试表查询预热索引与目标 alias，使配置错误在业务流量进入前暴露。
 
 ### ODEP Engine 资源鉴权
 
-`queryone-kyuubi-odep-authz-extension` 对原生绝对 HDFS relation 使用两阶段安全校验。Spark parser 完成纯语法解析后、Analyzer 开始前提取路径并调用一次 `POST /api/queryone/authz/check`，只有允许后才会进入文件枚举和 schema inference；允许结果以 subject、read 动作和规范化路径绑定到当前 LogicalPlan，Analyzer 完成后只在本地核对最终 relation，路径或 subject 不一致时 fail closed，不再调用 ODEP。其他 Catalog 资源仍在 Analyzer 完成后调用 ODEP。Engine 不直接访问 RMS；Kyuubi 使用 session 签名用户名查询 RMS 资源。Local server 默认装配同一套资源提取和 API 客户端，但使用服务端 `TenantContext.username` 作为 Local subject，不接受 Kyuubi 签名也不构成生产安全边界。当前映射为：
+`queryone-odep-authz-extension` 对原生绝对 HDFS relation 使用两阶段安全校验。Spark parser 完成纯语法解析后、Analyzer 开始前提取路径并调用一次 `POST /api/queryone/authz/check`，只有允许后才会进入文件枚举和 schema inference；允许结果以 subject、read 动作和规范化路径绑定到当前 LogicalPlan，Analyzer 完成后只在本地核对最终 relation，路径或 subject 不一致时 fail closed，不再调用 ODEP。其他 Catalog 资源仍在 Analyzer 完成后调用 ODEP。Engine 不直接访问 RMS；Kyuubi 使用 session 签名用户名查询 RMS 资源。Local server 默认装配同一套资源提取和 API 客户端，但使用服务端 `TenantContext.username` 作为 Local subject，不接受 Kyuubi 签名也不构成生产安全边界。当前映射为：
 
 | Spark 资源 | ODEP 请求 |
 | --- | --- |
@@ -152,10 +152,10 @@ ODEP 模式下，`spark.sql.catalog.jdbc.*` 和 `spark.sql.catalog.doris.*` 两�
 构建并部署扩展：
 
 ```bash
-scripts/build.sh queryone-kyuubi-odep-authz-extension
+scripts/build.sh queryone-odep-authz-extension
 ```
 
-将 `queryone-kyuubi-odep-authz-extension-0.1.0-SNAPSHOT.jar` 加入 `spark.jars`，并将扩展类追加到 `spark.sql.extensions`。该扩展与 ODEP Catalog 插件共用前文的五个 `ODEP_*` 环境变量，不做跨 SQL 或 TTL 权限缓存。
+将 `queryone-odep-authz-extension-0.1.0-SNAPSHOT.jar` 加入 `spark.jars`，并将扩展类追加到 `spark.sql.extensions`。该扩展与 ODEP Catalog 模块共用前文的五个 `ODEP_*` 环境变量，不做跨 SQL 或 TTL 权限缓存。
 
 可信 subject 使用 Kyuubi 原生 session user 签名。Server 和 Spark Engine 两个开关必须同时打开：
 
@@ -195,15 +195,15 @@ kyuubi.ha.namespace                          queryone-kyuubi
 spark.kerberos.principal                     odep@HADOOP.COM
 spark.kerberos.keytab                        /etc/security/keytabs/odep.keytab
 spark.jars                                   \
-  /opt/queryone/queryone-kyuubi-odep-plugin.jar,\
-  /opt/queryone/queryone-kyuubi-odep-authz-extension.jar,\
-  /opt/queryone/queryone-hdfs-overwrite-extension.jar,\
+  /opt/queryone/queryone-odep-catalog.jar,\
+  /opt/queryone/queryone-odep-authz-extension.jar,\
+  /opt/queryone/queryone-hdfs-workspace-extension.jar,\
   /opt/queryone/queryone-mysql-provider.jar,\
   /opt/connectors/spark-doris-connector.jar,\
   /opt/connectors/mysql-connector-j.jar
 spark.driver.userClassPathFirst              true
 spark.executor.userClassPathFirst            true
-spark.sql.extensions                         ai.queryone.extension.overwrite.QueryOneHdfsOverwriteExtensions,ai.queryone.kyuubi.odep.authz.QueryOneOdepAuthzExtension
+spark.sql.extensions                         queryone.extension.hdfs.QueryOneHdfsWorkspaceExtensions,queryone.kyuubi.odep.authz.QueryOneOdepAuthzExtension
 spark.kyuubi.session.user.sign.enabled       true
 spark.queryone.overwrite.zk.connect          192.168.200.69:2181
 spark.queryone.overwrite.zk.root             /queryone/overwrite
@@ -212,8 +212,8 @@ spark.queryone.overwrite.zk.sessionTimeoutMs 60000
 spark.queryone.overwrite.zk.connectionTimeoutMs 15000
 
 # ODEP 路由类是固定启动配置，连接详情由 Engine 首次访问 alias 时获取。
-spark.sql.catalog.jdbc                       ai.queryone.kyuubi.odep.catalog.OdepRoutingCatalog
-spark.sql.catalog.doris                      ai.queryone.kyuubi.odep.catalog.OdepRoutingCatalog
+spark.sql.catalog.jdbc                       queryone.kyuubi.odep.catalog.OdepRoutingCatalog
+spark.sql.catalog.doris                      queryone.kyuubi.odep.catalog.OdepRoutingCatalog
 # 不要在 defaults 或 session profile 中给这两个前缀增加静态连接参数。
 
 # Kyuubi engine 启动日志，以及 Spark UI、YARN 和 event log 中的敏感配置脱敏
@@ -472,13 +472,13 @@ kyuubi.engine.single.spark.session=false
 构建扩展 JAR：
 
 ```bash
-./scripts/build.sh queryone-hdfs-overwrite-extension
+./scripts/build.sh queryone-hdfs-workspace-extension
 ```
 
-将 `queryone-hdfs-overwrite-extension_2.12-0.1.0-SNAPSHOT.jar` 放入 Kyuubi Spark engine driver classpath，并在 engine 侧设置：
+将 `queryone-hdfs-workspace-extension_2.12-0.1.0-SNAPSHOT.jar` 放入 Kyuubi Spark engine driver classpath，并在 engine 侧设置：
 
 ```properties
-spark.sql.extensions=ai.queryone.extension.overwrite.QueryOneHdfsOverwriteExtensions
+spark.sql.extensions=queryone.extension.hdfs.QueryOneHdfsWorkspaceExtensions
 spark.queryone.overwrite.zk.connect=192.168.200.69:2181
 spark.queryone.overwrite.zk.root=/queryone/overwrite
 spark.queryone.overwrite.workspaceRoot=/public/odep/user
@@ -497,8 +497,8 @@ spark.queryone.overwrite.zk.connectionTimeoutMs=15000
 ## 数据源归属
 
 - 外部 Spark datasource provider jar 应放在 Kyuubi/Spark engine classpath，不放在 QueryOne 主包里。
-- `queryone-hdfs-overwrite-extension` jar 同样属于 Spark engine classpath，并通过 `spark.sql.extensions` 注册；模块名保持兼容，但 extension 同时承载受控 HDFS load 和 overwrite。
-- `queryone-kyuubi-odep-authz-extension` jar 属于 Spark engine classpath，通过 `spark.sql.extensions` 注册；它在 Engine 内校验 workspace ownership、拒绝原生文件写入，并调用 ODEP 权限接口，不进入 Kyuubi Server classpath，也不直接访问 RMS。
+- `queryone-hdfs-workspace-extension` jar 同样属于 Spark engine classpath，并通过 `spark.sql.extensions` 注册；该扩展同时承载受控 HDFS workspace load 和 staging overwrite。
+- `queryone-odep-authz-extension` jar 属于 Spark engine classpath，通过 `spark.sql.extensions` 注册；它在 Engine 内校验 workspace ownership、拒绝原生文件写入，并调用 ODEP 权限接口，不进入 Kyuubi Server classpath，也不直接访问 RMS。
 - 远端 Catalog 统一使用三段式：Hive 为 `hive.<database>.<table>`；ODEP 为 `jdbc.<alias>.<table>`、`doris.<alias>.<table>`；当前静态数据源为 `mysql_static.<database>.<table>`、`doris_static.<database>.<table>`。`hive` 由 QueryOne 编译为内置 `spark_catalog`，不在 Kyuubi 配置伪造同名 Catalog。
 - `load jdbc.\`catalog_static.db.table\`` 复用 Kyuubi/Spark engine 的 `spark.sql.catalog.<catalog>.*`；无分片参数时编译成远端 catalog SQL。
 - 带 `partitionColumn` 或其他受控大表读取参数时，编译成 `USING queryone_mysql`，由 provider 在 Spark engine 内复用 catalog 连接配置；只写 `partitionColumn` 时会在远端自动查询 `lowerBound/upperBound`，`numPartitions` 默认 `10`，`fetchsize` 默认 `10000`。

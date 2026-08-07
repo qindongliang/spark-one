@@ -178,15 +178,15 @@ POST /api/queryone/authz/check
 确认 Spark Engine 使用的 JAR 中包含：
 
 ```text
-queryone-kyuubi-odep-authz-extension-0.1.0-SNAPSHOT.jar
-queryone-hdfs-overwrite-extension_2.12-0.1.0-SNAPSHOT.jar
+queryone-odep-authz-extension-0.1.0-SNAPSHOT.jar
+queryone-hdfs-workspace-extension_2.12-0.1.0-SNAPSHOT.jar
 ```
 
 `$KYUUBI_CONF_DIR/kyuubi-defaults.conf` 至少包含：
 
 ```properties
-spark.jars                                  /opt/queryone/queryone-kyuubi-odep-plugin.jar,/opt/queryone/queryone-hdfs-overwrite-extension.jar,/opt/queryone/queryone-kyuubi-odep-authz-extension.jar
-spark.sql.extensions                        ai.queryone.extension.overwrite.QueryOneHdfsOverwriteExtensions,ai.queryone.kyuubi.odep.authz.QueryOneOdepAuthzExtension
+spark.jars                                  /opt/queryone/queryone-odep-catalog.jar,/opt/queryone/queryone-hdfs-workspace-extension.jar,/opt/queryone/queryone-odep-authz-extension.jar
+spark.sql.extensions                        queryone.extension.hdfs.QueryOneHdfsWorkspaceExtensions,queryone.kyuubi.odep.authz.QueryOneOdepAuthzExtension
 spark.queryone.overwrite.workspaceRoot      /public/odep/user
 kyuubi.session.user.sign.enabled            true
 spark.kyuubi.session.user.sign.enabled      true
@@ -195,7 +195,7 @@ spark.kyuubi.session.user.sign.enabled      true
 如果还启用了其他 Spark SQL extension，使用英文逗号追加，不能覆盖已有类。例如：
 
 ```properties
-spark.sql.extensions ai.queryone.extension.overwrite.QueryOneHdfsOverwriteExtensions,ai.queryone.kyuubi.odep.authz.QueryOneOdepAuthzExtension
+spark.sql.extensions queryone.extension.hdfs.QueryOneHdfsWorkspaceExtensions,queryone.kyuubi.odep.authz.QueryOneOdepAuthzExtension
 ```
 
 Engine 进程必须能读取：
@@ -240,7 +240,7 @@ mvn -version
 先验证 QueryOne Engine 扩展的资源提取、签名校验、允许和拒绝逻辑：
 
 ```bash
-mvn -pl queryone-server,queryone-kyuubi-odep-authz-extension -am test
+mvn -pl queryone-server,queryone-odep-authz-extension -am test
 ```
 
 验证 ODEP System 的权限解析和接口参数：
