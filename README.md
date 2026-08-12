@@ -57,8 +57,13 @@ Use the SDKMAN environment first. Spark on Java 17 also needs the JVM module
 options in `.mvn/jvm.config`. More startup methods are documented in
 [`docs/ops/startup.md`](docs/ops/startup.md).
 
+The development page and `/api/*` endpoints are disabled by default. Before
+starting locally, copy the template to `conf/queryone.conf`; the committed
+template explicitly sets `server.developmentAccessEnabled = true`.
+
 ```bash
 sdk env
+cp conf/queryone.conf.template conf/queryone.conf
 mvn test
 mvn -pl queryone-server exec:java -Dexec.mainClass=queryone.server.QueryOneServer
 mvn -pl queryone-server exec:java -Dexec.mainClass=queryone.server.QueryOneServer -Dexec.args="--conf conf/queryone.conf"

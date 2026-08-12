@@ -40,12 +40,26 @@ object QueryOneServer {
       .orElse(options.port.map(_.toString))
       .map(_.toInt)
       .getOrElse(7070)
+    val developmentAccess = developmentAccessEnabled
 
+    val app = createApp(developmentAccess).start(host, port)
+
+    sys.addShutdownHook {
+      Option(enginesRef).foreach(_.close())
+    }
+
+    logger.info(s"QueryOne SQL is listening on http://$host:$port")
+    logger.info(s"QueryOne development access is ${if (developmentAccess) "enabled" else "disabled"}")
+  }
+
+  private[server] def createApp(developmentAccess: Boolean): Javalin = {
     val app = Javalin.create(new Consumer[JavalinConfig] {
       override def accept(config: JavalinConfig): Unit = {
-        config.enableWebjars()
-        config.addStaticFiles("/public", Location.CLASSPATH)
-        config.addSinglePageRoot("/", "/public/index.html", Location.CLASSPATH)
+        if (developmentAccess) {
+          config.enableWebjars()
+          config.addStaticFiles("/public", Location.CLASSPATH)
+          config.addSinglePageRoot("/", "/public/index.html", Location.CLASSPATH)
+        }
         config.requestLogger(new RequestLogger {
           override def handle(ctx: Context, timeMs: java.lang.Float): Unit = {
             val elapsedMs = Option(timeMs).map(value => f"${value.toDouble}%.1f").getOrElse("0.0")
@@ -53,23 +67,26 @@ object QueryOneServer {
           }
         })
       }
-    }).start(host, port)
-    app.get("/api/config", (ctx: Context) => handleConfig(ctx))
-    app.get("/api/session", (ctx: Context) => handleSession(ctx))
-    app.post("/api/login", (ctx: Context) => handleLogin(ctx))
-    app.post("/api/logout", (ctx: Context) => handleLogout(ctx))
-    app.post("/api/compile", (ctx: Context) => handleCompile(ctx))
-    app.post("/api/run", (ctx: Context) => handleRun(ctx))
-    app.post("/api/preview", (ctx: Context) => handlePreview(ctx))
+    })
+
+    app.get("/healthz", (ctx: Context) => {
+      ctx.contentType("text/plain; charset=utf-8")
+      ctx.result("OK")
+      ()
+    })
+    if (developmentAccess) {
+      app.get("/api/config", (ctx: Context) => handleConfig(ctx))
+      app.get("/api/session", (ctx: Context) => handleSession(ctx))
+      app.post("/api/login", (ctx: Context) => handleLogin(ctx))
+      app.post("/api/logout", (ctx: Context) => handleLogout(ctx))
+      app.post("/api/compile", (ctx: Context) => handleCompile(ctx))
+      app.post("/api/run", (ctx: Context) => handleRun(ctx))
+      app.post("/api/preview", (ctx: Context) => handlePreview(ctx))
+    }
     app.post("/internal/v1/engines", (ctx: Context) => handleInternalEngines(ctx))
     app.post("/internal/v1/compile", (ctx: Context) => handleInternalCompile(ctx))
     app.post("/internal/v1/run", (ctx: Context) => handleInternalRun(ctx))
-
-    sys.addShutdownHook {
-      Option(enginesRef).foreach(_.close())
-    }
-
-    logger.info(s"QueryOne SQL is listening on http://$host:$port")
+    app
   }
 
   private def handleConfig(ctx: Context): Unit = {
@@ -307,6 +324,10 @@ object QueryOneServer {
 
   private def showCompiledSql: Boolean = {
     enabled("queryone.ui.showCompiledSql", defaultValue = false)
+  }
+
+  private[server] def developmentAccessEnabled: Boolean = {
+    enabled("queryone.development.access.enabled", defaultValue = false)
   }
 
   private def engines: QueryOneEngineRegistry = {
@@ -602,6 +623,8 @@ private[server] object QueryOneHoconConfig {
       string(config, "server.host").map("queryone.host" -> _),
       int(config, "server.port").map(value => "queryone.port" -> value.toString),
       string(config, "server.logLevel").map("queryone.logLevel" -> _),
+      boolean(config, "server.developmentAccessEnabled")
+        .map(value => "queryone.development.access.enabled" -> value.toString),
       boolean(config, "server.showCompiledSql").map(value => "queryone.ui.showCompiledSql" -> value.toString)).flatten.toMap
   }
 

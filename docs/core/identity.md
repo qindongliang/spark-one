@@ -1,6 +1,8 @@
 # 身份与租户上下文
 
-当前登录页只用于开发测试环境选择逻辑租户，不是生产认证。用户输入用户名后，QueryOne 在服务端创建随机 session，并通过 HttpOnly Cookie 关联后续请求。
+当前登录页只用于本地开发环境选择逻辑租户，不是生产认证。用户输入用户名后，QueryOne 在服务端创建随机 session，并通过 HttpOnly Cookie 关联后续请求。
+
+开发登录和页面 API 由 `server.developmentAccessEnabled` 控制，缺省为 `false`。仅本地开发配置应设为 `true`；测试和生产环境必须设为 `false`。关闭后，页面静态资源以及 `/api/config`、`/api/session`、`/api/login`、`/api/logout`、`/api/compile`、`/api/run`、`/api/preview` 均不注册并返回 `404`，不影响 ODEP 使用的 `/internal/v1/*` 签名接口。
 
 约束：
 

@@ -54,6 +54,8 @@ internalApi {
 
 `appId` 和 `signKey` 必须分别与 ODEP System 的最终 `queryone.backend.app-id` 和 `queryone.backend.sign-key`（或其默认回退值）一致。两项未配置时，QueryOne 的 `/internal/v1/*` 返回 404；这不会影响 QueryOne 原有的 UI API。
 
+测试和生产环境同时配置 `server.developmentAccessEnabled = false`，关闭开发登录页面和 `/api/*` 开发接口。ODEP 使用的 `/internal/v1/*` 不受该开关影响；Kubernetes HTTP 探针使用 `GET /healthz`。
+
 QueryOne 可以注册多个 engine，例如：
 
 ```hocon

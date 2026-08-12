@@ -12,6 +12,14 @@ queryone.server.QueryOneServer
 http://127.0.0.1:7070
 ```
 
+登录页面和 `/api/*` 开发接口缺省关闭。本地开发需要在 HOCON 中显式开启：
+
+```hocon
+server.developmentAccessEnabled = true
+```
+
+测试和生产环境必须设为 `false`。关闭后仅保留 `/healthz` 和 `/internal/v1/*`；Kubernetes HTTP 探针使用 `GET /healthz`，成功时返回 HTTP `200` 和文本 `OK`。
+
 引擎细节不要继续堆在启动文档里：
 
 - Local engine 配置见 [../engines/local.md](../engines/local.md)。

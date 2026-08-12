@@ -10,6 +10,17 @@ final class QueryOneServerConfigTest {
   private val LocalPrefix = "queryone.engine.local.local.property"
 
   @Test
+  def disablesDevelopmentAccessByDefault(): Unit = {
+    val key = "queryone.development.access.enabled"
+    val previous = sys.props.remove(key)
+    try {
+      assertFalse(QueryOneServer.developmentAccessEnabled)
+    } finally {
+      previous.foreach(value => sys.props.put(key, value))
+    }
+  }
+
+  @Test
   def rendersManagedHdfsOverwriteCommandForUi(): Unit = {
     val command = ManagedHdfsOverwriteProtocol.render(ManagedHdfsOverwriteRequest(
       tenant = "alice",
@@ -263,6 +274,22 @@ final class QueryOneServerConfigTest {
   }
 
   @Test
+  def loadsDevelopmentAccessConfigFromHocon(): Unit = {
+    val file = Files.createTempFile("queryone-development-access-", ".conf")
+    Files.write(file,
+      """server.developmentAccessEnabled = false
+        |""".stripMargin.getBytes("UTF-8"))
+
+    try {
+      val properties = ServerConfigFile.load(file.toString)
+
+      assertEquals("false", properties("queryone.development.access.enabled"))
+    } finally {
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
   def loadsPreviewConfigFromHocon(): Unit = {
     val file = Files.createTempFile("queryone-preview-", ".conf")
     Files.write(file,
@@ -394,6 +421,7 @@ final class QueryOneServerConfigTest {
     val properties = ServerConfigFile.load(template.toString)
 
     assertEquals("127.0.0.1", properties("queryone.host"))
+    assertEquals("true", properties("queryone.development.access.enabled"))
     assertEquals("local[*]", properties(s"$LocalPrefix.spark.master"))
     assertEquals("10", properties("queryone.preview.maxRows"))
     assertEquals("schema", properties("queryone.preview.defaultTab"))

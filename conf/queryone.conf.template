@@ -4,6 +4,8 @@ server {
   host = "127.0.0.1"
   port = 7070
   logLevel = "info"
+  # 仅用于本地开发：开放登录页面和 /api/* 开发接口。测试、生产环境必须设为 false。
+  developmentAccessEnabled = true
   # Run 默认隐藏转译后的 SQL；调试时可设为 true，在页面展示每条语句的转译结果。
   showCompiledSql = false
 }
