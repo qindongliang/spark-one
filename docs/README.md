@@ -34,5 +34,6 @@
 ## Ops
 
 - [应用启动方法](ops/startup.md)：IDEA、Maven、HOCON、Smoke Test。
+- [ODEP 第一阶段接入](ops/odep-integration.md)：SQL V2、ODEP System -> QueryOne 签名调用、profile 和联调清单。
 - [本地参考仓库](ops/references.md)：`references/*` 的定位和阅读入口。
 - [提交与 PR 规范](ops/commits.md)：中文提交前缀、正文和 PR 描述规范。

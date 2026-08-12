@@ -362,6 +362,29 @@ final class QueryOneServerConfigTest {
   }
 
   @Test
+  def loadsInternalApiAuthConfig(): Unit = {
+    val file = Files.createTempFile("queryone-internal-api-", ".conf")
+    Files.write(file,
+      """internalApi.auth {
+        |  appId = "odep-system"
+        |  signKey = "test-key"
+        |  clockSkewSeconds = 120
+        |  nonceTtlSeconds = 300
+        |}
+        |""".stripMargin.getBytes("UTF-8"))
+
+    try {
+      val properties = ServerConfigFile.load(file.toString)
+      assertEquals("odep-system", properties("queryone.internal.auth.app.id"))
+      assertEquals("test-key", properties("queryone.internal.auth.sign.key"))
+      assertEquals("120", properties("queryone.internal.auth.clock.skew.seconds"))
+      assertEquals("300", properties("queryone.internal.auth.nonce.ttl.seconds"))
+    } finally {
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
   def loadsCommittedHoconTemplate(): Unit = {
     val template = Seq(
       Paths.get("conf/queryone.conf.template"),
@@ -374,6 +397,8 @@ final class QueryOneServerConfigTest {
     assertEquals("local[*]", properties(s"$LocalPrefix.spark.master"))
     assertEquals("10", properties("queryone.preview.maxRows"))
     assertEquals("schema", properties("queryone.preview.defaultTab"))
+    assertEquals("300", properties("queryone.internal.auth.clock.skew.seconds"))
+    assertEquals("600", properties("queryone.internal.auth.nonce.ttl.seconds"))
     assertEquals("local", properties("queryone.engine.default"))
     assertEquals("local", properties("queryone.engine.local.type"))
     assertEquals("true", properties("queryone.engine.local.enabled"))

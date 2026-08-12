@@ -2,7 +2,7 @@ package queryone.server
 
 import queryone.extension.hdfs.{ManagedHdfsLoadProtocol, ManagedHdfsOverwriteProtocol}
 import queryone.identity.{DevelopmentSessionStore, TenantContext}
-import queryone.runtime.{PreviewConfig, SessionMode, QueryOneEngineRegistry}
+import queryone.runtime.{EngineInfo, PreviewConfig, QueryOneEngine, SessionMode, QueryOneEngineRegistry}
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import io.javalin.Javalin
@@ -24,10 +24,12 @@ object QueryOneServer {
   private val SessionCookieName = "queryone_session"
   private val sessions = new DevelopmentSessionStore
   @volatile private var enginesRef: QueryOneEngineRegistry = _
+  @volatile private var internalApiAuthRef: Option[InternalApiAuth] = None
 
   def main(args: Array[String]): Unit = {
     val options = ServerOptions.parse(args)
     options.properties.foreach { case (key, value) => sys.props.put(key, value) }
+    internalApiAuthRef = InternalApiAuth.fromSystemProperties()
 
     putDefaultProperty("log4j2.configurationFile", "classpath:log4j2.xml")
     putDefaultProperty("queryone.logLevel", "info")
@@ -59,6 +61,9 @@ object QueryOneServer {
     app.post("/api/compile", (ctx: Context) => handleCompile(ctx))
     app.post("/api/run", (ctx: Context) => handleRun(ctx))
     app.post("/api/preview", (ctx: Context) => handlePreview(ctx))
+    app.post("/internal/v1/engines", (ctx: Context) => handleInternalEngines(ctx))
+    app.post("/internal/v1/compile", (ctx: Context) => handleInternalCompile(ctx))
+    app.post("/internal/v1/run", (ctx: Context) => handleInternalRun(ctx))
 
     sys.addShutdownHook {
       Option(enginesRef).foreach(_.close())
@@ -181,6 +186,84 @@ object QueryOneServer {
     }
   }
 
+  private def handleInternalCompile(ctx: Context): Unit = {
+    handleInternalRequest(ctx, "/internal/v1/compile") { case (principal, node) =>
+      val request = readInternalSqlRequest(node)
+      val tenant = TenantContext(principal.subject, "odep_signed")
+      val engine = internalEngine(request.engine)
+      val statements = engine.compile(tenant, request.script).zipWithIndex.map { case (statement, index) =>
+        Map(
+          "index" -> (index + 1),
+          "source" -> statement.source,
+          "sql" -> displaySql(statement.sql))
+      }
+      json(ctx, Map(
+        "success" -> true,
+        "requestId" -> principal.requestId,
+        "engine" -> engine.id,
+        "diagnostics" -> engine.capabilities.compileDiagnostics,
+        "statements" -> statements))
+    }
+  }
+
+  private def handleInternalEngines(ctx: Context): Unit = {
+    handleInternalRequest(ctx, "/internal/v1/engines") { case (principal, _) =>
+      val catalog = internalEngineCatalog(engines.defaultId, engines.infos)
+      json(ctx, Map(
+        "success" -> true,
+        "requestId" -> principal.requestId,
+        "defaultEngine" -> catalog.defaultEngine,
+        "engines" -> catalog.engines))
+    }
+  }
+
+  private def handleInternalRun(ctx: Context): Unit = {
+    handleInternalRequest(ctx, "/internal/v1/run") { case (principal, node) =>
+      val request = readInternalSqlRequest(node)
+      val tenant = TenantContext(principal.subject, "odep_signed")
+      val engine = internalEngine(request.engine)
+      val result = engine.run(tenant, request.script, request.limit, request.sessionMode)
+      json(ctx, Map(
+        "success" -> result.success,
+        "requestId" -> principal.requestId,
+        "outcome" -> result.outcome,
+        "stoppedEarly" -> result.stoppedEarly,
+        "engine" -> engine.id,
+        "showCompiledSql" -> showCompiledSql,
+        "statements" -> result.statements.map(statement =>
+          statement.copy(sql = displaySql(statement.sql)))))
+    }
+  }
+
+  private def handleInternalRequest(
+      ctx: Context,
+      path: String)(body: ((InternalApiPrincipal, com.fasterxml.jackson.databind.JsonNode)) => Unit): Unit = {
+    internalApiAuthRef match {
+      case None =>
+        json(ctx.status(404), Map("success" -> false, "error" -> "Internal API is not configured"))
+      case Some(auth) =>
+        val rawBody = ctx.body()
+        try {
+          val node = mapper.readTree(rawBody)
+          val headers = Seq(
+            InternalApiAuth.AppIdHeader,
+            InternalApiAuth.TimestampHeader,
+            InternalApiAuth.NonceHeader,
+            InternalApiAuth.SignatureHeader,
+            InternalApiAuth.BodyHashHeader).flatMap(name => Option(ctx.header(name)).map(name -> _)).toMap
+          val principal = auth.verify(path, rawBody, headers, mapper)
+          body(principal -> node)
+        } catch {
+          case error: InternalApiAuthException =>
+            logger.warn(s"Rejected QueryOne internal API request: ${error.getMessage}")
+            json(ctx.status(401), Map("success" -> false, "error" -> error.getMessage))
+          case error: Throwable =>
+            logger.error("Failed to process QueryOne internal API request", error)
+            json(ctx.status(400), Map("success" -> false, "error" -> errorMessage(error)))
+        }
+    }
+  }
+
   private def withTenant(ctx: Context)(body: TenantContext => Unit): Unit = {
     sessions.resolve(sessionToken(ctx)) match {
       case Some(tenant) => body(tenant)
@@ -204,6 +287,22 @@ object QueryOneServer {
       "defaultResultTab" -> preview.defaultTab,
       "defaultEngine" -> engines.defaultId,
       "engines" -> engines.infos)
+  }
+
+  private[server] def internalEngineCatalog(
+      defaultId: String,
+      infos: Seq[EngineInfo]): InternalEngineCatalog = {
+    val available = infos.filter(_.engineType == "kyuubi").sortBy(_.id)
+    val defaultEngine = available.find(_.id == defaultId).orElse(available.headOption).map(_.id)
+    InternalEngineCatalog(defaultEngine, available)
+  }
+
+  private def internalEngine(requestedId: Option[String]): QueryOneEngine = {
+    val engine = engines.get(requestedId)
+    if (engine.engineType != "kyuubi") {
+      throw new IllegalArgumentException(s"ODEP internal API does not expose engine: ${engine.id}")
+    }
+    engine
   }
 
   private def showCompiledSql: Boolean = {
@@ -247,6 +346,18 @@ object QueryOneServer {
       .map(_.asInt(preview.maxRows))
     val engine = Option(node.get("engine")).filterNot(_.isNull).map(_.asText()).map(_.trim).filter(_.nonEmpty)
     PreviewRequest(table, preview.clampRows(requestedLimit), engine)
+  }
+
+  private def readInternalSqlRequest(node: com.fasterxml.jackson.databind.JsonNode): SqlRequest = {
+    val script = Option(node.get("script")).map(_.asText()).getOrElse("")
+    if (script.trim.isEmpty) throw new IllegalArgumentException("SQL script must not be empty")
+    val preview = PreviewConfig.current
+    val requestedLimit = Option(node.get("limit")).filterNot(_.isNull).map(_.asInt(preview.maxRows))
+    val limit = preview.clampRows(requestedLimit)
+    val engine = Option(node.get("engine")).filterNot(_.isNull).map(_.asText()).map(_.trim).filter(_.nonEmpty)
+    val sessionMode = SessionMode.parse(
+      Option(node.get("sessionMode")).filterNot(_.isNull).map(_.asText()))
+    SqlRequest(script, limit, engine, sessionMode)
   }
 
   private def json(ctx: Context, value: Any): Unit = {
@@ -317,6 +428,10 @@ final case class SqlRequest(
     sessionMode: SessionMode)
 
 final case class PreviewRequest(table: String, limit: Int, engine: Option[String])
+
+private[server] final case class InternalEngineCatalog(
+    defaultEngine: Option[String],
+    engines: Seq[EngineInfo])
 
 private final case class ServerOptions(port: Option[Int], properties: Map[String, String])
 
@@ -476,6 +591,7 @@ private[server] object QueryOneHoconConfig {
   def toProperties(config: Config): Map[String, String] = {
     Seq(
       serverProperties(config),
+      internalApiProperties(config),
       previewProperties(config),
       engineProperties(config),
       passthroughProperties(config)).flatten.toMap
@@ -493,6 +609,16 @@ private[server] object QueryOneHoconConfig {
     Seq(
       int(config, "preview.maxRows").map(value => PreviewConfig.MaxRowsKey -> value.toString),
       string(config, "preview.defaultTab").map(PreviewConfig.DefaultTabKey -> _)).flatten.toMap
+  }
+
+  private def internalApiProperties(config: Config): Map[String, String] = {
+    Seq(
+      string(config, "internalApi.auth.appId").map("queryone.internal.auth.app.id" -> _),
+      string(config, "internalApi.auth.signKey").map("queryone.internal.auth.sign.key" -> _),
+      long(config, "internalApi.auth.clockSkewSeconds")
+        .map(value => "queryone.internal.auth.clock.skew.seconds" -> value.toString),
+      long(config, "internalApi.auth.nonceTtlSeconds")
+        .map(value => "queryone.internal.auth.nonce.ttl.seconds" -> value.toString)).flatten.toMap
   }
 
   private def engineProperties(config: Config): Map[String, String] = {
@@ -664,6 +790,10 @@ private[server] object QueryOneHoconConfig {
 
   private def int(config: Config, path: String): Option[Int] = {
     if (config.hasPath(path)) Some(config.getInt(path)) else None
+  }
+
+  private def long(config: Config, path: String): Option[Long] = {
+    if (config.hasPath(path)) Some(config.getLong(path)) else None
   }
 
   private def boolean(config: Config, path: String): Option[Boolean] = {

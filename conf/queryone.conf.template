@@ -8,6 +8,18 @@ server {
   showCompiledSql = false
 }
 
+# ODEP System -> QueryOne 的内部接口。appId/signKey 默认复用 ODEP System
+# 已有 OpenAPI 调用账号；不要使用 QueryOne -> ODEP API 的 app_kyuubi 密钥。
+# 两项都未配置时 /internal/v1/* 返回 404，不影响现有页面 API。
+internalApi {
+  auth {
+    # appId = "odep-system"
+    # signKey = "change-me"
+    clockSkewSeconds = 300
+    nonceTtlSeconds = 600
+  }
+}
+
 preview {
   # 每条 statement 默认最多预览 10 行；页面 Rows 只能调小或等于该值，不能放大。
   maxRows = 10

@@ -208,6 +208,57 @@ select * from city_stats order by cnt desc;
 
 `WITH` 是查询内的临时 CTE，只在当前这一条 SQL 内有效；`CREATE OR REPLACE TEMPORARY VIEW` 会把结果注册到当前 Spark 会话，后续语句可以继续引用。
 
+### 使用 sleep 模拟长任务
+
+Spark 3.3.4 没有原生 `sleep()` SQL 函数。测试 QueryOne 的任务耗时、结果轮询或超时行为时，可以用 Spark SQL 的 `reflect` 调用 Java 静态方法 `Thread.sleep(long)`。参数单位是毫秒。
+
+固定等待 5 秒：
+
+```sql
+select reflect(
+  'java.lang.Thread',
+  'sleep',
+  cast(5000 as bigint)
+) as sleep_result;
+```
+
+预期：语句约 5 秒后成功，`sleep_result` 返回字符串 `null`。实际耗时会包含 Spark 调度和结果传输开销，因此可能略大于 5 秒。
+
+验证同一次 `Run` 内的多语句串行执行：
+
+```sql
+select reflect(
+  'java.lang.Thread',
+  'sleep',
+  cast(3000 as bigint)
+) as sleep_result;
+
+select 'finished' as status, current_timestamp() as finished_at;
+```
+
+预期：第一条语句等待约 3 秒，完成后才执行第二条语句；结果区按顺序展示两条 statement，第二条返回 `finished`。
+
+验证逐行执行产生的可控耗时：
+
+```sql
+select
+  id,
+  reflect(
+    'java.lang.Thread',
+    'sleep',
+    cast(1000 as bigint)
+  ) as sleep_result
+from range(0, 5, 1, 1);
+```
+
+预期：`range` 生成 5 行并强制使用 1 个分区，每行等待约 1 秒，总耗时约 5 秒，最终返回 `id=0` 到 `id=4`。如果增加分区数，Spark 会并行执行，任务总耗时不再等于“行数乘以单行等待时间”。
+
+注意：
+
+- 这些 SQL 应分别在 Local 和 Kyuubi 测试环境执行；Kyuubi 模式下等待发生在远端 Spark Engine 的任务线程中。
+- `reflect` 可以调用可访问的 Java 静态方法，只应用于隔离测试环境，不要用它制造线上长任务或高并发压力。
+- `java_method` 是 `reflect` 的等价别名，但测试手册统一使用 `reflect`。
+
 ## View As 语法糖
 
 QueryOne 支持 `view name as select ...` 语法糖，用于把查询结果注册成当前 Spark 会话里的临时视图，避免反复书写 `CREATE OR REPLACE TEMPORARY VIEW`：
